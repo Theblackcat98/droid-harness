@@ -1,0 +1,31 @@
+# Calibrated for phone-a: OnePlus N10 (BE2028), 1080x2400, Clash Royale Nov 2026 UI.
+# All regions are fractions of the captured frame; works at any max_size.
+hand:
+- [0.218, 0.855, 0.398, 0.958]
+- [0.402, 0.855, 0.582, 0.958]
+- [0.586, 0.855, 0.766, 0.958]
+- [0.770, 0.855, 0.950, 0.958]
+next_card: [0.035, 0.935, 0.155, 1.000]
+elixir_bar: [0.200, 0.962, 0.980, 0.988]
+clock: [0.830, 0.015, 0.995, 0.070]
+towers:
+  opp_left: [0.140, 0.180, 0.265, 0.200]
+  opp_right: [0.715, 0.180, 0.860, 0.200]
+  opp_king: [0.430, 0.092, 0.600, 0.112]
+  me_left: [0.140, 0.592, 0.265, 0.612]
+  me_right: [0.715, 0.592, 0.860, 0.612]
+  me_king: [0.430, 0.722, 0.600, 0.742]
+arena: [0.0, 0.105, 1.0, 0.825]
+buttons:
+  menu: [0.870, 0.105, 0.960, 0.140]
+  training_camp: [0.390, 0.280, 0.810, 0.320]
+  confirm: [0.560, 0.550, 0.810, 0.590]
+  ok: [0.370, 0.815, 0.630, 0.880]
+  battle: [0.340, 0.785, 0.690, 0.880]
+  close: [0.850, 0.100, 0.950, 0.150]
+# Top 18% is the stable HUD (clock/opponent/name). The bottom half changes with the
+# hand, so including it made the screen classifier miss real IN_BATTLE frames.
+screen_regions:
+- [0, 0, 1, 0.18]
+elixir_hsv_lo: [135, 80, 120]
+elixir_hsv_hi: [175, 255, 255]
