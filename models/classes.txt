@@ -1,0 +1,16 @@
+# M3 detector classes (plan §6.3). Names must match `unit_classes` in
+# `configs/domains/clash_royale/cards.json` (see `CardDB.card_for_class`).
+# Closed set = our starter-deck spawns + its spell effects + tower states.
+# Add trainer-deck threats here only after observing them (M4 counter table).
+knight
+princess
+minion
+minions
+giant
+musketeer
+mini_pekka
+arrows_effect
+fireball_effect
+tower_princess
+tower_king
+tower_rubble
