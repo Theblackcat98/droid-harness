@@ -16,8 +16,13 @@ class TileDetection:
     cls: str
     conf: float
     tile: tuple[float, float]
-    side: str | None = None  # from the HP bar, if readable
+    side: str | None = None  # from a side-aware class or the HP bar, if readable
     hp_pct: float | None = None
+    key: str | None = None  # association key; defaults to cls (side-aware models: cls + side)
+
+    @property
+    def match_key(self) -> str:
+        return self.key or self.cls
 
 
 @dataclass
@@ -35,12 +40,14 @@ class Track:
     side_votes: dict[str, int] = field(default_factory=dict)
     conf: float = 0.0
     spawn_reported: bool = False
+    key: str = ""
+    river_mid_y: float = 16.0
 
     @property
     def side(self) -> str:
         if self.side_votes:
             return max(self.side_votes, key=self.side_votes.get)
-        return "opp" if self.first_tile[1] > 16.0 else "me"  # spawn-side prior
+        return "opp" if self.first_tile[1] > self.river_mid_y else "me"  # spawn-side prior
 
 
 @dataclass(frozen=True)
@@ -76,7 +83,7 @@ class Tracker:
             pred = self._predict(tr, t_ms)
             gate = self.gate_tiles + self.max_speed * (t_ms - tr.last_ms) / 1000 * 0.5
             for j, d in enumerate(dets):
-                if d.cls != tr.cls:
+                if d.match_key != tr.key:
                     continue
                 dist = math.dist(pred, d.tile)
                 if dist <= gate:
@@ -124,11 +131,12 @@ class Tracker:
 
     def _new(self, d: TileDetection, t_ms: int) -> None:
         for lost in self._recently_lost:
-            if lost.cls == d.cls and math.dist(lost.tile, d.tile) < self.gate_tiles and t_ms - lost.last_ms < 300:
+            if lost.key == d.match_key and math.dist(lost.tile, d.tile) < self.gate_tiles and t_ms - lost.last_ms < 300:
                 self.id_switch_suspects += 1
                 break
         tr = Track(self._next_id, d.cls, d.tile, d.tile, t_ms, t_ms, conf=d.conf,
-                   hp_pct=d.hp_pct if d.hp_pct is not None else 1.0)
+                   hp_pct=d.hp_pct if d.hp_pct is not None else 1.0, key=d.match_key,
+                   river_mid_y=self.river_mid_y)
         if d.side:
             tr.side_votes[d.side] = 1
         self.tracks[tr.id] = tr

@@ -1,4 +1,16 @@
-"""Pixels -> GameState for one battle (HUD every frame, detector at a cadence)."""
+"""Pixels -> GameState for one battle (HUD every frame, detector at a cadence).
+
+Detector output is routed by class (see ``classes.py``):
+
+* side-aware units (``knight_opp``) -> tracker, side from the class, HP from the bar;
+* plain units (``knight``) -> tracker, side from the HP bar or the spawn-side prior;
+* spell effects (``fireball_effect``) -> tracker for play events only (never ``units``),
+  side from your own recent plays of that spell (they land on the *other* half);
+* tower states (``tower_rubble``) -> tower state, never the tracker.
+
+Between detections, units are extrapolated along their tracked velocity, so a detector
+running every Nth frame (or on its own thread) still gives the policy current positions.
+"""
 
 from __future__ import annotations
 
@@ -14,12 +26,14 @@ from ..elixir import ElixirModel, phase_at
 from ..opponent_model import OpponentModel
 from ..state import GameState, Unit
 from .cards import CardMatcher
-from .detector import Detector
+from .classes import is_effect, is_tower, split_side
+from .detector import AsyncDetector, Detector
 from .digits import DigitReader
 from .grid import Layout, TileMapper
 from .hud import is_greyed, read_elixir
 from .ownership import ownership_and_hp
-from .tracker import PlayEvent, SpawnGrouper, TileDetection, Tracker
+from .towers import TowerStateReader
+from .tracker import PlayEvent, SpawnGrouper, TileDetection, Track, Tracker
 
 TOWER_SIDE = {"me_left": "me", "me_right": "me", "me_king": "me",
               "opp_left": "opp", "opp_right": "opp", "opp_king": "opp"}
@@ -30,13 +44,22 @@ class CRPerception:
                  digits: DigitReader | None = None, detector: Detector | None = None, detect_every: int = 1,
                  tower_every_ms: int = 500, on_my_play: Callable[[str, int], None] | None = None,
                  on_event: Callable[[dict], None] | None = None,
-                 flying_foot_frac: float = 0.15) -> None:
+                 flying_foot_frac: float = 0.15, async_detect: bool = False,
+                 tower_states: TowerStateReader | None = None, my_spell_window_ms: int = 3500,
+                 extrapolate_max_ms: int = 500) -> None:
         self.layout, self.tiles, self.cards, self.arena = layout, tiles, cards, arena
         self.matcher, self.digits, self.detector = matcher, digits, detector
-        self.detect_every, self.tower_every_ms = detect_every, tower_every_ms
+        self.detect_every, self.tower_every_ms = max(1, detect_every), tower_every_ms
         self.on_my_play, self.on_event = on_my_play, on_event
         self.flying_foot_frac = flying_foot_frac  # air units: box bottom is not the ground point
+        self.tower_states = tower_states
+        self.my_spell_window_ms = my_spell_window_ms  # my spell play -> its effect on screen
+        self.extrapolate_max_ms = extrapolate_max_ms
+        self.async_detector: AsyncDetector | None = None
+        if detector is not None and async_detect:
+            self.async_detector = detector if isinstance(detector, AsyncDetector) else AsyncDetector(detector)
         self.start_pts_us: int | None = None
+        self._generation = 0
         self.reset()
 
     # --- match lifecycle ----------------------------------------------------
@@ -44,6 +67,12 @@ class CRPerception:
         self.elixir = ElixirModel()
         self.opp = OpponentModel()
         self.tracker = Tracker(river_mid_y=sum(self.arena.river_y) / 2)
+        self._tracks: list[Track] = []
+        self._my_spells: list[tuple[str, int]] = []  # (card key, t_ms) of my recent spell plays
+        self._destroyed: set[str] = set()
+        self._generation = getattr(self, "_generation", 0) + 1  # drops async results from a past match
+        if self.tower_states is not None:
+            self.tower_states.reset()
         self.grouper = SpawnGrouper(self.cards.card_for_class)
         self.hand: list[str | None] = [None] * 4
         self.next_card: str | None = None
@@ -54,6 +83,7 @@ class CRPerception:
         self.units: list[Unit] = []
         self.events: list[dict] = []
         self._started = False
+        self._last_t_ms = 0
 
     def start_match(self, frame: Frame) -> None:
         self.reset()
@@ -66,6 +96,7 @@ class CRPerception:
             self.start_match(frame)
         img = frame.img
         t_ms = int((frame.pts_us - self.start_pts_us) / 1000)
+        self._last_t_ms = t_ms
         t_s = t_ms / 1000
         warns: list[str] = []
 
@@ -80,9 +111,11 @@ class CRPerception:
             warns.append("elixir_discrepancy")
         self.opp.advance(t_s)
 
-        if self.detector is not None and self.frame_i % self.detect_every == 0:
-            self._detect(img, t_ms)
-        if t_ms - self._tower_read_ms >= self.tower_every_ms and self.digits is not None:
+        if self.detector is not None:
+            self._run_detector(img, t_ms)
+            self.units = self._extrapolate(t_ms)
+        if t_ms - self._tower_read_ms >= self.tower_every_ms and (self.digits is not None
+                                                                   or self.tower_states is not None):
             self._read_towers(img, warns)
             self._tower_read_ms = t_ms
 
@@ -139,41 +172,115 @@ class CRPerception:
     def _my_play(self, card: str, slot: int, t_ms: int) -> None:
         if card in self.cards:
             self.elixir.spend(self.cards.cost(card))
+            if self.cards[card].is_spell:
+                self._my_spells = [(k, t) for k, t in self._my_spells if t_ms - t <= self.my_spell_window_ms]
+                self._my_spells.append((card, t_ms))
         self.events.append({"kind": "my_play", "card": card, "slot": slot, "t_ms": t_ms})
         if self.on_event:
             self.on_event(self.events[-1])
         if self.on_my_play:
             self.on_my_play(card, t_ms)
 
-    def _detect(self, img: np.ndarray, t_ms: int) -> None:
-        # Arena crop: cuts latency and removes HUD false hits. Boxes are offset
-        # back to full-image pixels before ownership sampling and tile mapping.
+    # --- detection ----------------------------------------------------------------
+    def _arena_crop(self, img: np.ndarray) -> tuple[np.ndarray, tuple[int, int]]:
+        # Arena crop: cuts latency and removes HUD false hits. Boxes are offset back to
+        # full-image pixels before ownership sampling and tile mapping.
         x0, y0, x1, y1 = self.layout.arena.to_px(img.shape)
-        crop = img[y0:y1, x0:x1]
+        return img[y0:y1, x0:x1], (x0, y0)
+
+    def _run_detector(self, img: np.ndarray, t_ms: int) -> None:
+        if self.async_detector is None:
+            if self.frame_i % self.detect_every == 0:
+                self._detect(img, t_ms)
+            return
+        r = self.async_detector.poll()
+        if r is not None:
+            (gen, t_det, frame_img, origin), dets, _ms = r
+            if gen == self._generation:
+                self._ingest(dets, frame_img, origin, t_det)
+        if self.frame_i % self.detect_every == 0 and self.async_detector.idle:
+            crop, origin = self._arena_crop(img)
+            if crop.size:
+                self.async_detector.submit(crop.copy(), (self._generation, t_ms, img, origin))
+
+    def _detect(self, img: np.ndarray, t_ms: int) -> None:
+        """Synchronous detection on this frame."""
+        crop, origin = self._arena_crop(img)
         if crop.size == 0:
             return
+        self._ingest(self.detector(crop), img, origin, t_ms)
+        self.units = self._extrapolate(t_ms)
+
+    def _ingest(self, raw_dets, img: np.ndarray, origin: tuple[int, int], t_ms: int) -> None:
+        x0, y0 = origin
         dets = []
-        for d in self.detector(crop):
+        for d in raw_dets:
+            base, cls_side = split_side(d.cls)
             bx1, by1, bx2, by2 = (d.box[0] + x0, d.box[1] + y0, d.box[2] + x0, d.box[3] + y0)
-            box_full = (bx1, by1, bx2, by2)
             fx, fy = (bx1 + bx2) / 2, by2
-            card0 = self.cards.card_for_class(d.cls)
+            if is_tower(base):
+                self._tower_detection(base, self.tiles.px_to_tile((fx, (by1 + by2) / 2), img.shape))
+                continue
+            card0 = self.cards.card_for_class(base)
             if card0 is not None and card0.flying:
                 fy -= self.flying_foot_frac * (by2 - by1)
-            side, hp = ownership_and_hp(img, box_full)
             tile = self.tiles.px_to_tile((fx, fy), img.shape)
-            dets.append(TileDetection(d.cls, d.conf, tile, side, hp))
+            if is_effect(base):
+                side, hp = self._effect_side(base, t_ms), None
+            else:
+                bar_side, hp = ownership_and_hp(img, (bx1, by1, bx2, by2))
+                side = cls_side or bar_side  # a side-aware class beats the HP-bar color
+            key = f"{base}|{cls_side}" if cls_side else base  # never associate my knight with theirs
+            dets.append(TileDetection(base, d.conf, tile, side, hp, key=key))
         tracks, spawns = self.tracker.update(dets, t_ms)
         self.grouper.expire(t_ms)
         for ev in spawns:
             for play in self.grouper.add(ev):
                 self._on_play(play)
+        self._tracks = tracks
+
+    def _effect_side(self, base: str, t_ms: int) -> str:
+        """A spell effect is mine if I played that spell recently, else the opponent's.
+
+        Location is useless here: spells land on the *other* player's half.
+        """
+        card = self.cards.card_for_class(base)
+        if card is not None:
+            for key, t in self._my_spells:
+                if key == card.key and 0 <= t_ms - t <= self.my_spell_window_ms:
+                    return "me"
+        return "opp"
+
+    def _tower_detection(self, base: str, tile: tuple[float, float]) -> None:
+        if base != "tower_rubble":
+            return
+        name, pos = min(self.arena.towers.items(), key=lambda kv: (kv[1][0] - tile[0]) ** 2 + (kv[1][1] - tile[1]) ** 2)
+        if (pos[0] - tile[0]) ** 2 + (pos[1] - tile[1]) ** 2 <= 3.0 ** 2:
+            self._mark_destroyed(name)
+
+    def _mark_destroyed(self, name: str) -> None:
+        if name in self._destroyed:
+            return
+        self._destroyed.add(name)
+        self.towers[name] = 0
+        rec = {"kind": "tower_destroyed", "tower": name, "t_ms": self._last_t_ms}
+        self.events.append(rec)
+        if self.on_event:
+            self.on_event(rec)
+
+    def _extrapolate(self, t_ms: int) -> list[Unit]:
+        """Tracks -> units at ``t_ms``: positions advanced along velocity since the last detection."""
         units = []
-        for tr in tracks:
+        for tr in self._tracks:
+            if is_effect(tr.cls):
+                continue  # spell effects make play events, not units
+            dt = min(max(0, t_ms - tr.last_ms), self.extrapolate_max_ms) / 1000
+            x = min(max(tr.tile[0] + tr.vel[0] * dt, 0.0), self.arena.width)
+            y = min(max(tr.tile[1] + tr.vel[1] * dt, 0.0), self.arena.height)
             card = self.cards.card_for_class(tr.cls)
-            units.append(Unit(tr.id, tr.cls, tr.side, tr.tile, tr.vel, tr.hp_pct, tr.first_ms, tr.conf,
+            units.append(Unit(tr.id, tr.cls, tr.side, (x, y), tr.vel, tr.hp_pct, tr.first_ms, tr.conf,
                               flying=bool(card and card.flying)))
-        self.units = units
+        return units
 
     def _on_play(self, play: PlayEvent) -> None:
         rec = {"kind": f"{play.side}_spawn_play", "card": play.card, "tile": play.tile, "t_ms": play.t_ms}
@@ -184,7 +291,14 @@ class CRPerception:
             self.opp.on_play(play.card, self.cards.cost(play.card), play.t_ms / 1000)
 
     def _read_towers(self, img: np.ndarray, warns: list[str]) -> None:
+        if self.tower_states is not None:
+            for name in self.tower_states.read(img, self.layout.towers):
+                self._mark_destroyed(name)
+        if self.digits is None:
+            return
         for name, roi in self.layout.towers.items():
+            if name in self._destroyed:
+                continue  # destruction is permanent; don't let a digit misread revive it
             hp = self.digits.read(roi.crop(img))
             if hp is None:
                 continue
