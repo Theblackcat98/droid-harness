@@ -1,0 +1,51 @@
+# No-vision strategy for the starter deck: use it until a detector is trained.
+#
+# Without a detector, training-camp-v1 never attacks: no opponent plays are seen, so its
+# opponent-elixir estimate sits at 10 and offense.win_condition_when_opp_low scores
+# below act_threshold (it lost both live matches, 1-2 and 0-3). This file turns on
+# offense.blind_push (policy/rules/blind.py), which ports tools/bootstrap_win_bot.py
+# (won 3-1): Giant at the bridge, support behind it, spells on the lane's tower, and
+# every other card at the bridge before elixir leaks.
+strategy: training-camp-blind-v1
+parent: training-camp-v1
+deck: [knight, princess, minions, arrows, fireball, giant, musketeer, mini_pekka]
+win_conditions: [giant]
+params:
+  act_threshold: 0.15
+  elixir_weight: 0.4
+  min_action_gap_ms: 350
+  opening_ms: 0                 # no "safe opening": the bootstrap won by pressing from the start
+  blind: true
+  blind_lane: right
+  blind_switch_every: 2         # two pushes per lane, then the other lane
+  blind_tanks: [giant]
+  blind_push_elixir: 8.0        # Giant + 3 for support
+  blind_push_elixir_x2: 6.0
+  blind_min_elixir: 7.0         # pressure threshold with no Giant in hand
+  blind_min_elixir_x2: 5.0
+  blind_hold_for_tank_elixir: 9.0
+  blind_support_ms: 7000
+  blind_support_back_tiles: 2.0
+  blind_spell_after_ms: 11000   # Giant (~0.75 tiles/s) reaches the princess tower
+  blind_spell_window_ms: 9000
+  blind_spell_elixir: 9.5
+tier0:
+  lethal_margin_hp: 30
+  spell_tower_damage: {}
+  leak_threshold: 9.6
+  leak_ms: 1200
+  leak_card_preference: [mini_pekka, knight, musketeer]
+  leak_tiles: {left: [3.5, 14.0], right: [14.5, 14.0]}   # leaks go to the bridge, not the back
+  emergency_eta_s: 1.5
+  emergency_hp_frac: 0.35
+weights:
+  offense.blind_push: 1.0
+  offense.win_condition_when_opp_low: 0.0   # blind: its opp-elixir signal is meaningless; one lane plan
+  opening.safe_first_play: 0.0
+  cycle.cheap_cycle: 0.0
+posture_multipliers:
+  OPENING: {offense: 1.0}
+counters: counters/training-camp-v2.csv
+learned_ranker: null
+intent_advisor: false
+advisor_may_set: []

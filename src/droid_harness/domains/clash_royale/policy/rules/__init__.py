@@ -23,6 +23,9 @@ class RuleContext:
 
 
 class Rule(Protocol):
+    """Rules may also define ``reset()`` (new match) and ``on_played(card, t_ms, params)``
+    (perception confirmed our card left the hand); CRPolicy calls them when present."""
+
     id: str
 
     def propose(self, s: GameState, p: Params, ctx: RuleContext, intent: Intent | None) -> Iterable[Candidate]:
@@ -30,10 +33,11 @@ class Rule(Protocol):
 
 
 def default_rules() -> list[Rule]:
+    from .blind import BlindPush
     from .cycle import CheapCycle, OpeningSafeFirstPlay
     from .defend import DefendAirThreat, DefendLaneThreat
     from .offense import CounterPush, WinConditionWhenOppLow
     from .spells import SpellTowerChip, SpellValue
 
     return [DefendLaneThreat(), DefendAirThreat(), WinConditionWhenOppLow(), CounterPush(), SpellValue(),
-            SpellTowerChip(), OpeningSafeFirstPlay(), CheapCycle()]
+            SpellTowerChip(), OpeningSafeFirstPlay(), CheapCycle(), BlindPush()]
