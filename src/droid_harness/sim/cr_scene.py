@@ -194,16 +194,35 @@ class CRScene:
 
 
 class SceneDetector:
-    """Detector double that reads the scene's ground truth (pixel boxes, optional noise)."""
+    """Detector double that reads the scene's ground truth (pixel boxes, optional noise).
+
+    Follows the real-detector contract: boxes are in the coordinates of the image
+    passed in. When the pipeline passes the arena crop, ground-truth full-frame
+    boxes are mapped into crop coordinates (the pipeline offsets them back).
+    """
 
     def __init__(self, scene: CRScene, noise_px: float = 0.0, seed: int = 0) -> None:
         self.scene, self.noise_px = scene, noise_px
         self.rng = np.random.default_rng(seed)
 
     def __call__(self, img: np.ndarray) -> list[Detection]:
-        sx, sy = img.shape[1] / self.scene.width, img.shape[0] / self.scene.height
-        return [Detection(d.cls, d.conf, (d.box[0] * sx, d.box[1] * sy, d.box[2] * sx, d.box[3] * sy))
-                for d in self.scene.detections(self.noise_px, self.rng)]
+        dets = self.scene.detections(self.noise_px, self.rng)
+        if img.shape[:2] == (self.scene.height, self.scene.width):
+            sx, sy = img.shape[1] / self.scene.width, img.shape[0] / self.scene.height
+            return [Detection(d.cls, d.conf, (d.box[0] * sx, d.box[1] * sy, d.box[2] * sx, d.box[3] * sy))
+                    for d in dets]
+        ax0, ay0, ax1, ay1 = self.scene.layout.arena.to_px((self.scene.height, self.scene.width))
+        sx, sy = img.shape[1] / max(1, ax1 - ax0), img.shape[0] / max(1, ay1 - ay0)
+        out = []
+        for d in dets:
+            x1 = (d.box[0] - ax0) * sx
+            y1 = (d.box[1] - ay0) * sy
+            x2 = (d.box[2] - ax0) * sx
+            y2 = (d.box[3] - ay0) * sy
+            if x2 <= 0 or y2 <= 0 or x1 >= img.shape[1] or y1 >= img.shape[0]:
+                continue  # outside the arena crop
+            out.append(Detection(d.cls, d.conf, (x1, y1, x2, y2)))
+        return out
 
 
 def build_matcher_from_scene(scene: CRScene, matcher_cls=None):

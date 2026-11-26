@@ -29,11 +29,13 @@ class CRPerception:
     def __init__(self, *, layout: Layout, tiles: TileMapper, cards: CardDB, arena: Arena, matcher: CardMatcher,
                  digits: DigitReader | None = None, detector: Detector | None = None, detect_every: int = 1,
                  tower_every_ms: int = 500, on_my_play: Callable[[str, int], None] | None = None,
-                 on_event: Callable[[dict], None] | None = None) -> None:
+                 on_event: Callable[[dict], None] | None = None,
+                 flying_foot_frac: float = 0.15) -> None:
         self.layout, self.tiles, self.cards, self.arena = layout, tiles, cards, arena
         self.matcher, self.digits, self.detector = matcher, digits, detector
         self.detect_every, self.tower_every_ms = detect_every, tower_every_ms
         self.on_my_play, self.on_event = on_my_play, on_event
+        self.flying_foot_frac = flying_foot_frac  # air units: box bottom is not the ground point
         self.start_pts_us: int | None = None
         self.reset()
 
@@ -144,10 +146,22 @@ class CRPerception:
             self.on_my_play(card, t_ms)
 
     def _detect(self, img: np.ndarray, t_ms: int) -> None:
+        # Arena crop: cuts latency and removes HUD false hits. Boxes are offset
+        # back to full-image pixels before ownership sampling and tile mapping.
+        x0, y0, x1, y1 = self.layout.arena.to_px(img.shape)
+        crop = img[y0:y1, x0:x1]
+        if crop.size == 0:
+            return
         dets = []
-        for d in self.detector(img):
-            side, hp = ownership_and_hp(img, d.box)
-            tile = self.tiles.px_to_tile(d.foot, img.shape)
+        for d in self.detector(crop):
+            bx1, by1, bx2, by2 = (d.box[0] + x0, d.box[1] + y0, d.box[2] + x0, d.box[3] + y0)
+            box_full = (bx1, by1, bx2, by2)
+            fx, fy = (bx1 + bx2) / 2, by2
+            card0 = self.cards.card_for_class(d.cls)
+            if card0 is not None and card0.flying:
+                fy -= self.flying_foot_frac * (by2 - by1)
+            side, hp = ownership_and_hp(img, box_full)
+            tile = self.tiles.px_to_tile((fx, fy), img.shape)
             dets.append(TileDetection(d.cls, d.conf, tile, side, hp))
         tracks, spawns = self.tracker.update(dets, t_ms)
         self.grouper.expire(t_ms)

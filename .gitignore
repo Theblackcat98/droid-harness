@@ -6,6 +6,7 @@ __pycache__/
 data/
 vendor/
 models/
+!models/classes.txt
 *.onnx
 *.h264
 # per-phone and locally built config
