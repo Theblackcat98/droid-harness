@@ -59,9 +59,24 @@ droid-harness sprt                  # sample-size table for strategy tests
      --layout configs/domains/clash_royale/rois/phone-a.yaml --tiles configs/domains/clash_royale/tiles/phone-a.yaml \
      --templates configs/domains/clash_royale/templates/phone-a --screens configs/domains/clash_royale/screens/phone-a \
      --strategy configs/strategies/hog-cycle-v1.yaml --cards configs/domains/clash_royale/cards.json \
-     --detector models/yolo26n-cr.onnx --classes models/classes.txt --matches 20 --balance-epoch 2026-11
+     --detector models/detector.onnx --classes models/classes.txt --matches 20 --balance-epoch 2026-11
    ```
-   Without `--detector` the bot sees the HUD but no units, which is enough to test menus and the match lifecycle.
+   Without `--detector` the bot sees the HUD but no units. Vision strategies can't attack blind (they never see the
+   opponent spend elixir), so play `configs/strategies/training-camp-blind-v1.yaml` until a detector exists: it
+   pushes on elixir, hand and match phase alone. With a detector, add `--detect-every N` and/or `--async-detect`
+   to keep the loop under budget; units are extrapolated between detections.
+6. **Train the detector (M3, no phone needed).**
+   ```bash
+   python tools/fetch_katacr.py --out data/katacr --part2                 # sprites, HP bars, arenas, real frames
+   python tools/extract_backgrounds.py --data data/matches --out data/backgrounds   # your arena crops
+   droid-harness synth --backgrounds data/backgrounds data/katacr/backgrounds \
+     --sprites data/katacr/segment --bars data/katacr/bars --out data/synth --n 5000
+   droid-harness convert-katacr --part2 data/katacr/_repo/images/part2 --out data/katacr-real   # held-out real val
+   droid-harness train-detector --data data/synth/data.yaml --out models/detector.onnx         # ultralytics + ROCm
+   droid-harness replay --data data/matches --layout ... --tiles ... --templates ... --cards ... \
+     --detector models/detector.onnx --out data/replay/detector-v1.json [--baseline data/replay/<previous>.json]
+   ```
+   Class names live in the ONNX metadata; `--classes` only cross-checks them and refuses to load on a mismatch.
 
 ## Iterating on strategy (P4–P5)
 

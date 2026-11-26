@@ -62,6 +62,13 @@ class Adb:
                 return line.split("=", 1)[1]
         return None
 
+    def pidof(self, package: str) -> str:
+        """PID(s) of a running package, or "" if it isn't running (toybox ``pidof``, Android 7+)."""
+        try:
+            return self.shell(f"pidof {package}", check=False, timeout_s=5.0).strip()
+        except AdbError:
+            return ""
+
     def force_stop(self, package: str) -> None:
         self.shell(f"am force-stop {package}", check=False)
 

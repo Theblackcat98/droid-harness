@@ -36,12 +36,13 @@ class Recorder:
         self.record_video = record_video
         self._q: queue.Queue = queue.Queue(maxsize=max_queue)
         self._last_config = b""
-        self._gop: list[bytes] = []  # packets since the last key frame
+        self._gop: list[tuple[int, bytes]] = []  # (pts_us, packet) since the last key frame
         self._gop_bytes = 0
         self.max_gop_bytes = 32 * 1024 * 1024
         self.dropped = 0
         self.match_dir: Path | None = None
         self._video = None
+        self._pts = None  # stream.pts: one device pts_us per video packet, for exact replay timing
         self._streams: dict[str, Any] = {}
         self._thread = threading.Thread(target=self._loop, name="T4-recorder", daemon=True)
         self._running = True
@@ -59,9 +60,9 @@ class Recorder:
             self._last_config = data
             self._gop, self._gop_bytes = [], 0
         elif header.is_key_frame:
-            self._gop, self._gop_bytes = [data], len(data)
+            self._gop, self._gop_bytes = [(header.pts_us, data)], len(data)
         elif self._gop and self._gop_bytes < self.max_gop_bytes:
-            self._gop.append(data)
+            self._gop.append((header.pts_us, data))
             self._gop_bytes += len(data)
         if self.record_video:
             self._put(("pkt", header.pts_us, data))
@@ -98,15 +99,18 @@ class Recorder:
             self.match_dir = d
             if self.record_video:
                 self._video = open(d / "stream.h264", "wb")
+                self._pts = open(d / "stream.pts", "w")
                 if config:
                     self._video.write(config)
-                for pkt in preroll:  # back to the last key frame, so the file decodes from its start
+                for pts, pkt in preroll:  # back to the last key frame, so the file decodes from its start
                     self._video.write(pkt)
+                    self._pts.write(f"{pts}\n")
                 meta = {**meta, "preroll_packets": len(preroll)}
             (d / "meta.json").write_bytes(_dumps({**meta, "started_unix": time.time()}))
         elif kind == "pkt":
             if self._video is not None:
                 self._video.write(item[2])
+                self._pts.write(f"{item[1]}\n")
         elif kind == "log":
             _, stream, record = item
             if self.match_dir is None:
@@ -124,7 +128,8 @@ class Recorder:
     def _close_match(self) -> None:
         if self._video is not None:
             self._video.close()
-            self._video = None
+            self._pts.close()
+            self._video, self._pts = None, None
         for f in self._streams.values():
             f.close()
         self._streams.clear()

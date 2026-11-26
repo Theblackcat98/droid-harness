@@ -17,6 +17,7 @@ from .core.actuate.executor import Executor
 from .core.config import DeviceProfile
 from .core.runtime.liveness import Finding, LivenessMonitor
 from .core.runtime.orchestrator import BrainLoop
+from .core.runtime.watchdog import AppWatchdog
 from .core.telemetry.recorder import Recorder
 from .core.transport.scrcpy_bridge import ScrcpyClient
 from .domains.clash_royale.actions import CRActionMapper
@@ -24,11 +25,13 @@ from .domains.clash_royale.arena import Arena
 from .domains.clash_royale.cards import CardDB
 from .domains.clash_royale.menus import BATTLE_SCREENS, DEFAULT_FLOWS, MenuNavigator
 from .domains.clash_royale.perception.cards import CardMatcher
+from .domains.clash_royale.perception.classes import missing_unit_classes
 from .domains.clash_royale.perception.detector import OnnxDetector
 from .domains.clash_royale.perception.digits import DigitReader
 from .domains.clash_royale.perception.grid import Layout, Roi, TileMapper
 from .domains.clash_royale.perception.pipeline import CRPerception
 from .domains.clash_royale.perception.screens import ScreenClassifier
+from .domains.clash_royale.perception.towers import TowerStateReader
 from .domains.clash_royale.policy.strategy import load_strategy
 from .domains.clash_royale.policy.utility import CRPolicy
 from .domains.clash_royale.session import CRSession, MatchMeta
@@ -58,6 +61,11 @@ class RunConfig:
     balance_epoch: str | None = None
     experiment_id: str | None = None
     arm: str | None = None
+    detect_every: int = 1
+    det_conf: float = 0.35
+    det_iou: float = 0.5
+    async_detect: bool = False
+    towers: Path | None = None  # tower-state templates dir (droid-harness tower-template)
 
 
 def load_screens(directory: Path, regions: list[Roi]) -> ScreenClassifier:
@@ -94,16 +102,27 @@ class BotRunner:
         self.screens = load_screens(cfg.screens, regions)
         detector = None
         if cfg.detector:
-            names = Path(cfg.classes).read_text().split() if cfg.classes else []
-            detector = OnnxDetector(cfg.detector, names)
+            # Names come from the ONNX metadata; --classes is a cross-check that refuses to
+            # load on mismatch (a shifted list silently decodes every box as the wrong card).
+            detector = OnnxDetector(cfg.detector, cfg.classes, conf=cfg.det_conf, iou=cfg.det_iou)
             detector.warmup()
-            log.info("detector on %s", detector.provider)
+            log.info("detector on %s, input %s, %s head, %d classes", detector.provider, detector.imgsz,
+                     detector.mode, len(detector.class_names))
+            deck_classes = {u for k in self.params.deck if k in self.cards for u in self.cards[k].unit_classes}
+            missing = missing_unit_classes(detector.class_names, deck_classes)
+            if missing:
+                log.warning("detector cannot see these deck unit classes: %s", missing)
+        elif not getattr(self.params, "blind", False):
+            log.warning("no detector and strategy %s is not blind: the policy can't see units and will "
+                        "rarely attack; use configs/strategies/training-camp-blind-v1.yaml", cfg.strategy.name)
         self.recorder = Recorder(cfg.data)
         self.policy = CRPolicy(self.cards, self.arena, self.params,
                                exec_latency_s=self.profile.exec_latency_ms / 1000)
         self.perception = CRPerception(layout=self.layout, tiles=self.tiles, cards=self.cards, arena=self.arena,
                                        matcher=CardMatcher.load(cfg.templates), digits=load_digits(cfg.digits),
-                                       detector=detector, on_my_play=self.policy.confirm_played)
+                                       detector=detector, on_my_play=self.policy.confirm_played,
+                                       detect_every=cfg.detect_every, async_detect=cfg.async_detect,
+                                       tower_states=TowerStateReader.load(cfg.towers) if cfg.towers else None)
         self.completed = 0
         self.findings: queue.Queue[Finding] = queue.Queue()
         self.game_version = None
@@ -143,8 +162,17 @@ class BotRunner:
         self.game_version = self.client_version()
         self._connect()
         stuck_since = None
+        watchdog = AppWatchdog(self.client.adb, PACKAGE)
         try:
             while self.completed < self.cfg.matches:
+                # Checked every pass, not only when liveness is quiet: a dead game shows a
+                # stuck launcher, whose findings would otherwise starve this check.
+                if watchdog.due() and watchdog.died():
+                    log.warning("watchdog: %s is not running; relaunching", PACKAGE)
+                    self.session.abort_match("app_died")
+                    self.client.adb.launch(PACKAGE)
+                    self.session.screen_since = time.monotonic()
+                    stuck_since = None
                 try:
                     f = self.findings.get(timeout=0.5)
                 except queue.Empty:
