@@ -11,22 +11,22 @@ parent: training-camp-v2
 deck: [knight, archers, minions, arrows, fireball, giant, musketeer, mini_pekka]
 win_conditions: [giant, musketeer]
 params:
-  act_threshold: 0.15
+  act_threshold: 0.08
   elixir_weight: 0.4
   defend_trigger_tiles: 12
   defend_horizon_s: 8.0
-  min_elixir_to_attack: 7
+  min_elixir_to_attack: 5
   press_opp_elixir_max: 3.0
   spell_value_threshold: 4.0
   spell_cycle_max_casts: 3
-  opening_ms: 30000
+  opening_ms: 15000
   min_action_gap_ms: 350
-  counter_push_bonus: 0.4
+  counter_push_bonus: 0.6
   attack_blocked_by_threat_eta_s: 8.0
 tier0:
   lethal_margin_hp: 30
   spell_tower_damage: {}        # fill in from the account's card levels
-  leak_threshold: 9.3
+  leak_threshold: 8.0
   leak_ms: 800
   leak_card_preference: [minions, knight, arrows]
   emergency_eta_s: 1.5
