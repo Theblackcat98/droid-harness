@@ -210,6 +210,7 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("run", help="play matches on a phone")
     for k in ("profile", "layout", "tiles", "templates", "screens", "strategy", "cards"):
         s.add_argument(f"--{k}", required=True)
+    s.add_argument("--arena", help="calibrated arena geometry (defaults to Arena())")
     s.add_argument("--data", default="data/matches")
     s.add_argument("--detector")
     s.add_argument("--classes")

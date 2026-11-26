@@ -152,3 +152,18 @@ def test_onnx_detector_decodes_end2end_and_raw_heads(tmp_path):
     assert len(out2) == 1 and out2[0].cls == "a" and out2[0].conf == pytest.approx(0.8)
     canvas, r, pad = letterbox(img, 64)
     assert canvas.shape == (64, 64, 3) and r == 0.5 and pad == (16, 0)
+
+
+def test_phone_a_result_reader():
+    """The real result banners/crowns must beat the dhash ambiguity."""
+    from pathlib import Path
+
+    import cv2
+
+    from droid_harness.domains.clash_royale.perception.screens import read_result
+
+    root = Path(__file__).resolve().parents[1] / "configs/domains/clash_royale/screens/phone-a"
+    assert read_result(cv2.imread(str(root / "RESULT_WIN__0.png"))) == "win"
+    assert read_result(cv2.imread(str(root / "RESULT_LOSS__0.png"))) == "loss"
+    assert read_result(cv2.imread(str(root / "RESULT_LOSS__1.png"))) == "loss"
+    assert read_result(cv2.imread(str(root / "IN_BATTLE__0.png"))) is None

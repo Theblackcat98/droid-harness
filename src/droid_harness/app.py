@@ -47,6 +47,7 @@ class RunConfig:
     screens: Path
     strategy: Path
     cards: Path
+    arena: Path | None = None
     data: Path = Path("data/matches")
     detector: Path | None = None
     classes: Path | None = None
@@ -84,7 +85,7 @@ class BotRunner:
         self.cfg = cfg
         self.profile = DeviceProfile(**{**yaml.safe_load(cfg.profile.read_text()), "name": cfg.profile.stem})
         self.cards = CardDB.load(cfg.cards)
-        self.arena = Arena()
+        self.arena = Arena.load(cfg.arena) if cfg.arena else Arena()
         self.layout = Layout.load(cfg.layout)
         self.tiles = TileMapper.load(cfg.tiles)
         _, self.params, self.strategy_id = load_strategy(cfg.strategy)

@@ -18,7 +18,7 @@ from ...core.transport.frame_slot import Frame
 from .actions import CRActionMapper
 from .menus import BATTLE_SCREENS, RESULT_SCREENS, MenuNavigator
 from .perception.pipeline import CRPerception
-from .perception.screens import ScreenClassifier
+from .perception.screens import ScreenClassifier, read_result
 from .policy.candidate import Decision
 from .policy.utility import CRPolicy
 from .state import GameState
@@ -61,27 +61,51 @@ class CRSession:
     def __init__(self, *, screens: ScreenClassifier, menus: MenuNavigator, perception: CRPerception,
                  policy: CRPolicy, mapper: CRActionMapper, recorder=None,
                  meta_factory: Callable[[], MatchMeta], on_match_end: Callable[[dict], None] | None = None,
-                 screen_every: int = 3) -> None:
+                 screen_every: int = 3, result_stable_frames: int = 3) -> None:
         self.screens, self.menus = screens, menus
         self.perception, self.policy, self.mapper = perception, policy, mapper
         self.recorder = recorder
         self.meta_factory = meta_factory
         self.on_match_end = on_match_end
         self.screen_every = screen_every
+        self.result_stable_frames = result_stable_frames
         self.screen = "UNKNOWN"
         self.screen_since = time.monotonic()
         self.match: MatchMeta | None = None
         self.last_state: GameState | None = None
         self.match_latency = LatencyStats()
         self._n = 0
+        self._candidate = "UNKNOWN"
+        self._candidate_n = 0
+        self._post_result = False
 
     # --- PerceptionProvider ---------------------------------------------------
     def process(self, frame: Frame) -> Observation:
         if self._n % self.screen_every == 0 or self.screen not in BATTLE_SCREENS:
             name, _ = self.screens.classify(frame.img)
+            # The top-only generic signature cannot tell a battle frame from a result
+            # banner (the opponent name/HP are in the same place).  In or after a match,
+            # always verify the result banners/crowns in the middle of the screen.
+            if (self.screen in RESULT_SCREENS or self.match is not None) and (
+                    name in BATTLE_SCREENS or name in RESULT_SCREENS):
+                actual = read_result(frame.img)
+                if actual is not None:
+                    name = f"RESULT_{actual.upper()}"
+                elif self.screen in RESULT_SCREENS:
+                    name = self.screen  # victory animation / still-post-match: never re-enter battle
+            if self._post_result and name in BATTLE_SCREENS:
+                name = self.screen  # wait for HOME/MENU/TRAINING_CONFIRM before a new match
+            if name in {"HOME", "MENU", "TRAINING_CONFIRM"}:
+                self._post_result = False
             # Inside a battle, transient overlays (emotes, effects) shouldn't end the match.
             if not (self.screen in BATTLE_SCREENS and name == "UNKNOWN"):
-                self._set_screen(name, frame)
+                if name == self._candidate:
+                    self._candidate_n += 1
+                else:
+                    self._candidate, self._candidate_n = name, 1
+                need = self.result_stable_frames if name in RESULT_SCREENS else 1
+                if self._candidate_n >= need:
+                    self._set_screen(name, frame)
         self._n += 1
         if self.screen in BATTLE_SCREENS:
             state = self.perception.process(frame)
@@ -131,6 +155,7 @@ class CRSession:
         if self.on_match_end:
             self.on_match_end(summary)
         self.match = None
+        self._post_result = True
         return summary
 
     def abort_match(self, reason: str) -> dict | None:
