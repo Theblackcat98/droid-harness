@@ -1,0 +1,133 @@
+"""Strategy files: versioned YAML params + counter table + rule code, content-hashed.
+
+``strategy_id`` = sha256(policy source code + YAML + counters + model files)[:12]. A
+strategy is immutable once it has played a logged match; edits make a child with
+``parent`` set.
+"""
+
+from __future__ import annotations
+
+import csv
+import hashlib
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field
+
+POLICY_DIR = Path(__file__).parent
+
+
+class Tier0Params(BaseModel):
+    lethal_margin_hp: int = 30
+    spell_tower_damage: dict[str, int] = Field(default_factory=dict)  # your levels; overrides the DB
+    leak_threshold: float = 9.3
+    leak_ms: int = 800
+    leak_card_preference: list[str] = Field(default_factory=list)
+    leak_tiles: dict[str, list[float]] = Field(default_factory=lambda: {"left": [5.5, 1.5], "right": [12.5, 1.5]})
+    emergency_eta_s: float = 1.5
+    emergency_hp_frac: float = 0.35
+
+
+class PlacementParams(BaseModel):
+    building_pull: dict[str, list[float]] = Field(default_factory=lambda: {"left": [7.5, 10.5],
+                                                                             "right": [10.5, 10.5]})
+    ranged_standoff_tiles: float = 3.0
+    bridge_tiles: dict[str, list[float]] = Field(default_factory=lambda: {"left": [3.5, 14.0],
+                                                                            "right": [14.5, 14.0]})
+    back_tiles: dict[str, list[float]] = Field(default_factory=lambda: {"left": [4.5, 1.5],
+                                                                          "right": [13.5, 1.5]})
+
+
+class StrategySpec(BaseModel):
+    strategy: str
+    parent: str | None = None
+    deck: list[str]
+    win_conditions: list[str] = Field(default_factory=list)
+    params: dict[str, Any] = Field(default_factory=dict)
+    tier0: Tier0Params = Field(default_factory=Tier0Params)
+    placement: PlacementParams = Field(default_factory=PlacementParams)
+    weights: dict[str, float] = Field(default_factory=dict)
+    posture_multipliers: dict[str, dict[str, float]] = Field(default_factory=dict)
+    counters: str | None = None
+    learned_ranker: str | None = None
+    intent_advisor: bool = False
+    advisor_may_set: list[str] = Field(default_factory=list)
+
+
+DEFAULT_PARAMS: dict[str, Any] = {
+    "act_threshold": 0.15,
+    "elixir_weight": 0.4,
+    "defend_trigger_tiles": 12.0,
+    "defend_horizon_s": 8.0,
+    "min_elixir_to_attack": 7.0,
+    "press_opp_elixir_max": 3.0,
+    "spell_value_threshold": 4.0,
+    "spell_cycle_max_casts": 3,
+    "opening_ms": 30_000,
+    "min_action_gap_ms": 350,
+    "counter_push_bonus": 0.4,
+    "attack_blocked_by_threat_eta_s": 8.0,
+}
+
+
+class Params:
+    """Attribute access over params with defaults; unknown names raise."""
+
+    def __init__(self, spec: StrategySpec, counters: dict[tuple[str, str], float]) -> None:
+        self.spec = spec
+        self._p = {**DEFAULT_PARAMS, **spec.params}
+        self.counters = counters
+        self.tier0 = spec.tier0
+        self.placement = spec.placement
+        self.weights = spec.weights
+        self.posture_multipliers = spec.posture_multipliers
+        self.advisor_may_set = set(spec.advisor_may_set)
+        self.deck = spec.deck
+        self.win_conditions = spec.win_conditions
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self.__dict__["_p"][name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def weight(self, rule_id: str) -> float:
+        return self.weights.get(rule_id, 1.0)
+
+
+def load_counters(path: str | Path | None) -> dict[tuple[str, str], float]:
+    """CSV with header ``card,threat,effectiveness`` (0..1)."""
+    if not path:
+        return {}
+    out = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            out[(row["card"].strip(), row["threat"].strip())] = float(row["effectiveness"])
+    return out
+
+
+def policy_source_hash() -> str:
+    h = hashlib.sha256()
+    for p in sorted(POLICY_DIR.rglob("*.py")):
+        h.update(p.relative_to(POLICY_DIR).as_posix().encode())
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def strategy_id(yaml_bytes: bytes, counters_bytes: bytes = b"", model_bytes: bytes = b"") -> str:
+    h = hashlib.sha256()
+    for part in (policy_source_hash().encode(), yaml_bytes, counters_bytes, model_bytes):
+        h.update(hashlib.sha256(part).digest())
+    return h.hexdigest()[:12]
+
+
+def load_strategy(path: str | Path) -> tuple[StrategySpec, Params, str]:
+    path = Path(path)
+    raw = path.read_bytes()
+    spec = StrategySpec(**yaml.safe_load(raw))
+    counters_path = (path.parent / spec.counters) if spec.counters else None
+    counters_bytes = counters_path.read_bytes() if counters_path else b""
+    model_bytes = (path.parent / spec.learned_ranker).read_bytes() if spec.learned_ranker else b""
+    params = Params(spec, load_counters(counters_path))
+    return spec, params, strategy_id(raw, counters_bytes, model_bytes)

@@ -1,0 +1,18 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+data/
+vendor/
+models/
+*.onnx
+*.h264
+# per-phone and locally built config
+configs/device_profiles/*.yaml
+!configs/device_profiles/*.example.yaml
+configs/domains/clash_royale/cards.json
+configs/domains/clash_royale/tiles/
+configs/domains/clash_royale/templates/
+configs/domains/clash_royale/screens/
+configs/domains/clash_royale/digits/

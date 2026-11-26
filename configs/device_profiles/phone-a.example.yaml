@@ -1,0 +1,15 @@
+# Copy to phone-a.yaml (gitignored) and fill in. One file per phone.
+serial: R5CT1234ABC              # `adb devices`
+local_port: 27183                # unique per phone (phone-b: 27184)
+account: throwaway-1             # never your main Supercell ID
+scrcpy_server_version: "5.0"     # must equal the jar you push (scrcpy_server_jar)
+scrcpy_server_jar: vendor/scrcpy-server-v5.0
+max_size: 1024                   # sweep 720 / 1024 / 1280: judge by small-unit recall AND latency
+max_fps: 60
+video_bit_rate: 8000000
+video_encoder: null              # `scrcpy --list-encoders`; pick the hardware H.264 encoder
+codec_options: "priority:int=0,latency:int=0"
+crop: null
+display_power_on_byte: 1         # "on" payload for your pinned version (older servers: 2)
+turn_display_off: true           # panel off during unattended runs; capture continues
+exec_latency_ms: 40              # from `droid-harness loopback`; used for lead targeting

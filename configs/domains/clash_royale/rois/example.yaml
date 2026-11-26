@@ -1,0 +1,30 @@
+# EXAMPLE ONLY — these regions describe the synthetic test scene, not the real game.
+# Calibrate on your phone: save a frame (droid-harness stream --save-frame), measure each region
+# as fractions of width/height, and write your own copy (e.g. rois/phone-a.yaml).
+hand:
+- [0.2, 0.835, 0.37, 0.955]
+- [0.395, 0.835, 0.5650000000000001, 0.955]
+- [0.5900000000000001, 0.835, 0.7600000000000001, 0.955]
+- [0.7849999999999999, 0.835, 0.955, 0.955]
+next_card: [0.03, 0.875, 0.15, 0.955]
+elixir_bar: [0.2, 0.965, 0.98, 0.99]
+clock: [0.8, 0.0, 0.99, 0.04]
+towers:
+  opp_left: [0.1, 0.17, 0.3, 0.2]
+  opp_right: [0.7, 0.17, 0.9, 0.2]
+  opp_king: [0.4, 0.06, 0.6, 0.09]
+  me_left: [0.1, 0.7, 0.3, 0.73]
+  me_right: [0.7, 0.7, 0.9, 0.73]
+  me_king: [0.4, 0.77, 0.6, 0.8]
+arena: [0.0, 0.05, 1.0, 0.8]
+buttons:
+  menu: [0.85, 0.02, 0.98, 0.07]
+  training_camp: [0.3, 0.4, 0.7, 0.47]
+  confirm: [0.35, 0.6, 0.65, 0.66]
+  ok: [0.4, 0.85, 0.6, 0.9]
+  close: [0.85, 0.1, 0.95, 0.15]
+screen_regions:
+- [0, 0, 1, 0.5]
+- [0, 0.5, 1, 1]
+elixir_hsv_lo: [140, 80, 120]
+elixir_hsv_hi: [170, 255, 255]

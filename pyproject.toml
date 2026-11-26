@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "droid-harness"
+version = "0.1.0"
+description = "Low-latency Android agent harness (Clash Royale reference game, general Android automation)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary — private project" }
+dependencies = [
+  "numpy>=1.26",
+  "opencv-python-headless>=4.9",
+  "av>=12",
+  "pyyaml>=6",
+  "pydantic>=2.5",
+  "duckdb>=1.0",
+]
+
+[project.optional-dependencies]
+detector = ["onnxruntime>=1.18"]
+tuning = ["optuna>=3.6"]
+coach = ["anthropic>=0.40"]
+dev = ["pytest>=8", "onnx>=1.16", "onnxruntime>=1.18", "ruff>=0.5"]
+
+[project.scripts]
+droid-harness = "droid_harness.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]

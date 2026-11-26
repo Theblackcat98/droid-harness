@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "source": "hand-written test fixture",
+    "warning": "Elixir costs are real; every other number here is a round test value, not game data. Build the real DB with tools/build_card_db.py."
+  },
+  "cards": {
+    "hog_rider":   {"name": "Hog Rider", "cost": 4, "kind": "troop", "speed_tiles_s": 2.0, "range_tiles": 0.8, "hitpoints": 800, "buildings_only": true},
+    "musketeer":   {"name": "Musketeer", "cost": 4, "kind": "troop", "speed_tiles_s": 1.0, "range_tiles": 6.0, "hitpoints": 340, "targets_air": true},
+    "ice_golem":   {"name": "Ice Golem", "cost": 2, "kind": "troop", "speed_tiles_s": 0.75, "range_tiles": 0.75, "hitpoints": 565, "buildings_only": true},
+    "cannon":      {"name": "Cannon", "cost": 3, "kind": "building", "range_tiles": 5.5, "hitpoints": 350},
+    "fireball":    {"name": "Fireball", "cost": 4, "kind": "spell", "damage": 325, "ct_damage_pct": 30, "projectile_speed_tiles_s": 10.0, "radius_tiles": 2.5},
+    "the_log":     {"name": "The Log", "cost": 2, "kind": "spell", "damage": 200, "ct_damage_pct": 20, "projectile_speed_tiles_s": 7.0, "radius_tiles": 1.95},
+    "ice_spirit":  {"name": "Ice Spirit", "cost": 1, "kind": "troop", "speed_tiles_s": 2.0, "range_tiles": 2.5, "hitpoints": 90, "targets_air": true},
+    "skeletons":   {"name": "Skeletons", "cost": 1, "kind": "troop", "units": 3, "speed_tiles_s": 1.5, "range_tiles": 0.5, "hitpoints": 32, "unit_classes": ["skeleton"]},
+    "golem":       {"name": "Golem", "cost": 8, "kind": "troop", "deploy_time_s": 3.0, "speed_tiles_s": 0.75, "range_tiles": 0.75, "hitpoints": 3200, "buildings_only": true, "unit_classes": ["golem"]},
+    "night_witch": {"name": "Night Witch", "cost": 4, "kind": "troop", "speed_tiles_s": 1.0, "range_tiles": 1.6, "hitpoints": 750},
+    "knight":      {"name": "Knight", "cost": 3, "kind": "troop", "speed_tiles_s": 1.0, "range_tiles": 1.2, "hitpoints": 690},
+    "arrows":      {"name": "Arrows", "cost": 3, "kind": "spell", "damage": 120, "ct_damage_pct": 25, "projectile_speed_tiles_s": 13.0, "radius_tiles": 4.0},
+    "baby_dragon": {"name": "Baby Dragon", "cost": 4, "kind": "troop", "speed_tiles_s": 1.5, "range_tiles": 3.5, "hitpoints": 800, "flying": true, "targets_air": true},
+    "balloon":     {"name": "Balloon", "cost": 5, "kind": "troop", "speed_tiles_s": 1.0, "range_tiles": 0.1, "hitpoints": 1050, "flying": true, "buildings_only": true},
+    "minions":     {"name": "Minions", "cost": 3, "kind": "troop", "units": 3, "speed_tiles_s": 1.5, "range_tiles": 2.0, "hitpoints": 90, "flying": true, "targets_air": true, "unit_classes": ["minion"]}
+  }
+}

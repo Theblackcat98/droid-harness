@@ -1,0 +1,10 @@
+# Landmarks for `droid-harness calibrate-tiles`. Click these on a saved frame and record pixels.
+# Tiles use the 18 x 32 model: x 0 (left) .. 18, y 0 (your back edge) .. 32. Confirm on your phone.
+frame_size: [460, 1024]
+points:
+  - {name: my_left_princess,  px: [0, 0], tile: [3.5, 6.5]}
+  - {name: my_right_princess, px: [0, 0], tile: [14.5, 6.5]}
+  - {name: opp_left_princess, px: [0, 0], tile: [3.5, 25.5]}
+  - {name: opp_right_princess, px: [0, 0], tile: [14.5, 25.5]}
+  - {name: left_bridge_mid,   px: [0, 0], tile: [3.5, 16.0]}
+  - {name: right_bridge_mid,  px: [0, 0], tile: [14.5, 16.0]}
