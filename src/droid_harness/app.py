@@ -163,6 +163,11 @@ class BotRunner:
                         self.client.adb.force_stop(PACKAGE)
                         self.client.adb.launch(PACKAGE)
                         stuck_since = None
+                    elif self.session.screen in ("RESULT_WIN", "RESULT_LOSS", "RESULT_DRAW"):
+                        # BACK on the result screen opens the "Return to the Main Menu?"
+                        # confirmation and stalls the run. The normal menu flow already
+                        # taps `ok` on result screens, so just let it work.
+                        pass
                     else:
                         self.client.keycode(KEYCODE_BACK)
                     self.session.screen_since = time.monotonic()

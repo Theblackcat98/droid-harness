@@ -34,21 +34,33 @@ policy, touch injection, recording, triage or SPRT.
 
 ### Known issues
 
-1. **Result settling is not reliable yet.** On the last full-policy run the final screen
-   was Trainer Jonas 2 – 1 theblackcat99 (a loss), but the summary recorded a win. The
-   verifier caught an intermediate crown-reveal frame. Fix: after a result is detected,
-   wait ~1.0–1.5 s (or require ~20 stable frames), re-read the final crowns, then end the
-   match.
+1. **Result settling is fixed in code, live re-validation pending.** The verifier
+   used to catch an intermediate crown-reveal frame (Trainer Jonas 2 – 1 logged as a
+   win). Now `read_result_detail()` returns the full `(outcome, opp_crowns, my_crowns)`
+   triple, `CRSession` requires the triple to repeat (`result_stable_frames` plus
+   ~1.2 s settle, 20-frame fallback) before ending the match, and summaries carry the
+   real crown counts instead of 0/0. A live check then found a second hole: the
+   classifier's unverified `RESULT_*` label could still end a match during the
+   victory animation (banners below threshold). Mid-match unverified labels are now
+   ignored entirely. Covered by
+   `test_result_settling_ignores_intermediate_crowns` and
+   `test_unverified_result_label_does_not_end_match`; live-validated 2026-11-26
+   (match `cdcaa1835b09`: summary `loss` 0–3 matches the final screen, crowns from
+   the settled triple).
 2. **No detector.** The bot cannot see units, so it cannot defend. This is the gating
    item for a repeatable win.
-3. **No tower-HP digits**, so `my_crowns`/`opp_crowns` are 0/0 even on a real result.
+3. **No tower-HP digits**, so mid-match tower HP still comes from the tracker only;
+   final `my_crowns`/`opp_crowns` now fall back to the settled crown counts.
 4. **High perception warnings** (`hand_unreadable`, `affordability_mismatch`) during
    intro/selected/greyed states.
-5. **Recovery is incomplete.** A result screen can ignore injected taps; the liveness
-   BACK key opens a “Return to the Main Menu?” dialog. Overnight runs need a dedicated
-   result/popup flow or a force-stop fallback.
-6. **No experiment runner.** `flywheel/eval/sprt.py` and `inclusion.py` exist, but
-   `flywheel/eval/runner.py` is missing, so champion/candidate runs are not automated.
+5. **Recovery is mostly fixed in code.** The liveness `recover_ui` path no longer sends
+   BACK on result screens (it opened the exit-match confirmation), `UNKNOWN` screens
+   fall back to the `close` button, and a 60 s stuck screen still force-stops and
+   relaunches the game. Needs an overnight soak to prove it.
+6. **Experiment runner is implemented, not yet run live.** `flywheel/eval/runner.py`
+   plus `droid-harness run-experiment` alternate champion/candidate, tag
+   `experiment_id`/`arm`, void on game-version change, stop on SPRT, and write the
+   ledger + warehouse `experiments` table (unit-tested, no live SPRT yet).
 
 ## Architecture of the overnight loop
 

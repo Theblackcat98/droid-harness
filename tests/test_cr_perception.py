@@ -160,10 +160,16 @@ def test_phone_a_result_reader():
 
     import cv2
 
-    from droid_harness.domains.clash_royale.perception.screens import read_result
+    from droid_harness.domains.clash_royale.perception.screens import read_result, read_result_detail
 
     root = Path(__file__).resolve().parents[1] / "configs/domains/clash_royale/screens/phone-a"
     assert read_result(cv2.imread(str(root / "RESULT_WIN__0.png"))) == "win"
     assert read_result(cv2.imread(str(root / "RESULT_LOSS__0.png"))) == "loss"
     assert read_result(cv2.imread(str(root / "RESULT_LOSS__1.png"))) == "loss"
     assert read_result(cv2.imread(str(root / "IN_BATTLE__0.png"))) is None
+    # Detail returns crowns from the correct sides: bottom is yours, top is theirs.
+    outcome, opp, my = read_result_detail(cv2.imread(str(root / "RESULT_WIN__0.png")))
+    assert outcome == "win" and my > opp
+    outcome, opp, my = read_result_detail(cv2.imread(str(root / "RESULT_LOSS__0.png")))
+    assert outcome == "loss" and opp > my
+    assert read_result_detail(cv2.imread(str(root / "IN_BATTLE__0.png")))[0] is None

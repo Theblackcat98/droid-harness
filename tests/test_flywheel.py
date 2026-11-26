@@ -233,3 +233,48 @@ def test_replay_diff_gate(arena, cards, strategy):
 
     crashed = replay_diff(champion, Broken(cards, arena, params), states)
     assert crashed.errors == len(states) and not gate(crashed, 100)[0]
+
+
+def test_experiment_runner_alternates_and_decides(tmp_path):
+    from droid_harness.flywheel.eval.runner import ExperimentConfig, ExperimentRunner
+
+    cfg = ExperimentConfig(experiment_id="EXP-0001", champion_id="champ", candidate_id="cand",
+                           game_version="9.x", balance_epoch="2026-11", max_games=400)
+    r = ExperimentRunner(cfg)
+    assert [r.next_arm() for _ in range(4)] == ["champion", "candidate", "champion", "candidate"]
+    # Feed alternating arms: candidate sweeps, champion collapses -> fast accept_H1.
+    arms = ["champion", "candidate"] * 200
+    n = 0
+    for i, arm in enumerate(arms):
+        result = "win" if arm == "candidate" else "loss"
+        if i % 10 == 9:  # draws don't move the SPRT
+            result = "draw"
+        r.record({"match_id": f"m{i}", "arm": arm, "game_version": "9.x",
+                  "status": "completed", "result": result})
+        n += 1
+        if r.done:
+            break
+    assert r.status == "accepted" and r.decision.decision == "accept_H1"
+    assert r.tallies()["candidate"].wins > r.tallies()["champion"].wins
+    tmp_ledger = tmp_path / "exp.jsonl"
+    r.write_ledger(str(tmp_ledger))
+    assert tmp_ledger.exists()
+    from droid_harness.flywheel import warehouse
+    con = warehouse.connect(tmp_path / "w.duckdb")
+    r.write_warehouse(con)
+    row = con.execute("select status, wins from experiments where experiment_id='EXP-0001'").fetchone()
+    assert row[0] == "accepted"
+    con.close()
+    assert n < 400  # stopped early on the SPRT decision
+
+
+def test_experiment_runner_voids_on_game_update():
+    from droid_harness.flywheel.eval.runner import ExperimentConfig, ExperimentRunner
+
+    r = ExperimentRunner(ExperimentConfig(experiment_id="EXP-0002", game_version="9.x"))
+    r.record({"match_id": "m1", "arm": "candidate", "game_version": "9.x",
+              "status": "completed", "result": "win"})
+    assert r.status == "running" and not r.done
+    r.record({"match_id": "m2", "arm": "champion", "game_version": "10.x",
+              "status": "completed", "result": "win"})
+    assert r.status == "void" and r.done and "10.x" in (r.void_reason or "")

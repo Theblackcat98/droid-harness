@@ -22,6 +22,7 @@ DEFAULT_FLOWS: dict[str, dict[str, list[str]]] = {
         "RESULT_LOSS": ["ok"],
         "RESULT_DRAW": ["ok"],
         "POPUP": ["close"],
+        "UNKNOWN": ["close"],
     },
     "friendly": {  # self-play: one phone hosts, the other accepts (see eval/selfplay.py)
         "HOME": ["social"],
@@ -31,6 +32,7 @@ DEFAULT_FLOWS: dict[str, dict[str, list[str]]] = {
         "RESULT_LOSS": ["ok"],
         "RESULT_DRAW": ["ok"],
         "POPUP": ["close"],
+        "UNKNOWN": ["close"],
     },
 }
 BATTLE_SCREENS = {"IN_BATTLE"}

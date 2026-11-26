@@ -18,7 +18,7 @@ from ...core.transport.frame_slot import Frame
 from .actions import CRActionMapper
 from .menus import BATTLE_SCREENS, RESULT_SCREENS, MenuNavigator
 from .perception.pipeline import CRPerception
-from .perception.screens import ScreenClassifier, read_result
+from .perception.screens import ScreenClassifier, read_result_detail
 from .policy.candidate import Decision
 from .policy.utility import CRPolicy
 from .state import GameState
@@ -61,7 +61,8 @@ class CRSession:
     def __init__(self, *, screens: ScreenClassifier, menus: MenuNavigator, perception: CRPerception,
                  policy: CRPolicy, mapper: CRActionMapper, recorder=None,
                  meta_factory: Callable[[], MatchMeta], on_match_end: Callable[[dict], None] | None = None,
-                 screen_every: int = 3, result_stable_frames: int = 3) -> None:
+                 screen_every: int = 3, result_stable_frames: int = 3,
+                 result_settle_s: float = 1.2) -> None:
         self.screens, self.menus = screens, menus
         self.perception, self.policy, self.mapper = perception, policy, mapper
         self.recorder = recorder
@@ -69,6 +70,7 @@ class CRSession:
         self.on_match_end = on_match_end
         self.screen_every = screen_every
         self.result_stable_frames = result_stable_frames
+        self.result_settle_s = result_settle_s
         self.screen = "UNKNOWN"
         self.screen_since = time.monotonic()
         self.match: MatchMeta | None = None
@@ -78,6 +80,13 @@ class CRSession:
         self._candidate = "UNKNOWN"
         self._candidate_n = 0
         self._post_result = False
+        # Result settling: the crown-reveal animation passes through intermediate
+        # counts, so a result only ends the match after the full
+        # (outcome, opp_crowns, my_crowns) triple repeats.
+        self._pending_key: tuple[str, int, int] | None = None
+        self._pending_n = 0
+        self._pending_since = 0.0
+        self._result_crowns: tuple[int, int] | None = None  # (my, opp)
 
     # --- PerceptionProvider ---------------------------------------------------
     def process(self, frame: Frame) -> Observation:
@@ -88,23 +97,46 @@ class CRSession:
             # always verify the result banners/crowns in the middle of the screen.
             if (self.screen in RESULT_SCREENS or self.match is not None) and (
                     name in BATTLE_SCREENS or name in RESULT_SCREENS):
-                actual = read_result(frame.img)
+                actual, opp_c, my_c = read_result_detail(frame.img)
                 if actual is not None:
-                    name = f"RESULT_{actual.upper()}"
-                elif self.screen in RESULT_SCREENS:
-                    name = self.screen  # victory animation / still-post-match: never re-enter battle
+                    key = (actual, opp_c, my_c)
+                    now = time.monotonic()
+                    if key != self._pending_key:
+                        self._pending_key, self._pending_n, self._pending_since = key, 1, now
+                    else:
+                        self._pending_n += 1
+                    time_ok = (now - self._pending_since) >= self.result_settle_s
+                    frames_ok = self._pending_n >= self.result_stable_frames
+                    # Time-based settle, with a frame-count fallback (some harnesses
+                    # feed frames faster than the wall clock advances in tests).
+                    if (frames_ok and time_ok) or self._pending_n >= 20:
+                        self._result_crowns = (my_c, opp_c)
+                        name = f"RESULT_{actual.upper()}"
+                    else:
+                        name = self.screen  # still settling: don't leave the battle yet
+                else:
+                    self._pending_key, self._pending_n = None, 0
+                    if self.match is not None:
+                        # Mid-match the classifier's RESULT label is untrusted on its
+                        # own (the top HUD dhash confuses win/loss banners and fires
+                        # during the victory animation). Stay in battle until the
+                        # banners/crowns verify and settle.
+                        name = self.screen
+                    elif self.screen in RESULT_SCREENS:
+                        name = self.screen  # victory animation / still-post-match: never re-enter battle
             if self._post_result and name in BATTLE_SCREENS:
                 name = self.screen  # wait for HOME/MENU/TRAINING_CONFIRM before a new match
             if name in {"HOME", "MENU", "TRAINING_CONFIRM"}:
                 self._post_result = False
             # Inside a battle, transient overlays (emotes, effects) shouldn't end the match.
+            # Note: result stability is already enforced by the settling triple above
+            # (stable frames + settle time), so the generic debounce stays at 1 here.
             if not (self.screen in BATTLE_SCREENS and name == "UNKNOWN"):
                 if name == self._candidate:
                     self._candidate_n += 1
                 else:
                     self._candidate, self._candidate_n = name, 1
-                need = self.result_stable_frames if name in RESULT_SCREENS else 1
-                if self._candidate_n >= need:
+                if self._candidate_n >= 1:
                     self._set_screen(name, frame)
         self._n += 1
         if self.screen in BATTLE_SCREENS:
@@ -132,14 +164,21 @@ class CRSession:
         self.match.start_pts_us = frame.pts_us
         self.policy.reset_match()
         self.match_latency = LatencyStats()
+        self._pending_key, self._pending_n = None, 0
+        self._result_crowns = None
         if self.recorder is not None:
             self.recorder.start_match(self.match.match_id, self.match.__dict__)
 
     def _end_match(self, result: str, status: str) -> dict:
         s = self.last_state
+        if self._result_crowns is not None and status == "completed":
+            my_crowns, opp_crowns = self._result_crowns
+        else:
+            my_crowns = s.crowns[0] if s else None
+            opp_crowns = s.crowns[1] if s else None
         summary = {
             **self.match.__dict__, "status": status, "result": result,
-            "my_crowns": s.crowns[0] if s else None, "opp_crowns": s.crowns[1] if s else None,
+            "my_crowns": my_crowns, "opp_crowns": opp_crowns,
             "duration_s": (s.t_ms / 1000) if s else None,
             "overtime": bool(s and s.phase.startswith("ot")),
             "elixir_leaked": round(self.perception.elixir.leaked, 2),

@@ -79,6 +79,29 @@ def _large_gold_components(img: np.ndarray, y0: float, y1: float, min_area: int 
     return sum(1 for s in stats[1:] if s[4] >= min_area)
 
 
+def read_result_detail(img: np.ndarray) -> tuple[str | None, int, int]:
+    """Return ``(outcome, opp_crowns, my_crowns)`` for a result screen.
+
+    ``outcome`` is ``win``/``loss``/``draw`` from *your* perspective (bottom banner
+    is yours), or ``None`` when the result banners are absent.  Crown counts are the
+    capped connected-component counts in each crown row; callers that need a stable
+    final result should require the full triple to repeat before trusting it, since
+    the crown-reveal animation passes through intermediate counts.
+    """
+    top_pink = _colour_fraction(img, 0.08, 0.24, 0.92, 0.36, (160, 80, 80), (180, 255, 255))
+    top_red = _colour_fraction(img, 0.08, 0.24, 0.92, 0.36, (0, 120, 80), (10, 255, 255))
+    bottom_blue = _colour_fraction(img, 0.08, 0.44, 0.92, 0.56, (95, 80, 60), (130, 255, 255))
+    if max(top_pink, top_red) < 0.30 or bottom_blue < 0.20:
+        return None, 0, 0
+    top = min(3, _large_gold_components(img, *_CROWN_TOP))
+    bottom = min(3, _large_gold_components(img, *_CROWN_BOTTOM))
+    if bottom > top:
+        return "win", top, bottom
+    if top > bottom:
+        return "loss", top, bottom
+    return "draw", top, bottom
+
+
 def read_result(img: np.ndarray) -> str | None:
     """Return ``win``/``loss``/``draw`` for a result screen, else ``None``.
 
@@ -86,15 +109,5 @@ def read_result(img: np.ndarray) -> str | None:
     cannot be mistaken for a result.  The player with more gold crowns wins; equal
     crowns is a draw (the game's lowest-tower tiebreak is not modeled here).
     """
-    top_pink = _colour_fraction(img, 0.08, 0.24, 0.92, 0.36, (160, 80, 80), (180, 255, 255))
-    top_red = _colour_fraction(img, 0.08, 0.24, 0.92, 0.36, (0, 120, 80), (10, 255, 255))
-    bottom_blue = _colour_fraction(img, 0.08, 0.44, 0.92, 0.56, (95, 80, 60), (130, 255, 255))
-    if max(top_pink, top_red) < 0.30 or bottom_blue < 0.20:
-        return None
-    top = min(3, _large_gold_components(img, *_CROWN_TOP))
-    bottom = min(3, _large_gold_components(img, *_CROWN_BOTTOM))
-    if bottom > top:
-        return "win"
-    if top > bottom:
-        return "loss"
-    return "draw"
+    outcome, _, _ = read_result_detail(img)
+    return outcome

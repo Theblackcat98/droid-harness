@@ -152,6 +152,69 @@ def cmd_sprt(a) -> None:
     print(f"{r.decision}  LLR {r.llr:+.3f}  bounds [{r.lower:.3f}, {r.upper:.3f}]")
 
 
+def cmd_experiment(a) -> None:
+    """Alternate champion/candidate Training Camp matches until SPRT decides (M5)."""
+    from .app import BotRunner, RunConfig
+    from .domains.clash_royale.policy.strategy import load_strategy
+    from .flywheel import warehouse
+    from .flywheel.eval.runner import ExperimentConfig, ExperimentRunner
+    from .flywheel.ledger import Ledger
+
+    _, _, champ_sid = load_strategy(a.champion)
+    _, _, cand_sid = load_strategy(a.candidate)
+    store = Ledger(a.store)
+    exp_id = a.experiment_id or store.next_id()
+    # Detect the game version once before the loop; the runner voids on change.
+    probe = RunConfig(**{k: (Path(v) if isinstance(v, str) and k not in ("mode", "opponent_id",
+                         "balance_epoch", "experiment_id", "arm") else v)
+                         for k, v in vars(a).items()
+                         if k in RunConfig.__dataclass_fields__ and v is not None})
+    game_version = BotRunner(probe).client_version()
+    runner = ExperimentRunner(ExperimentConfig(
+        experiment_id=exp_id, title=a.title, hypothesis=a.hypothesis, proposer=a.proposer,
+        champion_id=champ_sid, candidate_id=cand_sid, test=a.test,
+        p0=a.p0, p1=a.p1, alpha=a.alpha, beta=a.beta,
+        game_version=game_version or "", balance_epoch=a.balance_epoch or "",
+        max_games=a.max_games))
+    seen: set[str] = set()
+    data_root = Path(a.data)
+    for _ in range(a.max_games):
+        if runner.done:
+            break
+        arm = runner.next_arm()
+        strat = a.champion if arm == "champion" else a.candidate
+        cfg = RunConfig(**{k: (Path(v) if isinstance(v, str) and k not in ("mode", "opponent_id",
+                             "balance_epoch", "experiment_id", "arm") else v)
+                            for k, v in vars(a).items()
+                            if k in RunConfig.__dataclass_fields__ and v is not None})
+        cfg.strategy = Path(strat)
+        cfg.experiment_id, cfg.arm, cfg.matches = exp_id, arm, 1
+        BotRunner(cfg).run()
+        for p in sorted(data_root.glob("*/summary.json")):
+            if str(p) in seen:
+                continue
+            seen.add(str(p))
+            try:
+                s = json.loads(p.read_text())
+            except Exception:
+                continue
+            if s.get("experiment_id") != exp_id:
+                continue
+            r = runner.record(s)
+            print(json.dumps({"match": s.get("match_id"), "arm": arm, "result": s.get("result"),
+                              "sprt": r.decision, "llr": round(r.llr, 3)}))
+        runner.write_ledger(a.store)
+        try:
+            con = warehouse.connect(a.db)
+            runner.write_warehouse(con)
+            con.close()
+        except Exception as e:  # warehouse must never stop the loop
+            print(f"warehouse write failed: {e}")
+    print(json.dumps({"experiment_id": exp_id, "status": runner.status,
+                      "matches": len(runner.matches), "decision": runner.decision.__dict__
+                      if runner.decision else None, "void": runner.void_reason}))
+
+
 def cmd_schedule(a) -> None:
     from .flywheel.eval.selfplay import Seat, balance_report, schedule
 
@@ -243,6 +306,33 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--alpha", type=float, default=0.05)
     s.add_argument("--beta", type=float, default=0.05)
     s.set_defaults(fn=cmd_sprt)
+
+    s = sub.add_parser("run-experiment", help="alternate champion/candidate until SPRT decides")
+    for k in ("profile", "layout", "tiles", "templates", "screens", "cards"):
+        s.add_argument(f"--{k}", required=True)
+    s.add_argument("--champion", required=True, help="champion strategy YAML")
+    s.add_argument("--candidate", required=True, help="candidate strategy YAML")
+    s.add_argument("--arena", help="calibrated arena geometry")
+    s.add_argument("--data", default="data/matches")
+    s.add_argument("--detector")
+    s.add_argument("--classes")
+    s.add_argument("--digits")
+    s.add_argument("--mode", default="training_camp", choices=["training_camp", "friendly"])
+    s.add_argument("--opponent-id", dest="opponent_id")
+    s.add_argument("--balance-epoch", dest="balance_epoch")
+    s.add_argument("--experiment-id", dest="experiment_id")
+    s.add_argument("--title", default="")
+    s.add_argument("--hypothesis", default="")
+    s.add_argument("--proposer", default="human")
+    s.add_argument("--test", default="sprt_h2h", choices=["sprt_h2h", "sprt_paired"])
+    s.add_argument("--p0", type=float, default=0.5)
+    s.add_argument("--p1", type=float, default=0.58)
+    s.add_argument("--alpha", type=float, default=0.05)
+    s.add_argument("--beta", type=float, default=0.05)
+    s.add_argument("--max-games", dest="max_games", type=int, default=400)
+    s.add_argument("--store", default="ledger/experiments.jsonl")
+    s.add_argument("--db", default="data/warehouse.duckdb")
+    s.set_defaults(fn=cmd_experiment)
 
     s = sub.add_parser("selfplay-schedule", help="two-phone schedule with strategy<->seat swapping")
     s.add_argument("--games", type=int, default=200)
