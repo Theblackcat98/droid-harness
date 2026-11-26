@@ -117,6 +117,8 @@ def test_recorder_writes_config_first_and_decodable_stream(tmp_path):
     with av.open(str(d / "stream.h264"), format="h264") as container:  # decodes on its own
         n_frames = sum(1 for _ in container.decode(video=0))
     assert n_frames >= 5
+    pts = [int(x) for x in (d / "stream.pts").read_text().split()]
+    assert len(pts) == n_frames and pts == sorted(pts)  # one device timestamp per frame, for replay
     assert json.loads((d / "decisions.jsonl").read_text().splitlines()[0])["rule"] == "defend.lane_threat"
     assert json.loads((d / "summary.json").read_text())["result"] == "win"
 
@@ -134,3 +136,79 @@ def test_loopback_measures_injected_delay():
         srv.stop()
     assert r["timeouts"] == 0 and r["n"] == 5
     assert 50 <= r["p50"] < 50 + 60  # injected delay + at most ~3 frames at 60 fps
+
+
+def test_soak_static_stream_has_no_reconnects_and_broken_session_reconnects():
+    import threading
+
+    from droid_harness.core.config import DeviceProfile
+    from droid_harness.core.runtime.liveness import LivenessPolicy
+    from droid_harness.core.telemetry.soak import soak
+    from droid_harness.core.transport.scrcpy_bridge import ScrcpyClient
+    from droid_harness.sim.fake_scrcpy import FakeScrcpyServer, free_port
+
+    servers = []
+
+    def make_client():
+        port = free_port()
+        servers.append(FakeScrcpyServer(port, width=64, height=128, fps=30, static_after_frames=5).start())
+        return ScrcpyClient(DeviceProfile(name="sim", serial="sim", local_port=port, scrcpy_server_version="5.0"))
+
+    quiet = LivenessPolicy(ping_fail_s=600)  # no adb in CI; liveness pings are not under test
+    try:
+        r = soak(make_client, 1.5, start_kw={"launch": False}, policy=quiet, ping_every_s=1e9)
+        assert r["reconnects"] == 0 and r["frames"] >= 1 and r["verdict"] == "ok"  # static menu != broken
+
+        servers.clear()
+        threading.Timer(0.6, lambda: servers[0].stop()).start()  # kill the first session mid-soak
+        r = soak(make_client, 2.5, start_kw={"launch": False}, policy=quiet, ping_every_s=1e9, backoff_s=0.2)
+        assert r["reconnects"] >= 1 and r["findings"].get("session_broken", 0) >= 1 and len(servers) >= 2
+    finally:
+        for s in servers:
+            s.stop()
+
+
+def test_app_watchdog_needs_a_live_sighting_before_acting():
+    from droid_harness.core.runtime.watchdog import AppWatchdog
+
+    class FakeAdb:
+        def __init__(self, seq):
+            self.seq = list(seq)
+
+        def pidof(self, package):
+            return self.seq.pop(0)
+
+    t = [0.0]
+    w = AppWatchdog(FakeAdb(["", "", "123", "123", "", "", "456"]), "pkg", every_s=10, clock=lambda: t[0])
+    results = []
+    for _ in range(7):
+        assert w.due()
+        results.append(w.died())
+        assert not w.due()
+        t[0] += 10
+    # unknown, unknown (pidof never seen working), alive, alive, DIED, still down (not re-reported), back
+    assert results == [False, False, False, False, True, False, False] and w.deaths == 1
+
+
+def test_replay_diff_cli_gates_on_logged_states(tmp_path, capsys):
+    import json
+    from pathlib import Path
+
+    from droid_harness.cli import main
+    from droid_harness.domains.clash_royale.state import GameState
+
+    root = Path(__file__).resolve().parents[1]
+    m = tmp_path / "m1"
+    m.mkdir()
+    states = [GameState(t_ms=t, my_elixir=e, hand=["giant", "knight", "musketeer", "fireball"],
+                        opp_elixir=(4.0, 10.0), frame_size=(464, 1024)) for t, e in ((40_000, 8.0), (50_000, 4.0))]
+    (m / "decisions.jsonl").write_text("".join(json.dumps({"state": s.digest()}) + "\n" for s in states))
+    args = ["replay-diff", "--champion", str(root / "configs/strategies/training-camp-v2.yaml"),
+            "--candidate", str(root / "configs/strategies/training-camp-blind-v1.yaml"),
+            "--data", str(tmp_path), "--cards", str(root / "tests/fixtures/cards_starter.json")]
+    with __import__("pytest").raises(SystemExit):
+        main([*args, "--expected-pct", "1"])  # blind changes the 8-elixir state: far more than 1%
+    out = json.loads(capsys.readouterr().out)
+    assert out["states"] == 2 and out["changed"] >= 1 and out["gate"] == "fail"
+    main([*args, "--expected-pct", "50"])
+    assert json.loads(capsys.readouterr().out)["gate"] == "pass"

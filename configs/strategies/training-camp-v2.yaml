@@ -1,0 +1,48 @@
+# training-camp-v1 with a real counter table. v1 points at a copy of the hog-cycle
+# table, where only 8 of 23 rows use cards in this deck and nothing counters Giant,
+# Knight, Mini P.E.K.K.A or Princess, so defend.lane_threat (which needs
+# effectiveness > 0) can't answer a ground push even with a perfect detector.
+# Use this one once a detector runs; until then use training-camp-blind-v1.
+strategy: training-camp-v2
+parent: training-camp-v1
+deck: [knight, princess, minions, arrows, fireball, giant, musketeer, mini_pekka]
+win_conditions: [giant, princess]
+params:
+  act_threshold: 0.15
+  elixir_weight: 0.4
+  defend_trigger_tiles: 12
+  defend_horizon_s: 8.0
+  min_elixir_to_attack: 7
+  press_opp_elixir_max: 3.0
+  spell_value_threshold: 4.0
+  spell_cycle_max_casts: 3
+  opening_ms: 30000
+  min_action_gap_ms: 350
+  counter_push_bonus: 0.4
+  attack_blocked_by_threat_eta_s: 8.0
+tier0:
+  lethal_margin_hp: 30
+  spell_tower_damage: {}        # fill in from the account's card levels
+  leak_threshold: 9.3
+  leak_ms: 800
+  leak_card_preference: [minions, knight, arrows]
+  emergency_eta_s: 1.5
+  emergency_hp_frac: 0.35
+weights:
+  defend.lane_threat: 1.0
+  defend.air_threat: 1.0
+  offense.win_condition_when_opp_low: 1.0
+  offense.counter_push: 0.8
+  spell.value: 0.8
+  spell.tower_chip: 0.6
+  opening.safe_first_play: 1.0
+  cycle.cheap_cycle: 1.0
+posture_multipliers:
+  OPENING:     {offense: 0.3, cycle: 1.2}
+  DEFEND_LEAD: {offense: 0.5, defend: 1.3}
+  PRESS:       {offense: 1.4}
+  SPELL_CYCLE: {spell: 2.0, offense: 0.6}
+counters: counters/training-camp-v2.csv
+learned_ranker: null
+intent_advisor: false
+advisor_may_set: [DEFEND_LEAD, PRESS, SPELL_CYCLE]

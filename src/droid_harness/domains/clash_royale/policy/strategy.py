@@ -68,6 +68,21 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "min_action_gap_ms": 350,
     "counter_push_bonus": 0.4,
     "attack_blocked_by_threat_eta_s": 8.0,
+    # offense.blind_push (no-detector play; see rules/blind.py). Off unless blind: true.
+    "blind": False,
+    "blind_lane": "right",
+    "blind_switch_every": 2,
+    "blind_tanks": [],  # empty = win_conditions
+    "blind_push_elixir": 8.0,
+    "blind_push_elixir_x2": 6.0,
+    "blind_min_elixir": 7.0,
+    "blind_min_elixir_x2": 5.0,
+    "blind_hold_for_tank_elixir": 9.0,
+    "blind_support_ms": 7000,
+    "blind_support_back_tiles": 2.0,
+    "blind_spell_after_ms": 11000,
+    "blind_spell_window_ms": 9000,
+    "blind_spell_elixir": 9.5,
 }
 
 

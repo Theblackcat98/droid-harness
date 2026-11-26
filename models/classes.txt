@@ -1,16 +1,30 @@
-# M3 detector classes (plan §6.3). Names must match `unit_classes` in
-# `configs/domains/clash_royale/cards.json` (see `CardDB.card_for_class`).
-# Closed set = our starter-deck spawns + its spell effects + tower states.
-# Add trainer-deck threats here only after observing them (M4 counter table).
-knight
-princess
-minion
-minions
-giant
-musketeer
-mini_pekka
+# M3 detector classes (plan §6.3). One class per line; '#' starts a comment.
+# Read with perception/classes.py::load_class_names, which strips comments.
+#
+# Units are side-aware: <unit>_me (yours, facing up) and <unit>_opp (theirs, facing
+# down). Side is visible in the sprite, and KataCR labels its data the same way. The
+# pipeline strips the suffix, so <unit> must match `unit_classes` in cards.json
+# (`CardDB.card_for_class`). Minions spawn as three `minion` units.
+#
+# Spell effects carry no side; the pipeline attributes them from your own plays.
+#
+# Towers are not detector classes: they never move, so tower state comes from fixed
+# ROIs (perception/towers.py). Unlabeled towers sit in every synthetic background,
+# so training tower classes here would contradict the data.
+#
+# Closed set = the starter deck. Add the Training Camp trainer's cards once you've
+# seen them in your recordings, and add their rows to the counter table.
+knight_me
+knight_opp
+princess_me
+princess_opp
+minion_me
+minion_opp
+giant_me
+giant_opp
+musketeer_me
+musketeer_opp
+mini_pekka_me
+mini_pekka_opp
 arrows_effect
 fireball_effect
-tower_princess
-tower_king
-tower_rubble

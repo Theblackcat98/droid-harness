@@ -163,6 +163,9 @@ def test_phone_a_result_reader():
     from droid_harness.domains.clash_royale.perception.screens import read_result, read_result_detail
 
     root = Path(__file__).resolve().parents[1] / "configs/domains/clash_royale/screens/phone-a"
+    needed = ("RESULT_WIN__0.png", "RESULT_LOSS__0.png", "RESULT_LOSS__1.png", "IN_BATTLE__0.png")
+    if not all((root / n).exists() for n in needed):
+        pytest.skip("phone-a reference screens are local calibration (gitignored)")
     assert read_result(cv2.imread(str(root / "RESULT_WIN__0.png"))) == "win"
     assert read_result(cv2.imread(str(root / "RESULT_LOSS__0.png"))) == "loss"
     assert read_result(cv2.imread(str(root / "RESULT_LOSS__1.png"))) == "loss"

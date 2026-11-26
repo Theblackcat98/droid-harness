@@ -18,6 +18,7 @@ configs/domains/clash_royale/tiles/
 configs/domains/clash_royale/templates/
 configs/domains/clash_royale/screens/
 configs/domains/clash_royale/digits/
+configs/domains/clash_royale/towers/
 configs/domains/clash_royale/rois/phone-*.yaml
 configs/domains/clash_royale/landmarks/phone-*.yaml
 configs/domains/clash_royale/arena/phone-*.yaml

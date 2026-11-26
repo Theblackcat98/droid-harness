@@ -86,3 +86,64 @@ def test_bot_defends_hog_with_cannon_end_to_end(cards, arena, strategy, tmp_path
     assert any('"defend.lane_threat"' in line for line in lines)
     lat = brain.stats.summary("total")
     assert lat["n"] > 10 and lat["p50"] < 100
+
+
+def test_blind_strategy_attacks_end_to_end_without_a_detector(arena, tmp_path):
+    """No detector at all (today's phone setup): the blind strategy still pushes Giant at the bridge."""
+    from pathlib import Path
+
+    from droid_harness.domains.clash_royale.cards import CardDB
+    from droid_harness.domains.clash_royale.policy.strategy import load_strategy
+
+    root = Path(__file__).resolve().parents[1]
+    starter = CardDB.load(root / "tests/fixtures/cards_starter.json")
+    _, params, _ = load_strategy(root / "configs/strategies/training-camp-blind-v1.yaml")
+    deck = ["giant", "knight", "musketeer", "fireball", "princess", "minions", "arrows", "mini_pekka"]
+    scene = CRScene(starter, deck, elixir=8.0, draw_tower_hp=False)
+    lock = threading.Lock()
+
+    def source(i, t):
+        with lock:
+            scene.step(max(0.0, t - scene.t_s))
+            return scene.render()
+
+    port = free_port()
+    srv = FakeScrcpyServer(port, width=scene.width, height=scene.height, fps=30, source=source).start()
+    client = ScrcpyClient(DeviceProfile(name="sim", serial="sim", local_port=port, scrcpy_server_version="5.0"))
+    policy = CRPolicy(starter, arena, params, exec_latency_s=0.03)
+    perception = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=starter, arena=arena,
+                              matcher=build_matcher_from_scene(scene), detector=None,
+                              on_my_play=policy.confirm_played)
+    executor = Executor(client.touch).start()
+    brain = BrainLoop(client.slot, perception, policy, CRActionMapper(scene.layout, scene.tiles), executor)
+    stop = threading.Event()
+
+    def pump_touches():
+        seen = 0
+        while not stop.is_set():
+            while seen < len(srv.state.touches):
+                with lock:
+                    scene.on_touch(srv.state.touches[seen])
+                seen += 1
+            time.sleep(0.002)
+
+    try:
+        client.start(launch=False)
+        assert client.slot.wait_newer(0, timeout=3) is not None
+        threading.Thread(target=pump_touches, daemon=True).start()
+        brain.start()
+        t0 = time.time()
+        while time.time() - t0 < 6 and not scene.plays:
+            time.sleep(0.02)
+    finally:
+        stop.set()
+        brain.stop()
+        executor.stop()
+        client.stop()
+        srv.stop()
+
+    assert brain.errors == 0
+    assert scene.plays, f"no play; decisions={brain.decisions} warnings={perception.warnings}"
+    _, card, tile = scene.plays[0]
+    assert card == "giant"
+    assert tile == pytest.approx(tuple(params.placement.bridge_tiles["right"]), abs=0.6)
