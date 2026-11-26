@@ -37,6 +37,18 @@ class Card:
     def is_spell(self) -> bool:
         return self.kind == "spell"
 
+    def can_hit(self, flying: bool) -> bool:
+        """Can this card damage a unit that is (or isn't) flying? Spells hit both.
+
+        A counter-table row never overrides this: Giant can't defend, Mini P.E.K.K.A can't
+        touch Minions.
+        """
+        if self.is_spell:
+            return True
+        if self.buildings_only:
+            return False
+        return self.targets_air if flying else self.targets_ground
+
     @property
     def unit_value(self) -> float:
         """Elixir value per spawned unit, used for board value."""

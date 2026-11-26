@@ -53,6 +53,7 @@ class MatchMeta:
     experiment_id: str | None = None
     arm: str | None = None
     opponent_id: str | None = None
+    pair_id: str | None = None  # experiment block this match belongs to (runner pairs arms)
     start_pts_us: int | None = None  # device timestamp of the first battle frame (match t = 0)
     started_unix: float = field(default_factory=time.time)
 

@@ -235,37 +235,115 @@ def test_replay_diff_gate(arena, cards, strategy):
     assert crashed.errors == len(states) and not gate(crashed, 100)[0]
 
 
-def test_experiment_runner_alternates_and_decides(tmp_path):
+def _play(runner, p_champ, p_cand, rng, max_n=2000, draws=0.0):
+    n = 0
+    while not runner.done and n < max_n:
+        arm, pid = runner.next_assignment()
+        p = p_cand if arm == "candidate" else p_champ
+        u = rng.random()
+        result = "draw" if u < draws else ("win" if rng.random() < p else "loss")
+        runner.record({"match_id": f"m{n}", "arm": arm, "pair_id": pid, "game_version": "9.x",
+                       "opponent_kind": "training_camp", "status": "completed", "result": result})
+        n += 1
+    return n
+
+
+def test_experiment_runner_pairs_randomized_blocks_and_accepts_a_better_candidate(tmp_path):
+    import random
+
     from droid_harness.flywheel.eval.runner import ExperimentConfig, ExperimentRunner
 
     cfg = ExperimentConfig(experiment_id="EXP-0001", champion_id="champ", candidate_id="cand",
-                           game_version="9.x", balance_epoch="2026-11", max_games=400)
+                           game_version="9.x", balance_epoch="2026-11", max_games=2000, seed=1)
     r = ExperimentRunner(cfg)
-    assert [r.next_arm() for _ in range(4)] == ["champion", "candidate", "champion", "candidate"]
-    # Feed alternating arms: candidate sweeps, champion collapses -> fast accept_H1.
-    arms = ["champion", "candidate"] * 200
-    n = 0
-    for i, arm in enumerate(arms):
-        result = "win" if arm == "candidate" else "loss"
-        if i % 10 == 9:  # draws don't move the SPRT
-            result = "draw"
-        r.record({"match_id": f"m{i}", "arm": arm, "game_version": "9.x",
-                  "status": "completed", "result": result})
-        n += 1
-        if r.done:
-            break
-    assert r.status == "accepted" and r.decision.decision == "accept_H1"
-    assert r.tallies()["candidate"].wins > r.tallies()["champion"].wins
+    assert cfg.test == "pairs"
+    # Every block of two has one match per arm, in a random order.
+    blocks = []
+    for i in range(20):
+        arm, pid = r.next_assignment()
+        r.record({"match_id": f"b{i}", "arm": arm, "pair_id": pid, "game_version": "9.x",
+                  "status": "completed", "result": "win"})
+        blocks.append((pid, arm))
+    by_pair = {}
+    for pid, arm in blocks:
+        by_pair.setdefault(pid, []).append(arm)
+    assert all(sorted(v) == ["candidate", "champion"] for v in by_pair.values())
+    assert len({tuple(v) for v in by_pair.values()}) == 2  # both orders occur
+
+    r = ExperimentRunner(cfg)
+    n = _play(r, 0.45, 0.75, random.Random(3))
+    assert r.status == "accepted" and n < 2000
+    better, worse, _ = r.pair_counts()
+    assert better > worse
     tmp_ledger = tmp_path / "exp.jsonl"
     r.write_ledger(str(tmp_ledger))
-    assert tmp_ledger.exists()
+    assert "pairs: candidate better" in tmp_ledger.read_text()
     from droid_harness.flywheel import warehouse
     con = warehouse.connect(tmp_path / "w.duckdb")
     r.write_warehouse(con)
-    row = con.execute("select status, wins from experiments where experiment_id='EXP-0001'").fetchone()
+    row = con.execute("select status from experiments where experiment_id='EXP-0001'").fetchone()
     assert row[0] == "accepted"
     con.close()
-    assert n < 400  # stopped early on the SPRT decision
+
+
+def test_a_worse_candidate_is_never_promoted_even_above_fifty_percent():
+    """The review's counterexample: champion 80%, candidate 65%. The old candidate-vs-50%
+    test accepted it; comparing against the champion must not."""
+    import random
+
+    from droid_harness.flywheel.eval.runner import ExperimentConfig, ExperimentRunner
+
+    accepted_pairs = accepted_fixed = 0
+    for seed in range(20):
+        r = ExperimentRunner(ExperimentConfig(experiment_id="E", game_version="9.x", max_games=1500, seed=seed))
+        _play(r, 0.80, 0.65, random.Random(seed))
+        accepted_pairs += r.status == "accepted"
+        f = ExperimentRunner(ExperimentConfig(experiment_id="F", game_version="9.x", test="fixed",
+                                              max_games=1500, seed=seed))
+        _play(f, 0.80, 0.65, random.Random(seed))
+        accepted_fixed += f.status == "accepted"
+    assert accepted_pairs == 0
+    assert accepted_fixed >= 15  # why "fixed" must never gate a promotion
+
+
+def test_aborted_slots_are_replayed_and_abort_imbalance_is_flagged():
+    from droid_harness.flywheel.eval.runner import ExperimentConfig, ExperimentRunner
+
+    r = ExperimentRunner(ExperimentConfig(experiment_id="E", game_version="9.x", seed=0))
+    arm, pid = r.next_assignment()
+    r.record({"match_id": "a", "arm": arm, "pair_id": pid, "game_version": "9.x",
+              "status": "infra_abort", "result": None})
+    assert r.next_assignment() == (arm, pid)  # same slot again
+    for i, res in enumerate(("win", "loss")):
+        arm, pid2 = r.next_assignment()
+        assert pid2 == pid
+        r.record({"match_id": f"x{i}", "arm": arm, "pair_id": pid, "game_version": "9.x",
+                  "status": "completed", "result": res})
+    assert sum(r.pair_counts()) == 1
+    # One arm keeps aborting: flagged, and its pairs are dropped after the retry cap.
+    r = ExperimentRunner(ExperimentConfig(experiment_id="E", game_version="9.x", seed=0, max_slot_retries=1))
+    for i in range(80):
+        arm, pid = r.next_assignment()
+        aborted = arm == "candidate" and i % 3 != 0
+        r.record({"match_id": f"m{i}", "arm": arm, "pair_id": pid, "game_version": "9.x",
+                  "status": "infra_abort" if aborted else "completed", "result": None if aborted else "win"})
+    assert r.dropped_pairs and r.abort_warning() and "abort rates differ" in r.notes()
+
+
+def test_h2h_refuses_training_camp_games_and_counts_draws():
+    from droid_harness.flywheel.eval.runner import ExperimentConfig, ExperimentRunner
+
+    r = ExperimentRunner(ExperimentConfig(experiment_id="E", game_version="9.x", test="h2h"))
+    r.record({"match_id": "m", "arm": "candidate", "game_version": "9.x", "opponent_kind": "training_camp",
+              "status": "completed", "result": "win"})
+    assert r.status == "void" and "pairs" in r.void_reason
+    r = ExperimentRunner(ExperimentConfig(experiment_id="E", game_version="9.x", test="sprt_paired"))
+    assert r.cfg.test == "h2h"  # legacy name
+    for i in range(4):
+        r.record({"match_id": f"m{i}", "arm": "candidate", "game_version": "9.x", "opponent_kind": "friendly",
+                  "status": "completed", "result": "draw"})
+    # Draws are half a win, not dropped: four draws are mild evidence against "candidate is better".
+    assert r.decision.wins == 2.0 and r.decision.losses == 2.0 and r.decision.llr < 0
 
 
 def test_experiment_runner_voids_on_game_update():

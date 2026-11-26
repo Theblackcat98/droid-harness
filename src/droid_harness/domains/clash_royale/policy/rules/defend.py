@@ -19,7 +19,7 @@ class DefendLaneThreat:
                 continue
             for slot, key in s.affordable_hand(ctx.cards):
                 card = ctx.cards[key]
-                if self.air and not (card.targets_air or card.is_spell):
+                if not card.can_hit(th.unit.flying):
                     continue
                 eff = p.counters.get((key, th.kind), 0.0)
                 if eff <= 0:

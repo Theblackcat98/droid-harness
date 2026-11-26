@@ -8,6 +8,8 @@
 * Tower states (``tower_*``) are tolerated from older models but routed to tower state,
   never into the unit tracker.
 * Plain names (no suffix) still work; their side falls back to the HP bar / spawn prior.
+* ``other_ground`` / ``other_air`` are catch-alls for units outside the named set: an
+  unknown enemy card becomes a generic threat instead of background.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from pathlib import Path
 
 SIDE_SUFFIXES = {"_me": "me", "_opp": "opp"}
 TOWER_CLASSES = frozenset({"tower_princess", "tower_king", "tower_rubble"})
+# Catch-all classes for units outside the named set: base -> flying.
+GENERIC_CLASSES = {"other_ground": False, "other_air": True}
 
 
 def load_class_names(path: str | Path) -> list[str]:
@@ -45,6 +49,17 @@ def is_effect(base: str) -> bool:
 
 def is_tower(base: str) -> bool:
     return base in TOWER_CLASSES
+
+
+def is_generic(base: str) -> bool:
+    return base in GENERIC_CLASSES
+
+
+def flying_of(base: str, card) -> bool:
+    """Flying flag for a detected unit: from its card, else from a catch-all class."""
+    if card is not None:
+        return bool(card.flying)
+    return GENERIC_CLASSES.get(base, False)
 
 
 def base_classes(names: list[str]) -> set[str]:

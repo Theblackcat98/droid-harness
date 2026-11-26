@@ -67,12 +67,16 @@ droid-harness sprt                  # sample-size table for strategy tests
    to keep the loop under budget; units are extrapolated between detections.
 6. **Train the detector (M3, no phone needed).**
    ```bash
-   python tools/fetch_katacr.py --out data/katacr --part2                 # sprites, HP bars, arenas, real frames
+   python tools/fetch_katacr.py --out data/katacr --part2        # sprites (named + catch-alls), bars, arenas, real frames
    python tools/extract_backgrounds.py --data data/matches --out data/backgrounds   # your arena crops
    droid-harness synth --backgrounds data/backgrounds data/katacr/backgrounds \
      --sprites data/katacr/segment --bars data/katacr/bars --out data/synth --n 5000
-   droid-harness convert-katacr --part2 data/katacr/_repo/images/part2 --out data/katacr-real   # held-out real val
-   droid-harness train-detector --data data/synth/data.yaml --out models/detector.onnx         # ultralytics + ROCm
+   droid-harness convert-katacr --part2 data/katacr/_repo/images/part2 --out data/katacr-real   # split by sequence
+   droid-harness frames --data data/matches --layout ... --out data/own [--detector models/detector.onnx]  # to label
+   droid-harness dataset --train data/synth/data.yaml:train data/katacr-real/data.yaml:train data/own/data.yaml:train \
+     --val data/katacr-real/data.yaml:val data/own/data.yaml:val --out data/train.yaml   # refuses overlap
+   droid-harness train-detector --data data/train.yaml --out models/detector.onnx        # ultralytics + ROCm
+   droid-harness eval-detector --model models/detector.onnx --data data/own/data.yaml   # per-class; gates on *_opp recall
    droid-harness replay --data data/matches --layout ... --tiles ... --templates ... --cards ... \
      --detector models/detector.onnx --out data/replay/detector-v1.json [--baseline data/replay/<previous>.json]
    ```
@@ -83,9 +87,13 @@ droid-harness sprt                  # sample-size table for strategy tests
 ```bash
 droid-harness analyze --data data/matches --cards configs/domains/clash_royale/cards.json   # engagements, triage, report
 droid-harness selfplay-schedule --games 200 --a phone-a:throwaway-1 --b phone-b:throwaway-2
+droid-harness run-experiment --champion configs/strategies/training-camp-v3.yaml \
+  --candidate configs/strategies/training-camp-v3-e4-cycle-gate.yaml ...                      # --test pairs (default)
 droid-harness sprt --wins 118 --losses 86                                                     # accept / reject / continue
 droid-harness ledger
 ```
+
+`run-experiment` defaults to `--test pairs`: matches are assigned in randomized blocks of two (one per arm), and the SPRT counts only pairs where one arm scored better, so a candidate is promoted only for beating the champion. `--test h2h` is for self-play (candidate vs champion directly); `--test fixed` compares against a fixed rate and must never gate a promotion.
 
 The promotion funnel runs unit tests → `flywheel/eval/replay_diff.py` → shadow mode → screening → SPRT → ledger. The coach (`flywheel/coach/`, `pip install -e ".[coach]"`) may only patch `configs/strategies/**`, the rules package and `tests/coach/**`.
 

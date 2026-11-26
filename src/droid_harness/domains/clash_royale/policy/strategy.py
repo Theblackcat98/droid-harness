@@ -83,6 +83,19 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "blind_spell_after_ms": 11000,
     "blind_spell_window_ms": 9000,
     "blind_spell_elixir": 9.5,
+    # Giant-beatdown v3 experiments (rules/offense.py). All off by default: one per experiment.
+    "counterpush_min_value": 3.0,      # surviving elixir value needed before supporting a push
+    "counterpush_tank_ahead": False,   # E3
+    "counterpush_tank_bonus": 0.2,
+    "counter_gate": False,             # E4
+    "wc_counters": [],                 # opponent cards that hard-counter our win condition
+    "counter_in_hand_mult": 0.5,
+    "counter_out_mult": 1.3,
+    "defense_reserve": 0.0,            # E5: elixir to keep after an offensive play (0 = off)
+    "reserve_penalty": 0.5,
+    "giant_back_build": False,         # E5
+    "giant_safe_build_elixir": 9.0,
+    "giant_back_build_score": 0.4,
 }
 
 

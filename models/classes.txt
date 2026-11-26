@@ -14,6 +14,10 @@
 #
 # Closed set = the starter deck. Add the Training Camp trainer's cards once you've
 # seen them in your recordings, and add their rows to the counter table.
+#
+# Catch-alls: every other KataCR unit trains as other_ground / other_air
+# (models/katacr_generic.json), so an unknown enemy card is a generic threat, not
+# background. Generic counter rows live in the counter table.
 knight_me
 knight_opp
 princess_me
@@ -28,3 +32,7 @@ mini_pekka_me
 mini_pekka_opp
 arrows_effect
 fireball_effect
+other_ground_me
+other_ground_opp
+other_air_me
+other_air_opp

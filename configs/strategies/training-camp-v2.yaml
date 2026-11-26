@@ -1,3 +1,6 @@
+# SUPERSEDED by training-camp-v3: this file lists Princess as a win condition, so
+# offense.win_condition_when_opp_low can send her to the bridge alone. Kept for history.
+#
 # training-camp-v1 with a real counter table. v1 points at a copy of the hog-cycle
 # table, where only 8 of 23 rows use cards in this deck and nothing counters Giant,
 # Knight, Mini P.E.K.K.A or Princess, so defend.lane_threat (which needs

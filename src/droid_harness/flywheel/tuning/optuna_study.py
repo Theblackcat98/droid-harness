@@ -22,6 +22,10 @@ DEFAULT_SPACE: SearchSpace = {
     "params.min_elixir_to_attack": ("float", 4.0, 10.0),
     "tier0.leak_threshold": ("float", 8.5, 9.9),
     "posture_multipliers.PRESS.offense": ("float", 0.8, 2.0),
+    "params.defend_horizon_s": ("float", 4.0, 12.0),
+    "params.spell_value_threshold": ("float", 2.0, 8.0),
+    "params.attack_blocked_by_threat_eta_s": ("float", 4.0, 12.0),
+    "posture_multipliers.DEFEND_LEAD.defend": ("float", 0.8, 2.0),
 }
 
 

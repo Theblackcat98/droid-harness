@@ -61,6 +61,7 @@ class RunConfig:
     balance_epoch: str | None = None
     experiment_id: str | None = None
     arm: str | None = None
+    pair_id: str | None = None
     detect_every: int = 1
     det_conf: float = 0.35
     det_iou: float = 0.5
@@ -97,6 +98,11 @@ class BotRunner:
         self.layout = Layout.load(cfg.layout)
         self.tiles = TileMapper.load(cfg.tiles)
         _, self.params, self.strategy_id = load_strategy(cfg.strategy)
+        if self.params.spec.learned_ranker:
+            # The live policy has no ranker loader yet; running would silently ignore it and
+            # log matches under a strategy_id that claims a model it never used.
+            raise ValueError(f"{cfg.strategy} sets learned_ranker, which the live runner doesn't load "
+                             "yet; remove it or wire a ranker loader first")
         regions = [Roi(*r) for r in yaml.safe_load(cfg.layout.read_text()).get("screen_regions",
                                                                                  [[0, 0, 1, 0.5], [0, 0.5, 1, 1]])]
         self.screens = load_screens(cfg.screens, regions)
@@ -134,7 +140,7 @@ class BotRunner:
     def _meta(self) -> MatchMeta:
         return MatchMeta(uuid.uuid4().hex[:12], self.profile.name, self.profile.account, self.strategy_id,
                          self.game_version, self.cfg.balance_epoch, self.cfg.mode, self.cfg.experiment_id,
-                         self.cfg.arm, self.cfg.opponent_id)
+                         self.cfg.arm, self.cfg.opponent_id, self.cfg.pair_id)
 
     def _on_end(self, summary: dict) -> None:
         if summary.get("status") == "completed":

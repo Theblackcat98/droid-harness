@@ -53,6 +53,9 @@ class GameState:
     opp_elixir: tuple[float, float] = (5.0, 5.0)
     hand: list[str | None] = field(default_factory=lambda: [None] * 4)
     hand_affordable: list[bool] = field(default_factory=lambda: [False] * 4)
+    # Per slot: was the card identity read in *this* frame? A slot that failed to read keeps
+    # its last known card (for play detection) but is stale: never act on it. Empty = all fresh.
+    hand_fresh: list[bool] = field(default_factory=list)
     next_card: str | None = None
     units: list[Unit] = field(default_factory=list)
     towers: dict[str, int] = field(default_factory=dict)  # hp; 0 = destroyed
@@ -75,10 +78,14 @@ class GameState:
     def tower_alive(self) -> dict[str, bool]:
         return {k: hp > 0 for k, hp in self.towers.items()}
 
+    def slot_fresh(self, i: int) -> bool:
+        return not self.hand_fresh or (0 <= i < len(self.hand_fresh) and self.hand_fresh[i])
+
     def affordable_hand(self, cards: CardDB) -> list[tuple[int, str]]:
+        """Affordable cards whose slot was read this frame (stale identities are never played)."""
         out = []
         for i, c in enumerate(self.hand):
-            if c is not None and c in cards and cards.cost(c) <= self.my_elixir + 1e-6:
+            if c is not None and c in cards and cards.cost(c) <= self.my_elixir + 1e-6 and self.slot_fresh(i):
                 out.append((i, c))
         return out
 
@@ -109,7 +116,8 @@ class GameState:
         """Compact, JSON-friendly snapshot for logs and replay diffs."""
         return {
             "t_ms": self.t_ms, "phase": self.phase, "my_elixir": round(self.my_elixir, 2),
-            "opp_elixir": self.opp_elixir, "hand": self.hand, "next": self.next_card,
+            "opp_elixir": self.opp_elixir, "hand": self.hand, "hand_fresh": self.hand_fresh,
+            "next": self.next_card,
             "units": [(u.track_id, u.kind, u.side, round(u.tile[0], 2), round(u.tile[1], 2),
                        round(u.vel[0], 2), round(u.vel[1], 2), round(u.hp_pct, 2)) for u in self.units],
             "towers": self.towers, "crowns": self.crowns, "opp_last_four": self.opp_last_four,
@@ -123,7 +131,7 @@ class GameState:
                  for t, k, s, x, y, vx, vy, hp in d.get("units", [])]
         return cls(t_ms=d["t_ms"], phase=d.get("phase", "x1"), my_elixir=d.get("my_elixir", 5.0),
                    opp_elixir=tuple(d.get("opp_elixir", (5.0, 5.0))), hand=list(d.get("hand", [None] * 4)),
-                   next_card=d.get("next"), units=units, towers=dict(d.get("towers", {})),
+                   hand_fresh=list(d.get("hand_fresh", [])), next_card=d.get("next"), units=units, towers=dict(d.get("towers", {})),
                    crowns=tuple(d.get("crowns", (0, 0))), opp_last_four=list(d.get("opp_last_four", [])),
                    opp_deck_seen=list(d.get("opp_deck_seen", [])), pocket_open=dict(d.get("pocket_open", {})),
                    posture=d.get("posture", "BALANCED"), last_action_ms=d.get("last_action_ms", -10_000),

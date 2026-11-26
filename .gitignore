@@ -8,6 +8,7 @@ vendor/
 models/*
 !models/classes.txt
 !models/katacr_alias.json
+!models/katacr_generic.json
 *.onnx
 *.h264
 # per-phone and locally built config

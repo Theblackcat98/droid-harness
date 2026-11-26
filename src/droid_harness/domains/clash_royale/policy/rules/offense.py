@@ -1,7 +1,51 @@
+"""Offense rules. The Giant-beatdown v3 experiments are opt-in params, one per experiment:
+
+* E3 ``counterpush_tank_ahead``: on a counter-push, the tank goes *ahead* of the surviving
+  defenders (and gets a bonus); support still goes behind.
+* E4 ``counter_gate``: scale win-condition pushes by whether the opponent's known counters
+  (``wc_counters``) may be in hand (``counter_in_hand_mult``) or are confirmed out of cycle
+  with their deck fully seen (``counter_out_mult``).
+* E5 ``defense_reserve`` / ``giant_back_build``: penalize offense that leaves less than the
+  reserve while they may have elixir; build a Giant from the back when the board is quiet
+  and elixir is near full.
+"""
+
 from __future__ import annotations
 
 from ..candidate import Candidate
 from . import RuleContext
+
+
+def _scale(score: float, f: float) -> float:
+    """Multiply only the positive part: a penalty must never make a bad play less bad."""
+    return score * f if score > 0 else score
+
+
+def counter_factor(s, p, card_key: str) -> tuple[float, str]:
+    """E4: is a known counter to our win condition possibly in their hand?"""
+    if not p.counter_gate or card_key not in p.win_conditions:
+        return 1.0, ""
+    seen = set(p.wc_counters) & set(s.opp_deck_seen)
+    if not seen:
+        return 1.0, ""
+    # Cards in their last four plays are at the back of their queue: not in hand. Computed
+    # from deck_seen/last_four (both survive the decision log) rather than a derived set.
+    in_hand = seen - set(s.opp_last_four)
+    if in_hand:
+        return p.counter_in_hand_mult, f"; their {'/'.join(sorted(in_hand))} may be in hand"
+    if len(s.opp_deck_seen) >= 8:  # unseen cards can't be counters only once the deck is known
+        return p.counter_out_mult, f"; their {'/'.join(sorted(seen))} out of cycle"
+    return 1.0, ""
+
+
+def reserve_factor(s, p, cost: int) -> tuple[float, str]:
+    """E5: keep enough elixir to defend, unless they're low too."""
+    if p.defense_reserve <= 0:
+        return 1.0, ""
+    left = s.my_elixir - cost
+    if left >= p.defense_reserve or s.opp_elixir[1] <= p.press_opp_elixir_max:
+        return 1.0, ""
+    return p.reserve_penalty, f"; leaves {left:.1f} < reserve {p.defense_reserve:.1f}"
 
 
 def _weaker_lane(s, ctx: RuleContext) -> str:
@@ -41,8 +85,10 @@ class WinConditionWhenOppLow:
             lane = intent.lane if intent is not None and intent.lane else _weaker_lane(s, ctx)
             tile = ctx.placement.snap(tuple(p.placement.bridge_tiles[lane]), ctx.cards[key], s)
             score = (1.0 - opp_hi / 10) * (0.5 + aggression) - p.elixir_weight * ctx.cards.cost(key) / 20
-            yield Candidate(self.id, key, slot, tile, score=score,
-                            reason=f"opp elixir ≤ {opp_hi:.1f}, lane {lane}")
+            fc, why_c = counter_factor(s, p, key)
+            fr, why_r = reserve_factor(s, p, ctx.cards.cost(key))
+            yield Candidate(self.id, key, slot, tile, score=_scale(score, fc * fr),
+                            reason=f"opp elixir ≤ {opp_hi:.1f}, lane {lane}{why_c}{why_r}")
 
 
 class CounterPush:
@@ -61,14 +107,46 @@ class CounterPush:
             if lane not in lead or u.tile[1] > lead[lane][1]:
                 lead[lane] = u.tile
         for lane, value in groups.items():
-            if value < 3.0 or lane not in lead:
+            if value < p.counterpush_min_value or lane not in lead:
                 continue
             enemies = sum(1 for u in s.enemy_units() if ctx.arena.lane_of(u.tile[0]) == lane)
+            lx, ly = lead[lane]
             for slot, key in s.affordable_hand(ctx.cards):
                 card = ctx.cards[key]
                 if card.is_spell or card.kind == "building":
                     continue
-                tile = ctx.placement.snap((lead[lane][0], lead[lane][1] - 2.0), card, s)
                 score = p.counter_push_bonus * value / 10 - 0.1 * enemies - p.elixir_weight * card.cost / 20
+                tank = p.counterpush_tank_ahead and key in p.win_conditions
+                if tank:  # E3: the tank leads, so the survivors shoot from behind it
+                    tile = ctx.placement.snap((lx, ly + 1.0), card, s)
+                    score += p.counterpush_tank_bonus
+                    fc, why = counter_factor(s, p, key)
+                    score = _scale(score, fc)
+                else:
+                    tile = ctx.placement.snap((lx, ly - 2.0), card, s)
+                    why = ""
                 yield Candidate(self.id, key, slot, tile, score=score,
-                                reason=f"support {value:.1f} elixir push {lane}")
+                                reason=f"{'tank ahead of' if tank else 'support'} {value:.1f} elixir push {lane}{why}")
+
+
+class GiantBackBuild:
+    """E5: quiet board and elixir near full: start a Giant from the back of the weaker lane,
+    so support can be added while it walks. Off unless ``giant_back_build: true``."""
+
+    id = "offense.giant_back_build"
+
+    def propose(self, s, p, ctx: RuleContext, intent):
+        if not p.giant_back_build or s.my_elixir < p.giant_safe_build_elixir:
+            return
+        if s.threats(ctx.arena, ctx.cards, max_tiles_to_tower=p.defend_trigger_tiles):
+            return  # defend first
+        lane = intent.lane if intent is not None and intent.lane else _weaker_lane(s, ctx)
+        for slot, key in s.affordable_hand(ctx.cards):
+            card = ctx.cards[key]
+            if key not in p.win_conditions or card.is_spell or card.kind == "building":
+                continue
+            tile = ctx.placement.snap(tuple(p.placement.back_tiles[lane]), card, s)
+            fc, why_c = counter_factor(s, p, key)
+            fr, why_r = reserve_factor(s, p, card.cost)
+            yield Candidate(self.id, key, slot, tile, score=_scale(p.giant_back_build_score, fc * fr),
+                            reason=f"back-build {key} {lane} at {s.my_elixir:.1f} elixir{why_c}{why_r}")

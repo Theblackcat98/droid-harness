@@ -1,10 +1,12 @@
 """M3 detector foundations: class list, synthetic data, arena-crop inference."""
 
+import json
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
+import yaml
 
 from droid_harness.domains.clash_royale.cards import CardDB
 from droid_harness.domains.clash_royale.perception.classes import (
@@ -120,30 +122,42 @@ def test_synth_dataset_layout_and_side_aware_sprites(tmp_path):
         synth.generate_dataset([bg], [synth.Sprite(_sprite(), "hog_rider_opp")], tmp_path / "x", 1, names)
 
 
-def test_katacr_real_frames_convert_to_our_classes(tmp_path):
+def test_katacr_real_frames_convert_by_sequence_with_catch_alls(tmp_path):
     from droid_harness.learn import katacr
+    root = Path(__file__).resolve().parents[1]
     part2 = tmp_path / "part2"
-    ep = part2 / "ep1" / "1"
-    ep.mkdir(parents=True)
+    (part2 / "ClashRoyale_detection.yaml").parent.mkdir(parents=True)
     (part2 / "ClashRoyale_detection.yaml").write_text(
-        "names:\n  0: king-tower\n  1: knight\n  2: fireball\n  3: hog-rider\n")
+        "names:\n  0: king-tower\n  1: knight\n  2: fireball\n  3: hog-rider\n  4: balloon\n  5: bar\n")
     rows = ["0 0.5 0.13 0.2 0.16 1 0 0 0 0 0 0",   # tower: not a detector class
             "1 0.3 0.70 0.1 0.10 0 0 0 0 0 0 0",   # my knight
             "1 0.6 0.30 0.1 0.10 1 0 0 0 0 0 0",   # their knight
             "2 0.5 0.80 0.2 0.10 1 0 0 0 0 0 0",   # a fireball effect
-            "3 0.4 0.40 0.1 0.10 1 0 0 0 0 0 0"]   # hog rider: not in our set
-    (ep / "00000.txt").write_text("\n".join(rows) + "\n")
-    cv2.imwrite(str(ep / "00000.jpg"), np.zeros((896, 568, 3), np.uint8))
-    (ep / "00015.txt").write_text(rows[0] + "\n")  # nothing of ours: a negative, dropped at keep=0
-    cv2.imwrite(str(ep / "00015.jpg"), np.zeros((896, 568, 3), np.uint8))
+            "3 0.4 0.40 0.1 0.10 1 0 0 0 0 0 0",   # hog rider: catch-all, theirs
+            "4 0.7 0.40 0.1 0.10 1 0 0 0 0 0 0",   # balloon flies in the game (KataCR lists it as ground)
+            "5 0.7 0.35 0.1 0.02 1 0 0 0 0 0 0"]   # HP bar: UI, dropped
+    for video in ("vidA", "vidB", "vidC", "vidD"):
+        for ep in ("1", "2"):
+            d = part2 / video / ep
+            d.mkdir(parents=True)
+            for fr in ("00000", "00015"):
+                (d / f"{fr}.txt").write_text("\n".join(rows) + "\n")
+                cv2.imwrite(str(d / f"{fr}.jpg"), np.zeros((896, 568, 3), np.uint8))
     names = _names()
-    alias = katacr.load_alias(Path(__file__).resolve().parents[1] / "models/katacr_alias.json")
-    data, counts = katacr.convert(part2, tmp_path / "out", names, alias, empty_keep=0.0)
-    out = (tmp_path / "out/labels/val/ep1_1_00000.txt").read_text().split("\n")
-    got = [names[int(r.split()[0])] for r in out if r]
-    assert got == ["knight_me", "knight_opp", "fireball_effect"]
-    assert counts["frames"] == 1 and counts["frames_dropped_empty"] == 1
-    assert (tmp_path / "out/images/val/ep1_1_00000.jpg").exists() and data.exists()
+    alias = katacr.load_alias(root / "models/katacr_alias.json", root / "models/katacr_generic.json")
+    data, counts = katacr.convert(part2, tmp_path / "out", names, alias, val_frac=0.3)
+    groups = json.loads((tmp_path / "out/groups.json").read_text())
+    assert set(groups.values()) == {"train", "val"}  # both splits exist ...
+    for split in ("train", "val"):  # ... and a sequence's frames never straddle them
+        stems = {p.stem.rsplit("_", 1)[0] for p in (tmp_path / "out/images" / split).iterdir()}
+        assert all(groups[s.replace("_", "/", 1)] == split for s in stems)
+    d = yaml.safe_load(data.read_text())
+    assert d["train"] == "images/train" and d["val"] == "images/val"
+    lbl = next((tmp_path / "out/labels").rglob("vidA_1_00000.txt")).read_text().split("\n")
+    got = [names[int(r.split()[0])] for r in lbl if r]
+    assert got == ["knight_me", "knight_opp", "fireball_effect", "other_ground_opp", "other_air_opp"]
+    with pytest.raises(ValueError):
+        katacr.convert(part2, tmp_path / "x", names, alias, val_frac=1.0)  # val-only = the old leak
 
 
 def test_write_classes_roundtrip(tmp_path):

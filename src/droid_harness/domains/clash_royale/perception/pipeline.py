@@ -26,7 +26,7 @@ from ..elixir import ElixirModel, phase_at
 from ..opponent_model import OpponentModel
 from ..state import GameState, Unit
 from .cards import CardMatcher
-from .classes import is_effect, is_tower, split_side
+from .classes import flying_of, is_effect, is_tower, split_side
 from .detector import AsyncDetector, Detector
 from .digits import DigitReader
 from .grid import Layout, TileMapper
@@ -75,6 +75,7 @@ class CRPerception:
             self.tower_states.reset()
         self.grouper = SpawnGrouper(self.cards.card_for_class)
         self.hand: list[str | None] = [None] * 4
+        self.hand_fresh: list[bool] = []
         self.next_card: str | None = None
         self.towers: dict[str, int] = {}
         self._tower_read_ms = -10**9
@@ -133,7 +134,8 @@ class CRPerception:
         return GameState(
             t_ms=t_ms, host_ns=frame.t_decoded_ns, frame_size=(img.shape[1], img.shape[0]),
             phase=phase_at(t_s), my_elixir=self.elixir.value, opp_elixir=self.opp.elixir.interval(),
-            hand=list(self.hand), hand_affordable=affordable, next_card=self.next_card, units=list(self.units),
+            hand=list(self.hand), hand_affordable=affordable, hand_fresh=list(self.hand_fresh),
+            next_card=self.next_card, units=list(self.units),
             towers=dict(self.towers), crowns=crowns, opp_deck_seen=list(self.opp.cycle.deck_seen),
             opp_hand_possible=self.opp.cycle.possible_hand(), opp_last_four=self.opp.cycle.last_four,
             pocket_open={"left": self.towers.get("opp_left") == 0, "right": self.towers.get("opp_right") == 0},
@@ -141,7 +143,10 @@ class CRPerception:
 
     # --- pieces ---------------------------------------------------------------
     def _read_hand(self, img: np.ndarray, t_ms: int, warns: list[str]) -> list:
+        # Unreadable slots keep their last known card so a play is still detected when the
+        # next read succeeds, but they're marked stale and the policy won't act on them.
         new = list(self.hand)
+        self.hand_fresh = [False] * len(self.layout.hand)
         crops = []
         for i, roi in enumerate(self.layout.hand):
             crop = roi.crop(img)
@@ -150,6 +155,7 @@ class CRPerception:
                 warns.append("hand_unreadable")
                 continue
             new[i] = r.card
+            self.hand_fresh[i] = True
             crops.append((r.card, crop))
         nr = self.matcher.match(self.layout.next_card.crop(img))
         if nr.accepted:
@@ -222,7 +228,7 @@ class CRPerception:
                 self._tower_detection(base, self.tiles.px_to_tile((fx, (by1 + by2) / 2), img.shape))
                 continue
             card0 = self.cards.card_for_class(base)
-            if card0 is not None and card0.flying:
+            if flying_of(base, card0):
                 fy -= self.flying_foot_frac * (by2 - by1)
             tile = self.tiles.px_to_tile((fx, fy), img.shape)
             if is_effect(base):
@@ -279,7 +285,7 @@ class CRPerception:
             y = min(max(tr.tile[1] + tr.vel[1] * dt, 0.0), self.arena.height)
             card = self.cards.card_for_class(tr.cls)
             units.append(Unit(tr.id, tr.cls, tr.side, (x, y), tr.vel, tr.hp_pct, tr.first_ms, tr.conf,
-                              flying=bool(card and card.flying)))
+                              flying=flying_of(tr.cls, card)))
         return units
 
     def _on_play(self, play: PlayEvent) -> None:
