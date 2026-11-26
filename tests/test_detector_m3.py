@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from droid_harness.domains.clash_royale.cards import CardDB
 from droid_harness.domains.clash_royale.perception.detector import Detection
@@ -107,3 +108,29 @@ def test_arena_crop_and_flying_offset(cards, arena):
     perc2.tiles = Spy2(scene.tiles)
     perc2._detect(scene.render(), 1000)
     assert tiles2[0][1] < seen_tiles[0][1]  # lifted foot = smaller pixel y
+
+
+def test_katacr_alias_covers_card_db():
+    """Every card DB spawn class resolves through the KataCR alias map, whose
+    keys exist in the upstream KataCR label list (MIT)."""
+    import json
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    alias = json.loads((root / "models/katacr_alias.json").read_text())
+    ours = set(alias.values())
+    classes = {ln.strip() for ln in (root / "models/classes.txt").read_text().splitlines()
+               if ln.strip() and not ln.strip().startswith("#")}
+    assert ours <= classes
+    from droid_harness.domains.clash_royale.cards import CardDB
+    db = CardDB.load(root / "configs/domains/clash_royale/cards.json")
+    needed = {cls for card in db.cards.values() for cls in card.unit_classes}
+    # The DB's closed set is covered by classes.txt; the alias covers the
+    # KataCR-providable subset ('minions' groups are derived from 'minion'
+    # detections via SpawnGrouper, so no alias entry is needed).
+    assert needed <= classes, needed - classes
+    label_path = root / "models/katacr_label_list.py"
+    if not label_path.exists():
+        pytest.skip("run tools/fetch_katacr.py --label-list-only first (MIT upstream reference)")
+    label_src = label_path.read_text()
+    for kata_name in alias:
+        assert f"'{kata_name}'" in label_src, kata_name

@@ -1,0 +1,13 @@
+{
+  "knight": "knight",
+  "princess": "princess",
+  "minion": "minion",
+  "giant": "giant",
+  "musketeer": "musketeer",
+  "mini-pekka": "mini_pekka",
+  "arrows": "arrows_effect",
+  "fireball": "fireball_effect",
+  "queen-tower": "tower_princess",
+  "king-tower": "tower_king",
+  "king-tower-ruin": "tower_rubble"
+}
