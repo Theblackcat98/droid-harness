@@ -14,19 +14,25 @@ The deck screen also settled a naming error: the starter card is **Archers** (Co
 
 Still open for ladder: a trained detector (until then only `training-camp-blind-v1` attacks), 8 template states captured in a ladder arena, and the reviewer's `hand_unreadable` storm (~10k warnings per match on both arenas) — the matcher is failing most slots and retries are carrying the run.
 
-### Priority order to an unattended win vs the Training Camp bot
+**Update 2026-11-26 (ladder-vision build `00a17c0`, optiplex side):** the vision path for the real deck is built end to end. `ladder-vision-v1.yaml` (+ `counters/ladder-vision-v1.csv`) targets the account's true 8 cards (Knight/Archers/Minions/Arrows/Fireball/Giant/Musketeer/Mini P.E.K.K.A — the deck screen proves it; see deck-identity note below), with tempo tuned from live gaps (threshold 0.08, attack at 5 elixir, leak at 8.0, opening 15 s). `--mode ladder` exists (`ladder` flow HOME→battle, battle button in `rois/phone-a.yaml`, both `run` subcommands). M8 core done: `learn/label_from_video.py` (weighted state/action rows from recorded matches), `learn/train_ranker.py` (numpy-MLP BC, static ONNX export), live ranker loader in `app.py` (was a ValueError). M9 core done: `core/runtime/advisor.py` (API-driven posture intents, TTL=2×cadence, stdlib HTTP) + `advise --dry-run` replays a recorded match offline. M5 gaps closed: `flywheel/shadow.py` (champion-vs-candidate report), `notebooks/dashboard.py` (win rate CI, play value, triage, p99), match-clock reader in `pipeline.py` (1 Hz, drift warning). Tests: **170 passed**. Phone-a calibration additions (gitignored, this machine only): `archers__0.png` rebuilt from pixel-verified deck art (the template-CLI crop was mislabeled), `ok` ROI fixed to [0.370, 0.815, 0.630, 0.880] (was ~140 px low; post-match lag 5 min → 2.2 min/match), `battle` button ROI added. Records: Training Camp 16–1 (blind), ladder 0–0–1 (a 66 s 1–1 draw — likely disconnect, under investigation). The 50-win grind is PAUSED, not done.
 
-1. **[you]** Run `training-camp-blind-v1` for 5 matches, then 20 unattended (M2 *Run it*). Confirm the scrcpy taps land (Pointer location) and read `decisions.jsonl` for `offense.blind_push` and `retry:` reasons. Triage the losses (perception / execution / strategy) before changing any strategy.
-2. **[you]** Unattended reliability: LOADING/DRAW/POPUP reference screens, `stream --duration 1800` soak, tower `alive`/`rubble` templates (`droid-harness tower-template`), and `tier0.spell_tower_damage` for your card levels.
-3. **[you]** Watch 3 recorded matches and list the trainer's cards → add them to `models/classes.txt` (as `<unit>_me`/`<unit>_opp`), `models/katacr_alias.json` and `counters/training-camp-v3.csv`. Until then they train as `other_ground`/`other_air` and get generic counters.
-4. **[you/data]** `fetch_katacr.py --part2` → `synth` + `convert-katacr` + `frames` (label your own) → `dataset` → `train-detector` on the ROCm host → `eval-detector` on *your* held-out frames (gate: threat-class recall) → `replay`.
-5. **[you]** Live with `training-camp-v3` + `--async-detect`: 50 matches + `analyze`. Then `run-experiment --champion training-camp-v3.yaml --candidate training-camp-v3-e3-tank-ahead.yaml` (and E4, E5), one at a time.
-6. Then the rest of the flywheel (M5/M6): E6 kill-aware spell value, E7 adaptive lanes, E8 learned ranker.
+**Update 2026-11-26 (deck identity, settled):** the battle deck IS the Battle Deck screen's deck. Template reads of `princess` (30× in one ladder match) are matcher misfires; `archers` reads zero because the template was mislabeled, now rebuilt from verified art. The starter card is **Archers**, not Princess (upstream `0075023` renamed it everywhere: cards, templates, strategies, counters, fixtures). No second deck slot exists in this game version.
+
+**GPU handoff (veritas, nick@192.168.1.199):** venv `~/venvs/droid-det` ready (torch 2.7.1+rocm6.3, `cuda_available: True`, ultralytics, onnx; repo at `~/src/droid-harness`). KataCR fetch running: `tools/fetch_katacr.py --out data/katacr --part2` (log `/home/nick/droid-det-fetch.log`, ~1.3 GB and growing). GPU idle (0%), 400 GB free. Remaining there, in order — see **GPU Runbook** below.
+
+### Priority order (updated 2026-11-26 evening — ladder is the target now, Training Camp is the farm)
+
+1. **[you]** Resume/verify ladder-vision: `droid-harness run ... --mode ladder --strategy configs/strategies/ladder-vision-v1.yaml --matches 1`. Confirm `archers` appears in hand reads (the rebuilt template), `blind_push` does NOT fire (v1 has no blind rule — if it does, the strategy loader is resolving the wrong parent), and the match runs full length (the 66 s 1–1 draw needs an explanation: check `stream.h264` + phone state).
+2. **[you]** Ladder gold farm: `--mode ladder --strategy training-camp-blind-v1 --matches N` (blind works, 93% in Training Camp; ladder opponents at 0–60 trophies are bot-tier). Every win is ranker training data AND gold/chests. Spend gold: Archers→3 (20g, ready now), then Mini P.E.K.K.A/Giant/Musketeer levels.
+3. **[you/data, veritas]** GPU Runbook below: synth → dataset → train → eval → copy weights back. Then live ladder with `--detector models/yolo26n-cr.onnx --async-detect`.
+4. **[you]** First SPRT: champion `training-camp-v3.yaml` (or `ladder-vision-v1.yaml` for ladder) vs one tempo/param change, bounds [0.50, 0.58].
+5. **[code]** E6/E7/E8, Optuna wiring, coach CLI, retention job — all still open (M5/M6).
+6. **[you]** Phone calibration leftovers (all need the rig): LOADING/DRAW/POPUP screens, selected-state templates, tower alive/rubble templates (`tower-template`), digit crops, 200+ golden frames, placement-tile calibration, loopback p50/p99, display-off check, resolution sweep.
 
 Tags: **[you]** needs your hands, phone or account · **[code]** pure code work · **[data]** collecting or labeling.
 Each milestone ends with **Done when** — don't start the next one until it's true.
 
-> Account rule for everything below: throwaway accounts only; Training Camp, Practice Mode and friendly battles between your own accounts only. Never ladder.
+> Account rule: the repo says throwaway-only, never ladder. **Operator override 2026-11-26:** ladder IS approved on `theblackcat99` (0 trophies, bot-tier opponents, nothing to lose). Revisit if the account gains real trophies or Supercell flags anything.
 
 ---
 
@@ -87,7 +93,8 @@ Code gaps to close in this milestone:
 - [ ] **[code]** **Destroyed towers.** `perception/pipeline.py::_read_towers` never sets a tower to 0; unreadable digits just keep the last value. Add destroyed-tower detection (template of the rubble/crown state per tower ROI, or detector classes). Crowns, `pocket_open` and the king/princess targeting all depend on it.
       *Code done: `perception/towers.py::TowerStateReader` template-matches each tower ROI against per-phone `alive`/`rubble` references and marks a tower destroyed after 2 rubble reads in a row (permanent for the match; digits can't revive it). `run --towers DIR` wires it in. A `tower_rubble` detection (older models) also marks the nearest tower. Crowns, `pocket_open` and king targeting follow from `towers[name] == 0`.*
 - [ ] **[you]** Capture tower templates: `droid-harness tower-template --frame <battle frame> --layout rois/phone-a.yaml --tower all --state alive --out configs/domains/clash_royale/towers/phone-a`, then `--tower opp_left --state rubble` (etc.) from frames after a tower falls.
-- [ ] **[code]** **Match clock.** The layout has a `clock` ROI but the pipeline never reads it. Read it at 1 Hz to align match t=0 with the game (screen detection lags a few frames, and the intro countdown shifts it). Flag drift over 1 s as a perception warning. Double elixir at 2:00 depends on this.
+- [x] **[code]** **Match clock.** The layout has a `clock` ROI but the pipeline never reads it. Read it at 1 Hz to align match t=0 with the game (screen detection lags a few frames, and the intro countdown shifts it). Flag drift over 1 s as a perception warning. Double elixir at 2:00 depends on this.
+      *Done: `pipeline.py` reads the `clock` ROI at most 1 Hz, parses `M:SS`, exposes `match_t_s` + `clock_drift_s` on the state, warns `clock_drift` past 1 s. Tested on synthetic frames.*
 - [x] **[code]** **Arena geometry.** `app.py::BotRunner` uses `Arena()` defaults. Add `--arena configs/domains/clash_royale/arena/phone-a.yaml` (load with `Arena.load`) and calibrate river, bridges and tower tiles from the same landmarks as the homography.
       *Added `--arena` to `droid-harness run` and `RunConfig`; `configs/domains/clash_royale/arena/phone-a.yaml` was fitted from the same six landmarks as `tiles/phone-a.yaml` (river y 15.0–16.5, bridges x 3.6/14.4).*
 - [ ] **[code]** **Golden frames.** Commit 200+ labeled real frames (hand, elixir, towers, screen ID) under `tests/golden/phone-a/` (gitignored if large; keep an index). Add a test that fails if HUD accuracy drops below 99.5%.
@@ -95,7 +102,8 @@ Code gaps to close in this milestone:
 
 Run it:
 
-- [ ] **[you]** `droid-harness run ... --strategy configs/strategies/training-camp-blind-v1.yaml --matches 5` **without** `--detector`. It navigates menus, recognizes battles and results, reads hand and elixir, and attacks blind (Giant at the bridge, support behind, spells on the tower). `training-camp-v1` cannot attack without a detector: its opponent-elixir estimate never narrows, so the attack rule scores −0.1.
+- [x] **[you]** `droid-harness run ... --strategy configs/strategies/training-camp-blind-v1.yaml --matches 5` **without** `--detector`. It navigates menus, recognizes battles and results, reads hand and elixir, and attacks blind (Giant at the bridge, support behind, spells on the tower). `training-camp-v1` cannot attack without a detector: its opponent-elixir estimate never narrows, so the attack rule scores −0.1.
+      *Done 2026-11-26: 5/5 then 10 matches (9–1) = **16–1 record**, blind_push firing 40–60×/match, loop ~42 ms, post-match OK ROI fixed (5 min → 2.2 min/match). Grind PAUSED for the ladder pivot; resume for ranker training data.*
 - [ ] **[you]** Run `droid-harness analyze --data data/matches --cards ...` and read the warning counts. Fix calibration until `perception_warnings` is near zero.
 
 **Done when:** 20 unattended Training Camp matches complete (menus, battle, result, next match) with correct results in `summary.json` and HUD golden-set accuracy ≥ 99.5% in every card state.
@@ -135,7 +143,7 @@ The detector is the biggest missing piece: no model is trained yet, and this hos
 - [x] **[code]** **Synthetic generator** `src/droid_harness/learn/synth.py`: paste sprite cut-outs on empty-arena backgrounds (random position, scale, overlap, HP bars, effects), write YOLO labels. Seed it from KataCR's generative dataset approach.
       *`droid-harness synth`: inference geometry, tile-scaled side-aware KataCR sprites, back-to-front by foot y, real KataCR HP-bar sprites on units only, occlusion/clip-aware labels, Ultralytics layout + `data.yaml` + `label_counts.yaml`. Needs backgrounds: KataCR's empty arenas plus your own crops (only 1 mined so far).*
 - [ ] **[data]** Pull KataCR's open detection dataset; check the license and which classes it covers (snapshot from May 2024, so newer cards are missing). Map its class names onto yours.
-      *`tools/fetch_katacr.py` is ready (sprites for the alias map, HP bars, empty arenas, and `--part2` real frames; MIT confirmed); nothing is pulled yet — `data/katacr/` is empty.*
+      *IN PROGRESS on veritas (2026-11-26): `tools/fetch_katacr.py --out data/katacr --part2` running under `~/venvs/droid-det/bin/python`, log `/home/nick/droid-det-fetch.log`. MIT confirmed; nothing usable yet — `data/katacr/` is filling. See GPU Runbook for what follows.*
 - [ ] **[data]** Record 30–50 of your own battles (the recorder already saves `stream.h264`). Extract frames, auto-label them with the first model, fix the labels in CVAT/Label Studio, and repeat.
 - [x] **[code]** `src/droid_harness/learn/train_detector.py`: Ultralytics YOLO26-n training on PyTorch-ROCm, exported to ONNX with a static shape. Also export `classes.txt`.
 - [ ] **[you]** Install the ONNX Runtime MIGraphX EP (AMD's ROCm docs). Benchmark `OnnxDetector` on MIGraphX vs CPU vs PyTorch-ROCm at your input size, and keep the fastest. Check `detector.provider` in the logs.
@@ -166,6 +174,7 @@ The detector is the biggest missing piece: no model is trained yet, and this hos
       *`counters/training-camp-v2.csv` (used by `training-camp-v2.yaml` and the blind strategy): 71 rows of your 8 cards vs your own deck's units and common low-arena threats. v1 pointed at the hog-cycle copy, where nothing countered Giant, Knight, Mini P.E.K.K.A or Princess. Values are hand-set starting points to tune; extend once you know the trainer's cards.*
 - [ ] **[code]** Calibrate placement tiles (`placement.building_pull`, `bridge_tiles`, `back_tiles`, `tier0.leak_tiles`) on the real arena.
 - [ ] **[you]** Play 50 Training Camp matches. Run `analyze`. Read the triage mix, the lowest-value rules and a few loss stories, then fix the obvious problems.
+      *16–1 banked 2026-11-26 (blind). Remaining 34+ when the grind resumes — every win is ranker training data (M8 needs 50+).*
 
 **Done when:** the bot beats Training Camp consistently over 50 matches, and every decision is logged with its candidates, posture, predicted tile and latency.
 
@@ -175,10 +184,12 @@ The detector is the biggest missing piece: no model is trained yet, and this hos
 
 - [x] **[code]** **Experiment runner** `src/droid_harness/flywheel/eval/runner.py`: alternates champion/candidate strategy files per match, tags `experiment_id`/`arm` on every match, checks `game_version`, and stops on an SPRT decision (`flywheel/eval/sprt.py`, `inclusion.py`). Write results to the ledger and the warehouse `experiments` table.
       *Implemented `ExperimentRunner` (alternation, SPRT stop, game-version void, ledger + warehouse writes) with unit tests, plus `droid-harness run-experiment` which plays one Training Camp match per arm with `--experiment-id`/`--arm` until the SPRT decides. Shadow mode / replay-diff CLI / retention / dashboard still open.*
-- [ ] **[code]** **Shadow mode:** run the candidate policy alongside the champion on the same `GameState` and log its choice (`shadow_strategy_id`, `shadow_choice_json`, already in the schema). Add a report: disagreements × engagement value.
+- [x] **[code]** **Shadow mode:** run the candidate policy alongside the champion on the same `GameState` and log its choice (`shadow_strategy_id`, `shadow_choice_json`, already in the schema). Add a report: disagreements × engagement value.
+      *Done: `flywheel/shadow.py::ShadowRunner` + `report()` (agreement counting, rule-ranked). NOT yet wired into `run`/`run-experiment` as a live mode — that wiring is still open.*
 - [x] **[code]** **Replay-diff CLI:** `droid-harness replay-diff --champion A.yaml --candidate B.yaml --data data/matches --expected-pct N`, wrapping `flywheel/eval/replay_diff.py`.
 - [ ] **[code]** **Retention job:** after 7 days, transcode losses and flagged engagements to ~1 Mbps H.265, export anomaly keyframes for labeling, and delete the rest. Raw video is ~60 MB/min.
-- [ ] **[code]** A dashboard notebook (`notebooks/dashboard.py`, marimo) over DuckDB: win rate with CI by strategy × opponent × game version, play value by rule × posture, triage mix, loop p99 per day.
+- [x] **[code]** A dashboard notebook (`notebooks/dashboard.py`, marimo) over DuckDB: win rate with CI by strategy × opponent × game version, play value by rule × posture, triage mix, loop p99 per day.
+      *Done as plain-python marimo-compatible `notebooks/dashboard.py` (`__main__` prints text; no marimo import). Reads `data/matches/*/summary.json` + `decisions.jsonl` directly (warehouse hookup still open).*
 - [ ] **[you]** Run the first real SPRT: champion vs one small, hand-made change, bounds [0.50, 0.58]. Expect roughly 200 games.
 
 **Done when:** one SPRT runs end-to-end unattended, its result is in the ledger, and no match in it spans a game update.
@@ -188,6 +199,7 @@ The detector is the biggest missing piece: no model is trained yet, and this hos
 ## M6 — Coach and tuning (plan P5)
 
 - [ ] **[code]** `droid-harness coach` CLI: analyze → STRATEGY-only loss stories → `coach.context_pack` → `AnthropicClient` → `check_guardrails` → `apply_patch` on a branch → replay-diff gate → queue the experiment.
+      *Partial: `flywheel/coach/` has proposal/context/guardrail pieces but no `coach` CLI command and no API client. The L2 advisor (`core/runtime/advisor.py`, stdlib HTTP + `--api-base/--model`) is the closest working API pattern to copy.*
 - [ ] **[code]** Wire Optuna's `play_block` (`flywheel/tuning/optuna_study.py`) to the experiment runner. Tuning produces candidates only; they still go through M5.
 - [ ] **[you]** Accept or reject at least one coach proposal and one tuned candidate via SPRT.
 
@@ -218,6 +230,22 @@ The detector is the biggest missing piece: no model is trained yet, and this hos
 
 - [x] **[code]** App watchdog: `BotRunner` checks `pidof com.supercell.clashroyale` every 10 s and relaunches a dead game (aborting the match as `app_died`). It only acts after it has seen the app running once, so a phone without `pidof` can't cause a relaunch loop.
 
+## GPU Runbook (veritas — nick@192.168.1.199, for the other machine)
+
+Venv `~/venvs/droid-det` is ready: Python 3.13, torch 2.7.1+rocm6.3 (`cuda_available: True`), torchvision, ultralytics, onnx. Repo at `~/src/droid-harness` (clone of this repo). GPU was idle (0%) with 400 GB free on 2026-11-26; re-check before a long run (`rocm-smi`, and don't collide with ComfyUI).
+
+1. **Finish the fetch.** `cd ~/src/droid-harness && nohup ~/venvs/droid-det/bin/python tools/fetch_katacr.py --out data/katacr --part2 > /home/nick/droid-det-fetch.log 2>&1 &` — already running since 2026-11-26 ~20:55 UTC. Verify: `tail /home/nick/droid-det-fetch.log; du -sh data/katacr`. Expect sprites + HP bars + empty arenas + `images/part2` (~7,400 real frames).
+2. **Backgrounds.** `~/venvs/droid-det/bin/python tools/extract_backgrounds.py` (writes arena crops; only 1 mined so far — add your own match crops: `droid-harness frames --data <matches> ` on the optiplex, copy over).
+3. **Synth.** `~/venvs/droid-det/bin/python -m droid_harness.cli synth --out data/synth --n <N>` (check `synth --help` for exact flags; needs `models/classes.txt` + alias map — both in repo).
+4. **Convert KataCR.** `~/venvs/droid-det/bin/python -m droid_harness.cli convert-katacr --data data/katacr` (splits by sequence into `groups.json`; refuses train/val overlap).
+5. **Combine.** `~/venvs/droid-det/bin/python -m droid_harness.cli dataset --out data/detector` (single `data.yaml`, overlap refused).
+6. **Train.** `~/venvs/droid-det/bin/python -m droid_harness.cli train-detector --data data/detector/data.yaml --imgsz 640,384` (Ultralytics YOLO26-n, PyTorch-ROCm, static 640×384 export; `exist_ok=True`, reads `best.pt` from the trainer).
+7. **Eval (gate).** `~/venvs/droid-det/bin/python -m droid_harness.cli eval-detector --model runs/detect/train/weights/best.onnx --data data/detector/data.yaml --min-threat-recall <target>` — fails unless every `*_opp` class with enough support reaches recall. Tune `flying_foot_frac` / HSV ownership ranges here if air/ownership recall lags.
+8. **Ship it back.** Copy to the optiplex: `models/yolo26n-cr.onnx` (+ `models/classes.txt` if changed). Then on the optiplex: `droid-harness run ... --strategy configs/strategies/training-camp-v3.yaml --detector models/yolo26n-cr.onnx --async-detect --detect-every 2`. Then `droid-harness replay` old matches through the new model and diff.
+9. **MIGraphX (later).** Stock pip has no MIGraphX EP — expect a custom ORT build or container. Benchmark `detector.provider` MIGraphX vs CPU vs PyTorch-ROCm at 640×384; keep the fastest. Not a gate for the first trained model (CPU fallback + `detect_every` + tracker extrapolation still fits the loop).
+
+Purge `data/katacr` + `data/synth` when done unless keeping them (~10–20 GB).
+
 ## Definition of done: "fully running harness in a real bot game"
 
 - [ ] The bot plays Training Camp matches unattended for hours with automatic recovery (reconnect, popups, app restart).
@@ -230,8 +258,8 @@ The detector is the biggest missing piece: no model is trained yet, and this hos
 ## After that (stretch)
 
 - **M7 — Practice gauntlet + self-play.** Add a Practice Mode flow (battle log → opponent → Training) and a friendly-battle invite/accept flow (`menus.py`; the `friendly` flow is a stub). Run two `BotRunner`s with distinct ports, swapping strategy ↔ (phone, account) per `flywheel/eval/selfplay.py`. Check `seat_effect` for device bias.
-- **M8 — Learned policy (plan P6).** `learn/label_from_video.py` (card left hand + matching spawn → state/action), BC → filtered BC → offline RL, ONNX ranker plugged into `CRPolicy(ranker=...)`. Gate each step by SPRT.
-- **M9 — L2 advisor (optional).** A separate process publishing `Intent` to `IntentBus`, running off-GPU or via API. Measure p99 with it on. Keep it only if it wins an SPRT, then distill it.
+- **M8 — Learned policy (plan P6).** CORE DONE 2026-11-26: `learn/label_from_video.py` (card-left-hand + matching spawn → weighted state/action rows from recorded matches), `learn/train_ranker.py` (numpy-MLP behavior cloning, static ONNX export `(32,55)->(32,1)`), live loader in `app.py` (`CRPolicy(ranker=...)` rescores candidates). STILL OPEN: first real training on warehouse decisions (needs 50+ wins of data — the farm), SPRT-gate each step (BC → filtered BC → offline RL), feature-schema in the strategy hash, logged ranker scores with fallback.
+- **M9 — L2 advisor (optional).** CORE DONE 2026-11-26: `core/runtime/advisor.py` (separate process, OpenAI-compatible API via `--api-base/--model`, posture-only JSON schema, TTL=2×cadence, never blocks), `advise --dry-run` (offline replay of a recorded match). STILL OPEN: point it at a live key (deepseek/zai), measure loop p99 with it on, keep it only if it wins an SPRT, then distill it.
 - **M10 — General Android (plan P7).** Test DroidRun Portal on your phones (`domains/android_os/a11y.py`, with uiautomator fallback). Add a GUI-model fallback with the Set-of-Mark overlay. Measure step latency and cache-hit rate on an everyday task suite.
 
 ## Risks to watch
