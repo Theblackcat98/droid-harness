@@ -26,9 +26,30 @@ class ScreenClassifier:
     regions: list[Roi]
     references: dict[str, list[list[int]]] = field(default_factory=dict)
     max_distance: int = 10  # summed over regions
+    # Arena-independent battle check. The dhash refs are captured in one arena with one
+    # opponent name in the top HUD, so a ladder match (other arena theme, real player
+    # nameplate) hashes far from every ref and came back UNKNOWN — the bot then sat in a
+    # live match and never played. The elixir bar is present in *every* battle whatever
+    # the arena, and is absent from home/menus/loading/results.
+    battle_roi: Roi | None = None
+    battle_label: str = "IN_BATTLE"
+    battle_hsv_lo: tuple[int, int, int] = (140, 60, 80)
+    battle_hsv_hi: tuple[int, int, int] = (175, 255, 255)
+    battle_min_frac: float = 0.05
 
     def signature(self, img: np.ndarray) -> list[int]:
         return [dhash(r.crop(img)) for r in self.regions]
+
+    def battle_evidence(self, img: np.ndarray) -> float:
+        """Fraction of magenta (elixir) pixels in the elixir-bar region."""
+        if self.battle_roi is None:
+            return 0.0
+        crop = self.battle_roi.crop(img)
+        if crop.size == 0:
+            return 0.0
+        mask = cv2.inRange(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV),
+                           np.array(self.battle_hsv_lo, np.uint8), np.array(self.battle_hsv_hi, np.uint8))
+        return float((mask > 0).mean())
 
     def register(self, name: str, img: np.ndarray) -> None:
         self.references.setdefault(name, []).append(self.signature(img))
@@ -41,7 +62,13 @@ class ScreenClassifier:
                 d = sum(hamming(a, b) for a, b in zip(sig, ref, strict=False))
                 if d < dist:
                     best, dist = name, d
-        return (best, dist) if dist <= self.max_distance else ("UNKNOWN", dist)
+        if dist <= self.max_distance:
+            return best, dist
+        # No reference matched: fall back to the arena-independent battle HUD check.
+        # Only reached for UNKNOWN, so it can upgrade a miss but never overrides a ref.
+        if self.battle_evidence(img) >= self.battle_min_frac:
+            return self.battle_label, dist
+        return "UNKNOWN", dist
 
 
 # --- result-screen verification ---------------------------------------------

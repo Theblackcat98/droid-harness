@@ -34,6 +34,14 @@ DEFAULT_FLOWS: dict[str, dict[str, list[str]]] = {
         "POPUP": ["close"],
         "UNKNOWN": ["close"],
     },
+    "ladder": {  # Trophy Road 1v1 with the account's own battle deck: queue straight from HOME
+        "HOME": ["battle"],
+        "RESULT_WIN": ["ok"],
+        "RESULT_LOSS": ["ok"],
+        "RESULT_DRAW": ["ok"],
+        "POPUP": ["close"],
+        "UNKNOWN": ["close"],
+    },
 }
 BATTLE_SCREENS = {"IN_BATTLE"}
 RESULT_SCREENS = {"RESULT_WIN": "win", "RESULT_LOSS": "loss", "RESULT_DRAW": "draw"}

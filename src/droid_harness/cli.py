@@ -522,7 +522,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--det-iou", dest="det_iou", type=float, default=0.5)
     s.add_argument("--async-detect", dest="async_detect", action="store_true",
                    help="run the detector on its own thread so HUD reads never wait for inference")
-    s.add_argument("--mode", default="training_camp", choices=["training_camp", "friendly"])
+    s.add_argument("--mode", default="training_camp", choices=["training_camp", "friendly", "ladder"])
     s.add_argument("--opponent-id", dest="opponent_id")
     s.add_argument("--matches", type=int, default=10)
     s.add_argument("--balance-epoch", dest="balance_epoch")
@@ -568,7 +568,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--det-iou", dest="det_iou", type=float, default=0.5)
     s.add_argument("--async-detect", dest="async_detect", action="store_true",
                    help="run the detector on its own thread so HUD reads never wait for inference")
-    s.add_argument("--mode", default="training_camp", choices=["training_camp", "friendly"])
+    s.add_argument("--mode", default="training_camp", choices=["training_camp", "friendly", "ladder"])
     s.add_argument("--opponent-id", dest="opponent_id")
     s.add_argument("--balance-epoch", dest="balance_epoch")
     s.add_argument("--experiment-id", dest="experiment_id")
