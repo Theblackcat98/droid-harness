@@ -20,8 +20,8 @@
 # background. Generic counter rows live in the counter table.
 knight_me
 knight_opp
-princess_me
-princess_opp
+archer_me
+archer_opp
 minion_me
 minion_opp
 giant_me

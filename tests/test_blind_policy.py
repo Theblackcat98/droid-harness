@@ -49,28 +49,28 @@ def test_blind_push_tank_then_support_then_spell(starter):
     pol.confirm_played("knight", 41_100)
 
     # Ranged support stands behind the bridge.
-    d = pol.decide(_s(45_000, 4.5, ["arrows", "princess", "musketeer", "fireball"]))
+    d = pol.decide(_s(45_000, 4.5, ["arrows", "archers", "musketeer", "fireball"]))
     assert d.chosen.card == "musketeer" and d.chosen.tile == (14.5, 12.0)
     pol.confirm_played("musketeer", 45_100)
 
     # Tank should be at the tower: one spell on opp_right.
-    d = pol.decide(_s(52_000, 4.0, ["arrows", "princess", "mini_pekka", "fireball"]))
+    d = pol.decide(_s(52_000, 4.0, ["arrows", "archers", "mini_pekka", "fireball"]))
     assert d.chosen.card in ("fireball", "arrows") and d.chosen.tile == Arena().towers["opp_right"]
     pol.confirm_played(d.chosen.card, 52_100)
-    d = pol.decide(_s(53_000, 4.0, ["arrows", "princess", "mini_pekka", "knight"]))
+    d = pol.decide(_s(53_000, 4.0, ["arrows", "archers", "mini_pekka", "knight"]))
     assert d.chosen is None  # one push-timed spell per push; 4 elixir is below pressure
 
 
 def test_blind_pressure_and_holding_for_the_tank(starter):
     pol, _ = _policy(starter)
     # No Giant in hand: heaviest affordable troop at 7 elixir.
-    d = pol.decide(_s(30_000, 7.0, ["knight", "mini_pekka", "arrows", "princess"]))
+    d = pol.decide(_s(30_000, 7.0, ["knight", "mini_pekka", "arrows", "archers"]))
     assert d.chosen.card == "mini_pekka" and "pressure" in d.chosen.reason
     # Giant in hand but under the push threshold: hold the elixir.
     pol2, _ = _policy(starter)
-    assert pol2.decide(_s(30_000, 7.5, ["knight", "giant", "arrows", "princess"])).chosen is None
+    assert pol2.decide(_s(30_000, 7.5, ["knight", "giant", "arrows", "archers"])).chosen is None
     # Double elixir lowers the push threshold.
-    d = pol2.decide(_s(130_000, 6.2, ["knight", "giant", "arrows", "princess"], phase="x2"))
+    d = pol2.decide(_s(130_000, 6.2, ["knight", "giant", "arrows", "archers"], phase="x2"))
     assert d.chosen.card == "giant"
 
 
@@ -108,6 +108,6 @@ def test_missed_tap_is_retried_once(starter):
     # The card left the hand (the hand read moved on): never re-tap whatever slid in.
     pol2, _ = _policy(starter, retry_after_ms=400)
     pol2.decide(_s(40_000, 8.0, hand))
-    moved = ["princess", "knight", "musketeer", "fireball"]
+    moved = ["archers", "knight", "musketeer", "fireball"]
     d = pol2.decide(_s(40_450, 3.2, moved))
     assert d.chosen is None or not d.chosen.reason.startswith("retry:")

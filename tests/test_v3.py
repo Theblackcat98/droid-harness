@@ -54,7 +54,7 @@ def test_pipeline_marks_unreadable_slots_stale_but_still_detects_the_play(arena)
     from droid_harness.sim.cr_scene import CRScene, build_matcher_from_scene
 
     cards = CardDB.load(ROOT / "tests/fixtures/cards_starter.json")
-    scene = CRScene(cards, ["knight", "princess", "minions", "arrows", "fireball", "giant", "musketeer",
+    scene = CRScene(cards, ["knight", "archers", "minions", "arrows", "fireball", "giant", "musketeer",
                             "mini_pekka"], elixir=7.0, draw_tower_hp=False)
     plays = []
     perc = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=cards, arena=arena,
@@ -120,10 +120,10 @@ def test_path_prediction_follows_destroyed_towers(starter):
 
 
 # --- v3 experiments ------------------------------------------------------------------------
-def test_v3_never_sends_princess_as_a_win_condition(starter):
+def test_v3_never_sends_a_support_card_as_a_win_condition(starter):
     pol, p = _policy(starter, "training-camp-v3")
     assert p.win_conditions == ["giant"]
-    s = _s(elixir=9.0, hand=["princess", "knight", "arrows", "fireball"], opp_elixir=(0.5, 1.0))
+    s = _s(elixir=9.0, hand=["archers", "knight", "arrows", "fireball"], opp_elixir=(0.5, 1.0))
     cands = [c for r in pol.rules for c in r.propose(s, p, pol.ctx, None)]
     assert not [c for c in cands if c.rule_id == "offense.win_condition_when_opp_low"]
 
@@ -199,9 +199,9 @@ def test_synth_samples_classes_evenly(tmp_path):
     names = load_class_names(ROOT / "models/classes.txt")
     sp = np.zeros((40, 24, 4), np.uint8)
     sp[..., 3] = 255
-    sprites = [synth.Sprite(sp, "other_ground_opp")] * 500 + [synth.Sprite(sp, "princess_opp")]
+    sprites = [synth.Sprite(sp, "other_ground_opp")] * 500 + [synth.Sprite(sp, "archer_opp")]
     synth.generate_dataset([np.full((768, 464, 3), 60, np.uint8)], sprites, tmp_path, 30, names,
                            synth.SynthConfig(seed=1, min_units=4, max_units=4, min_visible=0.0))
     import yaml
     counts = yaml.safe_load((tmp_path / "label_counts.yaml").read_text())
-    assert counts.get("princess_opp", 0) > 0.3 * counts.get("other_ground_opp", 1)
+    assert counts.get("archer_opp", 0) > 0.3 * counts.get("other_ground_opp", 1)

@@ -8,8 +8,8 @@
 # Use this one once a detector runs; until then use training-camp-blind-v1.
 strategy: training-camp-v2
 parent: training-camp-v1
-deck: [knight, princess, minions, arrows, fireball, giant, musketeer, mini_pekka]
-win_conditions: [giant, princess]
+deck: [knight, archers, minions, arrows, fireball, giant, musketeer, mini_pekka]
+win_conditions: [giant, archers]
 params:
   act_threshold: 0.15
   elixir_weight: 0.4

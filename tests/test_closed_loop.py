@@ -98,7 +98,7 @@ def test_blind_strategy_attacks_end_to_end_without_a_detector(arena, tmp_path):
     root = Path(__file__).resolve().parents[1]
     starter = CardDB.load(root / "tests/fixtures/cards_starter.json")
     _, params, _ = load_strategy(root / "configs/strategies/training-camp-blind-v1.yaml")
-    deck = ["giant", "knight", "musketeer", "fireball", "princess", "minions", "arrows", "mini_pekka"]
+    deck = ["giant", "knight", "musketeer", "fireball", "archers", "minions", "arrows", "mini_pekka"]
     scene = CRScene(starter, deck, elixir=8.0, draw_tower_hp=False)
     lock = threading.Lock()
 

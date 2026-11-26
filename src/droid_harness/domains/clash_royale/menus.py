@@ -36,6 +36,11 @@ DEFAULT_FLOWS: dict[str, dict[str, list[str]]] = {
     },
     "ladder": {  # Trophy Road 1v1 with the account's own battle deck: queue straight from HOME
         "HOME": ["battle"],
+        # The asset-loading screen between the Battle tap and the arena, and the
+        # matchmaking wait, must not be tapped: a stray close/menu tap there can cancel
+        # the queue or open a screen the flow can't leave.
+        "LOADING": [],
+        "MATCHMAKING": [],
         "RESULT_WIN": ["ok"],
         "RESULT_LOSS": ["ok"],
         "RESULT_DRAW": ["ok"],

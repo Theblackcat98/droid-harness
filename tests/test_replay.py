@@ -13,7 +13,7 @@ from droid_harness.domains.clash_royale.replay import diff_events, diff_runs, re
 from droid_harness.sim.cr_scene import CRScene, build_matcher_from_scene
 
 ROOT = Path(__file__).resolve().parents[1]
-DECK = ["knight", "princess", "minions", "arrows", "fireball", "giant", "musketeer", "mini_pekka"]
+DECK = ["knight", "archers", "minions", "arrows", "fireball", "giant", "musketeer", "mini_pekka"]
 
 
 def _record(match_dir: Path, scene: CRScene, seconds: float, fps: int, actions: dict[int, tuple]) -> int:

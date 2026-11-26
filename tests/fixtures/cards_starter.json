@@ -4,13 +4,87 @@
     "warning": "Elixir costs, unit counts and the flying flag are real; every other number is a round test value, not game data. The real DB is configs/domains/clash_royale/cards.json (gitignored, built locally)."
   },
   "cards": {
-    "knight":     {"name": "Knight", "cost": 3, "kind": "troop", "speed_tiles_s": 1.0, "range_tiles": 1.2, "hitpoints": 690},
-    "princess":   {"name": "Princess", "cost": 3, "kind": "troop", "speed_tiles_s": 1.0, "range_tiles": 9.0, "hitpoints": 216, "targets_air": true},
-    "minions":    {"name": "Minions", "cost": 3, "kind": "troop", "units": 3, "speed_tiles_s": 1.5, "range_tiles": 2.0, "hitpoints": 90, "flying": true, "targets_air": true, "unit_classes": ["minion"]},
-    "arrows":     {"name": "Arrows", "cost": 3, "kind": "spell", "damage": 120, "ct_damage_pct": 25, "projectile_speed_tiles_s": 13.0, "radius_tiles": 4.0, "unit_classes": ["arrows_effect"]},
-    "fireball":   {"name": "Fireball", "cost": 4, "kind": "spell", "damage": 325, "ct_damage_pct": 30, "projectile_speed_tiles_s": 10.0, "radius_tiles": 2.5, "unit_classes": ["fireball_effect"]},
-    "giant":      {"name": "Giant", "cost": 5, "kind": "troop", "speed_tiles_s": 0.75, "range_tiles": 1.2, "hitpoints": 2000, "buildings_only": true},
-    "musketeer":  {"name": "Musketeer", "cost": 4, "kind": "troop", "speed_tiles_s": 1.0, "range_tiles": 6.0, "hitpoints": 340, "targets_air": true},
-    "mini_pekka": {"name": "Mini P.E.K.K.A", "cost": 4, "kind": "troop", "speed_tiles_s": 1.5, "range_tiles": 0.8, "hitpoints": 600}
+    "knight": {
+      "name": "Knight",
+      "cost": 3,
+      "kind": "troop",
+      "speed_tiles_s": 1.0,
+      "range_tiles": 1.2,
+      "hitpoints": 690
+    },
+    "minions": {
+      "name": "Minions",
+      "cost": 3,
+      "kind": "troop",
+      "units": 3,
+      "speed_tiles_s": 1.5,
+      "range_tiles": 2.0,
+      "hitpoints": 90,
+      "flying": true,
+      "targets_air": true,
+      "unit_classes": [
+        "minion"
+      ]
+    },
+    "arrows": {
+      "name": "Arrows",
+      "cost": 3,
+      "kind": "spell",
+      "damage": 120,
+      "ct_damage_pct": 25,
+      "projectile_speed_tiles_s": 13.0,
+      "radius_tiles": 4.0,
+      "unit_classes": [
+        "arrows_effect"
+      ]
+    },
+    "fireball": {
+      "name": "Fireball",
+      "cost": 4,
+      "kind": "spell",
+      "damage": 325,
+      "ct_damage_pct": 30,
+      "projectile_speed_tiles_s": 10.0,
+      "radius_tiles": 2.5,
+      "unit_classes": [
+        "fireball_effect"
+      ]
+    },
+    "giant": {
+      "name": "Giant",
+      "cost": 5,
+      "kind": "troop",
+      "speed_tiles_s": 0.75,
+      "range_tiles": 1.2,
+      "hitpoints": 2000,
+      "buildings_only": true
+    },
+    "musketeer": {
+      "name": "Musketeer",
+      "cost": 4,
+      "kind": "troop",
+      "speed_tiles_s": 1.0,
+      "range_tiles": 6.0,
+      "hitpoints": 340,
+      "targets_air": true
+    },
+    "mini_pekka": {
+      "name": "Mini P.E.K.K.A",
+      "cost": 4,
+      "kind": "troop",
+      "speed_tiles_s": 1.5,
+      "range_tiles": 0.8,
+      "hitpoints": 600
+    },
+    "archers": {
+      "name": "Archers",
+      "cost": 3,
+      "kind": "troop",
+      "speed_tiles_s": 1.0,
+      "range_tiles": 5.0,
+      "hitpoints": 119,
+      "targets_air": true,
+      "units": 2
+    }
   }
 }

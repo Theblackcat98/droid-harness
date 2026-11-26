@@ -2,7 +2,7 @@
 # One change vs training-camp-v3; test it alone against v3.
 strategy: training-camp-v3-e5-reserve
 parent: training-camp-v3
-deck: [knight, princess, minions, arrows, fireball, giant, musketeer, mini_pekka]
+deck: [knight, archers, minions, arrows, fireball, giant, musketeer, mini_pekka]
 win_conditions: [giant]   # Princess is ranged support, not a win condition (E1)
 params:
   defense_reserve: 3.0

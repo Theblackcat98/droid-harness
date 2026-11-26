@@ -1,10 +1,10 @@
 {
   "knight": "knight",
-  "princess": "princess",
   "minion": "minion",
   "giant": "giant",
   "musketeer": "musketeer",
   "mini-pekka": "mini_pekka",
   "arrows": "arrows_effect",
-  "fireball": "fireball_effect"
+  "fireball": "fireball_effect",
+  "archer": "archer"
 }

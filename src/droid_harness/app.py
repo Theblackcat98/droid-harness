@@ -69,8 +69,14 @@ class RunConfig:
     towers: Path | None = None  # tower-state templates dir (droid-harness tower-template)
 
 
-def load_screens(directory: Path, regions: list[Roi]) -> ScreenClassifier:
-    sc = ScreenClassifier(regions)
+def load_screens(directory: Path, regions: list[Roi], *, battle_roi: Roi | None = None,
+                 battle_hsv: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None) -> ScreenClassifier:
+    kw = {}
+    if battle_roi is not None:
+        kw["battle_roi"] = battle_roi
+    if battle_hsv is not None:
+        kw["battle_hsv_lo"], kw["battle_hsv_hi"] = battle_hsv
+    sc = ScreenClassifier(regions, **kw)
     for p in sorted(Path(directory).glob("*.png")):
         sc.register(p.stem.split("__")[0], cv2.imread(str(p)))
     return sc
@@ -105,7 +111,8 @@ class BotRunner:
                              "yet; remove it or wire a ranker loader first")
         regions = [Roi(*r) for r in yaml.safe_load(cfg.layout.read_text()).get("screen_regions",
                                                                                  [[0, 0, 1, 0.5], [0, 0.5, 1, 1]])]
-        self.screens = load_screens(cfg.screens, regions)
+        self.screens = load_screens(cfg.screens, regions, battle_roi=self.layout.elixir_bar,
+                                    battle_hsv=(self.layout.elixir_hsv_lo, self.layout.elixir_hsv_hi))
         detector = None
         if cfg.detector:
             # Names come from the ONNX metadata; --classes is a cross-check that refuses to

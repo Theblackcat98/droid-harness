@@ -79,7 +79,7 @@ def test_export_frames_splits_by_match_and_prelabels(tmp_path, arena):
 
     root = Path(__file__).resolve().parents[1]
     cards = CardDB.load(root / "tests/fixtures/cards_starter.json")
-    deck = ["knight", "princess", "minions", "arrows", "fireball", "giant", "musketeer", "mini_pekka"]
+    deck = ["knight", "archers", "minions", "arrows", "fireball", "giant", "musketeer", "mini_pekka"]
     dirs = []
     for i in range(3):
         scene = CRScene(cards, deck, elixir=7.0, draw_tower_hp=False)

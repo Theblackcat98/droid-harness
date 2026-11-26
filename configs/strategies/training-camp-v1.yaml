@@ -5,8 +5,8 @@
 # account owns that deck; this file is the one that matches the phone today.
 strategy: training-camp-v1
 parent: hog-cycle-v1
-deck: [knight, princess, minions, arrows, fireball, giant, musketeer, mini_pekka]
-win_conditions: [giant, princess]
+deck: [knight, archers, minions, arrows, fireball, giant, musketeer, mini_pekka]
+win_conditions: [giant, archers]
 params:
   act_threshold: 0.15
   elixir_weight: 0.4

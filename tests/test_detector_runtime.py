@@ -27,7 +27,7 @@ from droid_harness.sim.cr_scene import CRScene, build_matcher_from_scene
 
 ROOT = Path(__file__).resolve().parents[1]
 FIX = Path(__file__).parent / "fixtures"
-STARTER = ["knight", "princess", "minions", "arrows", "fireball", "giant", "musketeer", "mini_pekka"]
+STARTER = ["knight", "archers", "minions", "arrows", "fireball", "giant", "musketeer", "mini_pekka"]
 
 
 def _onnx(path, out, *, in_hw=(64, 64), names=None, end2end=None):

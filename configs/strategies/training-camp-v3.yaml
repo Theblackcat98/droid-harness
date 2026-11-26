@@ -11,7 +11,7 @@
 # Needs a detector (it can't see units otherwise): until then use training-camp-blind-v1.
 strategy: training-camp-v3
 parent: training-camp-v2
-deck: [knight, princess, minions, arrows, fireball, giant, musketeer, mini_pekka]
+deck: [knight, archers, minions, arrows, fireball, giant, musketeer, mini_pekka]
 win_conditions: [giant]   # Princess is ranged support, not a win condition (E1)
 params:
   act_threshold: 0.15
