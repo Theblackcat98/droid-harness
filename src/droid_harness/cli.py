@@ -398,6 +398,63 @@ def cmd_ledger(a) -> None:
     print(Ledger(a.store).render_markdown(a.out))
 
 
+def cmd_advise(a) -> None:
+    """L2 advisor: replay recorded states through the LLM, or print prompts offline."""
+    import os
+
+    from .core.runtime.advisor import POSTURES, Advisor, build_prompt
+    from .core.runtime.intent_bus import IntentBus
+
+    allowed = {p.strip().upper() for p in (a.allowed or "").split(",") if p.strip()}
+    if unknown := allowed - set(POSTURES):
+        raise SystemExit(f"advise: unknown postures: {sorted(unknown)} (choose from {list(POSTURES)})")
+    states = _iter_advise_states(a.data) if a.data else []
+    if a.dry_run:
+        if not states:
+            raise SystemExit("advise --dry-run needs --data <match dir | decisions.jsonl | matches root>")
+        for label, st in states:  # no network: print the prompts for review
+            print(f"--- {label} ---")
+            print(build_prompt(st))
+        return
+    api_key = a.api_key or os.environ.get("DROID_ADVISOR_KEY")
+    if not a.api_base or not api_key:
+        raise SystemExit("advise needs --api-base and --api-key (or DROID_ADVISOR_KEY env), or use --dry-run")
+    if not states:
+        raise SystemExit("advise needs --data <match dir | decisions.jsonl | matches root> to replay")
+    bus = IntentBus(max_age_s=2.0 * a.cadence)
+    adv = Advisor(bus, a.api_base, api_key, a.model, cadence_s=a.cadence, allowed=allowed or set(POSTURES))
+    for label, st in states:
+        intent = adv.poll(st)
+        print(json.dumps({"state": label, "posture": intent.posture if intent else None,
+                          "note": intent.note if intent else ""}))
+
+
+def _iter_advise_states(data: str) -> list[tuple[str, dict]]:
+    """Unwrap {state} dicts from decisions.jsonl under --data (file, match dir, or root)."""
+    p = Path(data)
+    if p.is_file():
+        files = [p]
+    elif (p / "decisions.jsonl").exists():
+        files = [p / "decisions.jsonl"]
+    else:
+        files = sorted(p.glob("*/decisions.jsonl"))
+    out = []
+    for f in files:
+        for i, line in enumerate(f.read_text().splitlines()):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            st = rec.get("state") if isinstance(rec, dict) else None
+            if isinstance(st, dict):
+                out.append((f"{f.parent.name}:{i}", st))
+            elif isinstance(rec, dict) and "t_ms" in rec:
+                out.append((f"{f.parent.name}:{i}", rec))
+    return out
+
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser(prog="droid-harness")
@@ -626,6 +683,19 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--store", default="ledger/experiments.jsonl")
     s.add_argument("--out", default="ledger/STRATEGY_LEDGER.md")
     s.set_defaults(fn=cmd_ledger)
+
+    s = sub.add_parser("advise", help="L2 advisor: replay states via an OpenAI-compatible LLM (or --dry-run)")
+    s.add_argument("--api-base", dest="api_base", default=None, help="e.g. http://localhost:11434/v1")
+    s.add_argument("--api-key", dest="api_key", default=None, help="or DROID_ADVISOR_KEY env (not needed --dry-run)")
+    s.add_argument("--model", default="deepseek-v4.1-flash")
+    s.add_argument("--cadence", type=float, default=4.0, help="seconds between polls; intent TTL = 2x this")
+    s.add_argument("--data", default=None,
+                   help="match dir, decisions.jsonl file, or matches root to replay offline")
+    s.add_argument("--allowed", default="OPENING,BALANCED,DEFEND_LEAD,PRESS,SPELL_CYCLE",
+                   help="comma-separated posture allowlist (no strategy file here, so defaults to all)")
+    s.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="print prompts only, no network — fully offline")
+    s.set_defaults(fn=cmd_advise)
 
     a = ap.parse_args(argv)
     a.fn(a)

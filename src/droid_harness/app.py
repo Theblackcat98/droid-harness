@@ -35,6 +35,7 @@ from .domains.clash_royale.perception.towers import TowerStateReader
 from .domains.clash_royale.policy.strategy import load_strategy
 from .domains.clash_royale.policy.utility import CRPolicy
 from .domains.clash_royale.session import CRSession, MatchMeta
+from .learn.train_ranker import load_ranker
 
 log = logging.getLogger(__name__)
 PACKAGE = "com.supercell.clashroyale"
@@ -104,11 +105,14 @@ class BotRunner:
         self.layout = Layout.load(cfg.layout)
         self.tiles = TileMapper.load(cfg.tiles)
         _, self.params, self.strategy_id = load_strategy(cfg.strategy)
+        ranker = None
         if self.params.spec.learned_ranker:
-            # The live policy has no ranker loader yet; running would silently ignore it and
-            # log matches under a strategy_id that claims a model it never used.
-            raise ValueError(f"{cfg.strategy} sets learned_ranker, which the live runner doesn't load "
-                             "yet; remove it or wire a ranker loader first")
+            model_path = cfg.strategy.parent / self.params.spec.learned_ranker
+            # load_ranker raises ValueError for missing/unreadable model or metadata, and
+            # for a deck/order mismatch (a shifted one-hot scores the wrong card).
+            ranker = load_ranker(model_path, deck=self.params.deck)
+            log.info("ranker on %s: %d state + %d candidate features, %d candidates/inference",
+                     model_path, ranker.state_dim, ranker.candidate_dim, ranker.max_candidates)
         regions = [Roi(*r) for r in yaml.safe_load(cfg.layout.read_text()).get("screen_regions",
                                                                                  [[0, 0, 1, 0.5], [0, 0.5, 1, 1]])]
         self.screens = load_screens(cfg.screens, regions, battle_roi=self.layout.elixir_bar,
@@ -130,7 +134,7 @@ class BotRunner:
                         "rarely attack; use configs/strategies/training-camp-blind-v1.yaml", cfg.strategy.name)
         self.recorder = Recorder(cfg.data)
         self.policy = CRPolicy(self.cards, self.arena, self.params,
-                               exec_latency_s=self.profile.exec_latency_ms / 1000)
+                               exec_latency_s=self.profile.exec_latency_ms / 1000, ranker=ranker)
         self.perception = CRPerception(layout=self.layout, tiles=self.tiles, cards=self.cards, arena=self.arena,
                                        matcher=CardMatcher.load(cfg.templates), digits=load_digits(cfg.digits),
                                        detector=detector, on_my_play=self.policy.confirm_played,

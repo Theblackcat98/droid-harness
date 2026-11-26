@@ -28,7 +28,7 @@ from ..state import GameState, Unit
 from .cards import CardMatcher
 from .classes import flying_of, is_effect, is_tower, split_side
 from .detector import AsyncDetector, Detector
-from .digits import DigitReader
+from .digits import DigitReader, binarize, segment
 from .grid import Layout, TileMapper
 from .hud import is_greyed, read_elixir
 from .ownership import ownership_and_hp
@@ -79,6 +79,9 @@ class CRPerception:
         self.next_card: str | None = None
         self.towers: dict[str, int] = {}
         self._tower_read_ms = -10**9
+        self._clock_read_ms = -10**9
+        self._clock_match_t_s: float | None = None
+        self.clock_activity: float | None = None
         self.frame_i = 0
         self.warnings: Counter = Counter()
         self.units: list[Unit] = []
@@ -128,10 +131,11 @@ class CRPerception:
             crowns = (3, crowns[1])
         if self.towers.get("me_king") == 0:
             crowns = (crowns[0], 3)
+        match_t_s, clock_drift_s = self._read_clock(img, t_ms, warns)
         self.frame_i += 1
         for w in warns:
             self.warnings[w] += 1
-        return GameState(
+        state = GameState(
             t_ms=t_ms, host_ns=frame.t_decoded_ns, frame_size=(img.shape[1], img.shape[0]),
             phase=phase_at(t_s), my_elixir=self.elixir.value, opp_elixir=self.opp.elixir.interval(),
             hand=list(self.hand), hand_affordable=affordable, hand_fresh=list(self.hand_fresh),
@@ -140,6 +144,12 @@ class CRPerception:
             opp_hand_possible=self.opp.cycle.possible_hand(), opp_last_four=self.opp.cycle.last_four,
             pocket_open={"left": self.towers.get("opp_left") == 0, "right": self.towers.get("opp_right") == 0},
             warnings=warns)
+        # GameState is the canonical state class; clock fields are attached here (rather
+        # than changing its schema) because only perception produces them.
+        state.match_t_s = match_t_s
+        state.clock_drift_s = clock_drift_s
+        state.clock_activity = self.clock_activity
+        return state
 
     # --- pieces ---------------------------------------------------------------
     def _read_hand(self, img: np.ndarray, t_ms: int, warns: list[str]) -> list:
@@ -313,3 +323,50 @@ class CRPerception:
                 warns.append("tower_hp_increase")
                 continue
             self.towers[name] = hp
+
+    # --- match clock ------------------------------------------------------------
+    def _read_clock(self, img: np.ndarray, t_ms: int, warns: list[str]) -> tuple[float | None, float | None]:
+        """Read the clock ROI at most once per second, then compare it to frame time.
+
+        With digit templates available the ``M:SS`` glyphs are parsed into seconds;
+        without them the crop mean is still refreshed as an activity signal (the HUD
+        clock is never blank while a battle is live).  Drift is ``frame_time - clock``;
+        more than a second means the captured stream and the game clock disagree.
+        """
+        if t_ms - self._clock_read_ms >= 1000:
+            crop = self.layout.clock.crop(img)
+            self._clock_read_ms = t_ms
+            self.clock_activity = float(crop.mean()) if crop.size else None
+            self._clock_match_t_s = self._parse_clock(crop)
+        match_t_s = self._clock_match_t_s
+        drift = None if match_t_s is None else t_ms / 1000.0 - match_t_s
+        if drift is not None and drift > 1.0:
+            warns.append("clock_drift")
+        return match_t_s, drift
+
+    def _parse_clock(self, crop: np.ndarray) -> float | None:
+        """Parse ``M:SS`` from a clock crop; ``None`` when digits are unavailable/unreadable."""
+        if self.digits is None or not getattr(self.digits, "templates", None) or crop.size == 0:
+            return None
+        # Clock digits can be small on a downscaled capture; 0.3 matches the template
+        # bootstrap in ``DigitReader.from_font`` and still drops the tiny colon dots.
+        glyphs = segment(binarize(crop), min_h_frac=0.3)
+        if not glyphs:
+            return None
+        chars = []
+        for glyph in glyphs:
+            digit, _ = self.digits.classify(glyph)
+            if digit is None:
+                return None
+            chars.append(digit)
+        try:
+            # The colon is not a tall component, so it never reaches ``segment``.
+            if len(chars) == 1:
+                minutes, seconds = 0, int(chars[0])
+            else:
+                minutes, seconds = int("".join(chars[:-2]) or "0"), int("".join(chars[-2:]))
+        except ValueError:
+            return None
+        if seconds >= 60:
+            return None
+        return float(minutes * 60 + seconds)
