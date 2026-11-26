@@ -35,12 +35,13 @@ class Placement:
     def lead_target(self, card: Card, unit: Unit, s: GameState, t_exec_ms: int) -> Point:
         """Where ``unit`` will be when ``card`` takes effect (two fixed-point passes for spell travel)."""
         speed = self._speed(unit)
+        alive = s.tower_alive()
         t = self.effect_delay_s(card, s, t_exec_ms)
-        target = path.advance(unit, t, self.arena, speed=speed)
+        target = path.advance(unit, t, self.arena, speed=speed, alive=alive)
         if card.is_spell and card.projectile_speed_tiles_s:
             for _ in range(2):
                 t_total = t + card.travel_time_s(self.arena.king_tower_spell_origin, target)
-                target = path.advance(unit, t_total, self.arena, speed=speed)
+                target = path.advance(unit, t_total, self.arena, speed=speed, alive=alive)
         return target
 
     def _speed(self, unit: Unit) -> float:

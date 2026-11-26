@@ -55,7 +55,7 @@ def _onnx(path, out, *, in_hw=(64, 64), names=None, end2end=None):
 def test_class_file_strips_comments_and_rejects_duplicates(tmp_path):
     names = load_class_names(ROOT / "models/classes.txt")
     assert names[0] == "knight_me" and not any(n.startswith("#") or " " in n for n in names)
-    assert len(names) == 14
+    assert len(names) == 18 and {"other_ground_opp", "other_air_opp"} <= set(names)
     (tmp_path / "c.txt").write_text("# header\na\n\nb  # trailing\na\n")
     with pytest.raises(ValueError, match="duplicate"):
         load_class_names(tmp_path / "c.txt")

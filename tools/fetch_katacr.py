@@ -58,6 +58,8 @@ def main() -> int:
     ap.add_argument("--no-bars", action="store_true")
     ap.add_argument("--no-backgrounds", action="store_true")
     ap.add_argument("--part2", action="store_true", help="also fetch the ~7,400 hand-labeled real frames")
+    ap.add_argument("--generic", default=str(ROOT / "models" / "katacr_generic.json"),
+                    help="catch-all map (tools/build_katacr_generic.py); '' to fetch named classes only")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -70,6 +72,13 @@ def main() -> int:
         return 0
 
     alias: dict[str, str] = json.loads(Path(args.alias).read_text())
+    if args.generic and Path(args.generic).exists():  # evolutions of named cards + other_ground/other_air
+        g = json.loads(Path(args.generic).read_text())
+        for kata, ours in g.get("named", {}).items():
+            alias.setdefault(kata, ours)
+        for base in ("other_ground", "other_air"):
+            for kata in g.get(base, []):
+                alias.setdefault(kata, base)
     work = out / "_repo"
     if not (work / ".git").exists():
         run("git", "clone", "--depth", "1", "--filter=blob:none", "--sparse", REPO, str(work))
@@ -88,7 +97,10 @@ def main() -> int:
         src = work / "images" / "segment" / kata
         n = link_all(src, out / "segment" / ours)
         mine = len(list(src.glob(f"{kata}_0_*.png")))
-        counts[ours] = {"sprites": n, "yours": mine, "theirs": n - mine}
+        c = counts.setdefault(ours, {"sprites": 0, "yours": 0, "theirs": 0})
+        c["sprites"] += n
+        c["yours"] += mine
+        c["theirs"] += n - mine
     report = {"segment": counts}
     if not args.no_bars:
         report["bars"] = link_all(work / "images" / "segment" / "bar", out / "bars")

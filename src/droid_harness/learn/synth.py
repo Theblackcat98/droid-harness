@@ -203,13 +203,18 @@ def generate_dataset(backgrounds: list[np.ndarray], sprites: list[Sprite], out_d
     if not backgrounds or not sprites:
         raise ValueError("need at least one background and one sprite")
     rng = random.Random(cfg.seed)
-    pool = list(sprites)  # never mutate the caller's list
+    # Class-balanced: pick a class, then a sprite. KataCR has 6 arrows sprites and
+    # thousands for the catch-alls; sampling sprites directly would starve rare classes.
+    by_cls: dict[str, list[Sprite]] = {}
+    for sp in sprites:  # never mutate the caller's list
+        by_cls.setdefault(sp.cls, []).append(sp)
+    classes = sorted(by_cls)
     out_dir.mkdir(parents=True, exist_ok=True)
     counts: Counter = Counter()
     for i in range(n):
         split = "val" if rng.random() < val_frac else "train"
         k = rng.randint(cfg.min_units, cfg.max_units)
-        chosen = [rng.choice(pool) for _ in range(k)]
+        chosen = [rng.choice(by_cls[rng.choice(classes)]) for _ in range(k)]
         img, boxes = compose(rng.choice(backgrounds), chosen, cfg, rng, bars)
         counts.update(b.cls for b in boxes)
         stem = f"synth_{i:05d}"

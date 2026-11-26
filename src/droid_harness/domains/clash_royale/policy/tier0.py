@@ -58,7 +58,7 @@ class Tier0:
             if not hp_max or hp / hp_max > p.tier0.emergency_hp_frac:
                 continue
             options = [(self.cards.cost(k), slot, k) for slot, k in s.affordable_hand(self.cards)
-                       if p.counters.get((k, th.kind), 0.0) > 0]
+                       if p.counters.get((k, th.kind), 0.0) > 0 and self.cards[k].can_hit(th.unit.flying)]
             if not options:
                 continue
             _, slot, key = min(options)

@@ -36,15 +36,17 @@ class BlindPush:
         self.pushes = 0
         self.spelled_this_push = False
 
-    def on_played(self, card: str, t_ms: int, p) -> None:
+    def on_played(self, card: str, t_ms: int, p, ctx: RuleContext | None = None) -> None:
         if not getattr(p, "blind", False):
             return
         if card in self._tanks(p):
             self.tank_ms = t_ms
             self.pushes += 1
             self.spelled_this_push = False
-        elif self.tank_ms is not None and self._in_spell_window(p, t_ms - self.tank_ms):
-            self.spelled_this_push = True  # one push-timed spell per push (any card counts as spent)
+            return
+        is_spell = ctx is not None and card in ctx.cards and ctx.cards[card].is_spell
+        if is_spell and self.tank_ms is not None and self._in_spell_window(p, t_ms - self.tank_ms):
+            self.spelled_this_push = True  # only a confirmed spell uses up the push's spell
 
     # --- helpers ----------------------------------------------------------------------
     @staticmethod

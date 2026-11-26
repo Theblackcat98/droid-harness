@@ -47,10 +47,15 @@ def path_distance_to_tower(u: Unit, arena: Arena, tower: Point, stop_short: floa
 
 
 def advance(u: Unit, t_s: float, arena: Arena, *, speed: float | None = None,
-            target: Point | None = None, stop_short: float | None = None) -> Point:
-    """Predicted tile after ``t_s`` seconds along the lane path."""
+            target: Point | None = None, stop_short: float | None = None,
+            alive: dict[str, bool] | None = None) -> Point:
+    """Predicted tile after ``t_s`` seconds along the lane path.
+
+    ``alive``: tower name -> alive. Pass the real state: once a princess tower falls, units
+    in that lane walk to the king tower, not to the rubble.
+    """
     if target is None:
-        alive = {}
+        alive = alive or {}
         side = "opp" if u.side == "opp" else "me"
         _, target = arena.target_tower(side, arena.lane_of(u.tile[0]), alive)
     v = u.speed if speed is None else speed

@@ -23,6 +23,8 @@ class Constraints:
             return "unknown_card"
         if c.slot < 0 or c.slot >= len(s.hand) or s.hand[c.slot] != c.card:
             return "not_in_hand"
+        if not s.slot_fresh(c.slot):
+            return "stale_slot"  # last read failed: the slot may hold a different card now
         exec_ms = c.execute_at_ms if c.execute_at_ms is not None else s.t_ms
         if exec_ms < s.t_ms:
             return "in_the_past"

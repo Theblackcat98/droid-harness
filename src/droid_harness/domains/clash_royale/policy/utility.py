@@ -49,7 +49,7 @@ class CRPolicy:
             self.pending = None
         for r in self.rules:
             if hasattr(r, "on_played"):
-                r.on_played(card, t_ms, self.p)
+                r.on_played(card, t_ms, self.p, self.ctx)
 
     def total(self, c: Candidate, posture: str) -> float:
         mult = self.p.posture_multipliers.get(posture, {}).get(c.family, 1.0)
@@ -106,6 +106,8 @@ class CRPolicy:
             return None
         if not (0 <= c.slot < len(s.hand) and s.hand[c.slot] == c.card and c.card in self.cards):
             return None
+        if not s.slot_fresh(c.slot):
+            return None  # the slot didn't read this frame: its card may have changed (no blind re-tap)
         if self.cards.cost(c.card) > s.my_elixir + 1e-6:
             return None
         self.pending_retried = True

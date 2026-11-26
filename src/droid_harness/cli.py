@@ -137,10 +137,59 @@ def cmd_convert_katacr(a) -> None:
     from .domains.clash_royale.perception.classes import load_class_names
     from .learn import katacr
 
-    data, counts = katacr.convert(a.part2, a.out, load_class_names(a.classes), katacr.load_alias(a.alias),
-                                  split=a.split, empty_keep=a.empty_keep, link=not a.copy)
+    data, counts = katacr.convert(a.part2, a.out, load_class_names(a.classes),
+                                  katacr.load_alias(a.alias, a.generic or None),
+                                  val_frac=a.val_frac, empty_keep=a.empty_keep, link=not a.copy)
     print(json.dumps(dict(counts), indent=1))
     print(f"dataset {data}")
+
+
+def cmd_dataset(a) -> None:
+    from .learn.datasets import combine
+
+    def parse(items):
+        out = []
+        for it in items:
+            y, _, sp = it.rpartition(":")
+            out.append((y, sp)) if y else out.append((it, "train"))
+        return out
+
+    out = combine(a.out, parse(a.train), parse(a.val))
+    print(f"wrote {out}")
+
+
+def cmd_eval_detector(a) -> None:
+    from .domains.clash_royale.perception.detector import OnnxDetector
+    from .learn.evaluate import evaluate, threat_gate
+
+    det = OnnxDetector(a.model, a.classes, conf=a.conf, iou=a.iou, providers=["CPUExecutionProvider"]
+                       if a.cpu else None)
+    report = evaluate(det, a.data, a.split, a.match_iou, a.limit or None)
+    ok, failing = threat_gate(report, a.min_threat_recall, a.min_support)
+    report["gate"] = {"pass": ok, "failing": failing, "min_threat_recall": a.min_threat_recall}
+    if a.out:
+        Path(a.out).write_text(json.dumps(report, indent=1))
+    for cls, m in report["per_class"].items():
+        r = "-" if m["recall"] is None else f"{m['recall']:.2f}"
+        pr = "-" if m["precision"] is None else f"{m['precision']:.2f}"
+        print(f"{cls:20s} n={m['support']:5d} recall={r:>5} precision={pr:>5}")
+    print(json.dumps(report["gate"], indent=1))
+    if not ok:
+        raise SystemExit(1)
+
+
+def cmd_frames(a) -> None:
+    from .domains.clash_royale.perception.classes import load_class_names
+    from .domains.clash_royale.perception.detector import OnnxDetector
+    from .domains.clash_royale.perception.grid import Layout
+    from .learn.datasets import export_frames
+
+    names = load_class_names(a.classes)
+    det = OnnxDetector(a.detector, names) if a.detector else None
+    dirs = sorted(d for d in Path(a.data).iterdir() if (d / "stream.h264").exists())
+    data, counts = export_frames(dirs, a.out, Layout.load(a.layout), names, every_ms=a.every_ms,
+                                 val_frac=a.val_frac, detector=det)
+    print(json.dumps(counts), f"dataset {data}")
 
 
 def cmd_train_detector(a) -> None:
@@ -231,17 +280,17 @@ def cmd_experiment(a) -> None:
         max_games=a.max_games))
     seen: set[str] = set()
     data_root = Path(a.data)
-    for _ in range(a.max_games):
+    for _ in range(a.max_games * 2):  # headroom for replayed (aborted) slots
         if runner.done:
             break
-        arm = runner.next_arm()
+        arm, pair_id = runner.next_assignment()
         strat = a.champion if arm == "champion" else a.candidate
         cfg = RunConfig(**{k: (Path(v) if isinstance(v, str) and k not in ("mode", "opponent_id",
                              "balance_epoch", "experiment_id", "arm") else v)
                             for k, v in vars(a).items()
                             if k in RunConfig.__dataclass_fields__ and v is not None})
         cfg.strategy = Path(strat)
-        cfg.experiment_id, cfg.arm, cfg.matches = exp_id, arm, 1
+        cfg.experiment_id, cfg.arm, cfg.pair_id, cfg.matches = exp_id, arm, pair_id, 1
         BotRunner(cfg).run()
         for p in sorted(data_root.glob("*/summary.json")):
             if str(p) in seen:
@@ -254,8 +303,9 @@ def cmd_experiment(a) -> None:
             if s.get("experiment_id") != exp_id:
                 continue
             r = runner.record(s)
-            print(json.dumps({"match": s.get("match_id"), "arm": arm, "result": s.get("result"),
-                              "sprt": r.decision, "llr": round(r.llr, 3)}))
+            print(json.dumps({"match": s.get("match_id"), "arm": arm, "pair": s.get("pair_id"),
+                              "result": s.get("result"), "sprt": r.decision, "llr": round(r.llr, 3),
+                              "notes": runner.notes()}))
         runner.write_ledger(a.store)
         try:
             con = warehouse.connect(a.db)
@@ -408,10 +458,43 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--classes", default="models/classes.txt")
     s.add_argument("--alias", default="models/katacr_alias.json")
     s.add_argument("--out", default="data/katacr-real")
-    s.add_argument("--split", default="val")
+    s.add_argument("--generic", default="models/katacr_generic.json", help="catch-alls; '' for named only")
+    s.add_argument("--val-frac", dest="val_frac", type=float, default=0.2,
+                   help="share of source *sequences* (not frames) held out for validation")
     s.add_argument("--empty-keep", dest="empty_keep", type=float, default=0.1)
     s.add_argument("--copy", action="store_true", help="copy images instead of symlinking")
     s.set_defaults(fn=cmd_convert_katacr)
+
+    s = sub.add_parser("dataset", help="combine datasets into one data.yaml (refuses train/val overlap)")
+    s.add_argument("--train", nargs="+", required=True, help="data.yaml[:split] ..., e.g. data/synth/data.yaml:train")
+    s.add_argument("--val", nargs="+", required=True, help="e.g. data/katacr-real/data.yaml:val data/own/data.yaml:val")
+    s.add_argument("--out", default="data/train.yaml")
+    s.set_defaults(fn=cmd_dataset)
+
+    s = sub.add_parser("eval-detector", help="per-class recall/precision on held-out real frames; gate on threats")
+    s.add_argument("--model", required=True)
+    s.add_argument("--classes")
+    s.add_argument("--data", required=True)
+    s.add_argument("--split", default="val")
+    s.add_argument("--conf", type=float, default=0.35)
+    s.add_argument("--iou", type=float, default=0.5, help="NMS IoU")
+    s.add_argument("--match-iou", dest="match_iou", type=float, default=0.5, help="IoU for a correct detection")
+    s.add_argument("--min-threat-recall", dest="min_threat_recall", type=float, default=0.85)
+    s.add_argument("--min-support", dest="min_support", type=int, default=20)
+    s.add_argument("--limit", type=int, default=0)
+    s.add_argument("--cpu", action="store_true")
+    s.add_argument("--out")
+    s.set_defaults(fn=cmd_eval_detector)
+
+    s = sub.add_parser("frames", help="arena crops from recorded matches for labeling, split by match")
+    s.add_argument("--data", default="data/matches")
+    s.add_argument("--layout", required=True)
+    s.add_argument("--classes", default="models/classes.txt")
+    s.add_argument("--detector", help="pre-label with this model (fix the labels, retrain, repeat)")
+    s.add_argument("--every-ms", dest="every_ms", type=int, default=1000)
+    s.add_argument("--val-frac", dest="val_frac", type=float, default=0.2)
+    s.add_argument("--out", default="data/own")
+    s.set_defaults(fn=cmd_frames)
 
     s = sub.add_parser("train-detector", help="YOLO26-n -> static ONNX (needs ultralytics + PyTorch-ROCm)",
                        add_help=False)
@@ -492,7 +575,9 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--title", default="")
     s.add_argument("--hypothesis", default="")
     s.add_argument("--proposer", default="human")
-    s.add_argument("--test", default="sprt_h2h", choices=["sprt_h2h", "sprt_paired"])
+    s.add_argument("--test", default="pairs", choices=["pairs", "h2h", "fixed", "sprt_h2h", "sprt_paired"],
+                   help="pairs: randomized matched blocks vs the champion (Training Camp); h2h: self-play; "
+                        "fixed: vs --p0 only, never for promotion")
     s.add_argument("--p0", type=float, default=0.5)
     s.add_argument("--p1", type=float, default=0.58)
     s.add_argument("--alpha", type=float, default=0.05)

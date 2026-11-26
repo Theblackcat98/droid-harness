@@ -6,14 +6,16 @@
 
 **Update 2026-11-26 (PR `m3/phone-free-fixes`):** everything below that didn't need the phone is done: a no-vision strategy that attacks (`training-camp-blind-v1`), CI green on a clean checkout, every detector-review item, side-aware classes, spell-side attribution, tower state from fixed ROIs, async/strided detection, the training-data tools (synth in the inference geometry, KataCR sprites + real-frame converter, trainer), replay regression, execution retry, a real counter table, a stream soak mode and an app watchdog. 120 tests (118 pass, 2 skip without local calibration).
 
+**Update 2026-11-26 (PR `v3/giant-beatdown-and-eval`):** fixes from two outside reviews, checked against the code first: stale hand slots are never played or re-tapped; only a confirmed spell uses up the blind push's spell; a counter-table row can't make a card defend against what it can't hit; path prediction follows destroyed towers. Experiments compare against the champion now (randomized matched pairs; the old test compared the candidate with a fixed 50% and could promote a worse strategy). Detector data: KataCR split by sequence (the converter used to write train == val), `dataset` refuses train/val overlap, `eval-detector` reports per-class recall and gates on threat classes, `frames` exports your matches for labeling split by match, and `other_ground`/`other_air` catch-all classes stop unknown enemy cards from being background. Strategy: `training-camp-v3` (Giant is the only win condition) plus one child per experiment (E3, E4, E5). 138 tests (136 pass, 2 skip without local calibration).
+
 ### Priority order to an unattended win vs the Training Camp bot
 
-1. **[you]** Run `training-camp-blind-v1` for 5 matches, then 20 unattended (M2 *Run it*). Confirm the scrcpy taps land (Pointer location) and read `decisions.jsonl` for `offense.blind_push` and `retry:` reasons. If it wins most of them, you already have an autonomous win; everything after this makes it robust.
-2. **[you]** Unattended reliability: LOADING/DRAW/POPUP reference screens, `stream --duration 1800` soak, tower `alive`/`rubble` templates (`droid-harness tower-template`).
-3. **[you]** Watch 3 recorded matches and list the trainer's cards → add them to `models/classes.txt` (as `<unit>_me`/`<unit>_opp`), `models/katacr_alias.json` and `counters/training-camp-v2.csv`.
-4. **[you/data]** `tools/fetch_katacr.py --part2`, `extract_backgrounds.py`, `droid-harness synth`, `convert-katacr`, then train on the ROCm host and gate on recall over the converted real frames.
-5. **[you]** `droid-harness replay` with the detector over recorded matches, then live with `training-camp-v2` + `--async-detect`; 50 matches + `analyze`.
-6. Then the flywheel (M5/M6).
+1. **[you]** Run `training-camp-blind-v1` for 5 matches, then 20 unattended (M2 *Run it*). Confirm the scrcpy taps land (Pointer location) and read `decisions.jsonl` for `offense.blind_push` and `retry:` reasons. Triage the losses (perception / execution / strategy) before changing any strategy.
+2. **[you]** Unattended reliability: LOADING/DRAW/POPUP reference screens, `stream --duration 1800` soak, tower `alive`/`rubble` templates (`droid-harness tower-template`), and `tier0.spell_tower_damage` for your card levels.
+3. **[you]** Watch 3 recorded matches and list the trainer's cards → add them to `models/classes.txt` (as `<unit>_me`/`<unit>_opp`), `models/katacr_alias.json` and `counters/training-camp-v3.csv`. Until then they train as `other_ground`/`other_air` and get generic counters.
+4. **[you/data]** `fetch_katacr.py --part2` → `synth` + `convert-katacr` + `frames` (label your own) → `dataset` → `train-detector` on the ROCm host → `eval-detector` on *your* held-out frames (gate: threat-class recall) → `replay`.
+5. **[you]** Live with `training-camp-v3` + `--async-detect`: 50 matches + `analyze`. Then `run-experiment --champion training-camp-v3.yaml --candidate training-camp-v3-e3-tank-ahead.yaml` (and E4, E5), one at a time.
+6. Then the rest of the flywheel (M5/M6): E6 kill-aware spell value, E7 adaptive lanes, E8 learned ranker.
 
 Tags: **[you]** needs your hands, phone or account · **[code]** pure code work · **[data]** collecting or labeling.
 Each milestone ends with **Done when** — don't start the next one until it's true.
@@ -186,6 +188,25 @@ The detector is the biggest missing piece: no model is trained yet, and this hos
 **Done when:** ≥ 1 coach proposal and ≥ 1 tuned candidate have gone through the full funnel.
 
 ---
+
+## Review fixes and Giant beatdown v3 (2026-11-26)
+
+- [x] **[code]** Stale hand: a slot that fails to read keeps its last card (so the play is still detected) but is marked stale in `GameState.hand_fresh`; `affordable_hand`, the `stale_slot` constraint and the tap retry all skip stale slots. Before, a retry could tap whatever card had slid into the slot.
+- [x] **[code]** Blind strategy: only a confirmed *spell* uses up the push's spell (a support troop used to cancel it).
+- [x] **[code]** `Card.can_hit(flying)`: defense and emergency defense never pick a card that can't hit the threat (Giant never defends; Mini P.E.K.K.A never answers air), whatever the counter table says.
+- [x] **[code]** `path.advance` takes tower-alive state: after a princess tower falls, threats are led toward the king.
+- [x] **[code]** **Experiments compare against the champion.** `run-experiment --test pairs` (default): randomized blocks of two (one match per arm, random order) tagged with `pair_id`; SPRT on discordant pairs; draws are scored, never dropped; aborted slots are replayed (pairs dropped after `max_slot_retries`); abort-rate imbalance between arms is flagged in the ledger notes. `h2h` (self-play) refuses non-head-to-head games; `fixed` (vs a fixed rate) is documented as never-for-promotion. Old names map: `sprt_h2h` → `fixed`, `sprt_paired` → `h2h`.
+      *Not changed, on purpose: `replay_diff` still resets both policies per logged state. Carrying policy state across a match would replay the champion's history into the candidate (pending actions and cooldowns from moves the candidate never made); per-state comparison is the honest counterfactual.*
+- [x] **[code]** KataCR converter splits by source sequence (`<video>/<episode>`), with `groups.json` for audit; `val_frac` must be in (0, 1). Before, its `data.yaml` pointed train and val at the same folder.
+- [x] **[code]** `droid-harness dataset` combines sources into one `data.yaml` and refuses any image in both train and val; `frames` exports your recordings as arena crops split by match, optionally pre-labeled by the current model.
+- [x] **[code]** `droid-harness eval-detector`: per-class recall/precision through `OnnxDetector` (as the bot runs it); fails unless every `*_opp` class with ≥ `--min-support` examples reaches `--min-threat-recall` (an under-sampled threat class fails too).
+- [x] **[code]** Catch-all classes `other_ground_*`/`other_air_*` from `models/katacr_generic.json` (`tools/build_katacr_generic.py`; fixes KataCR's ground/air split for balloon, lava hound, …). Generic counter rows in `counters/training-camp-v3.csv`. Synth samples classes evenly so the catch-alls don't drown the 6-sprite classes.
+- [x] **[code]** `training-camp-v3.yaml` (E1: Giant is the only win condition; v2 kept for history, marked superseded) and one child per experiment, all off by default in code: `-e3-tank-ahead` (Giant leads counter-pushes), `-e4-cycle-gate` (scale Giant pushes ×0.5 when a known Giant counter may be in their hand, ×1.3 when their deck is known and the counters are in their last four), `-e5-reserve` (keep 3 elixir unless they're low; back-build Giant at 9+ on a quiet board).
+- [x] **[code]** A strategy that sets `learned_ranker` refuses to run (the live runner has no loader, so it was silently ignored). Optuna's default space adds `defend_horizon_s`, `spell_value_threshold`, `attack_blocked_by_threat_eta_s` and DEFEND_LEAD defense.
+- [ ] **[code]** E6: kill-aware spell value (which units die, tower damage, elixir trade) instead of HP-weighted cost.
+- [ ] **[code]** E7: lane choice from tower HP, their counters' position in cycle, and pressure (today: lower princess HP, then fewer enemies).
+- [ ] **[code]** E8: learned ranker as a tie-breaker among legal high-scoring plays: loader + feature schema in the strategy hash, logged scores, fallback; train on warehouse decisions after E1–E5 settle.
+- [ ] **[code]** Emergency defense on projected damage (needs unit DPS in the card DB), not only below 35% tower HP.
 
 ## Recovery
 
