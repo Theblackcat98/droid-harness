@@ -22,6 +22,7 @@ dependencies = [
 detector = ["onnxruntime>=1.18"]
 tuning = ["optuna>=3.6"]
 coach = ["anthropic>=0.40"]
+gui = ["pywebview>=5"]  # optional: `--native` desktop window for the Studio (the browser version needs nothing)
 dev = ["pytest>=8", "onnx>=1.16", "onnxruntime>=1.18", "ruff>=0.5"]
 
 [project.scripts]
@@ -29,6 +30,9 @@ droid-harness = "droid_harness.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+droid_harness = ["ui/static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

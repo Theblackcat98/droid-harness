@@ -1,4 +1,4 @@
-"""Speed-3 Deterministic Agent Handoff Digest (refinement-loop-plan §4).
+"""Speed-3 Deterministic Agent Handoff Digest (README §5, "What the digest contains").
 
 Compresses 10-100+ recorded matches into a single ``< 30 KB`` Markdown + JSON dossier
 designed to be read by a coding-agent harness (OpenCode / Antigravity) in one turn when

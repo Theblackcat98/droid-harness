@@ -1,82 +1,96 @@
 # droid-harness
 
-A deterministic, low-latency Android automation and Clash Royale harness that runs **without any LLM in the loop**: scrcpy H.264 stream → computer-vision perception → rule-based utility policy → timed ADB/scrcpy touches.
+A deterministic, low-latency Android automation harness, with Clash Royale as the reference game. It runs **without any LLM in the loop**: scrcpy H.264 stream → computer-vision perception → rule-based utility policy → timed scrcpy touches.
 
-Every strategy parameter, threshold, counter table, and rule lives in versioned YAML/CSV files under [`configs/strategies/`](configs/strategies/), while the analytics flywheel (`analyze`, `replay-diff`, `run-experiment`, `sprt`, `ledger`) lets you measure, tune, and promote strategies statistically using only local Python CLI tools.
+Every strategy parameter, threshold, counter table and rule lives in versioned YAML/CSV files under [`configs/strategies/`](configs/strategies/). The analytics flywheel (`analyze`, `replay-diff`, `experiment`, `sprt`, `ledger`) measures, tunes and promotes strategies statistically with local Python tools only. The Studio (`--ui`, `watch`, `inspect`) shows what the bot sees and why it chose each play, live or after the fact.
 
-> **Account scope.** Supercell's terms treat bots as cheating and can ban accounts. Use a throwaway account (Training Camp, Practice, or two-phone friendly battles; ladder only on throwaway accounts you are willing to lose). The general Android core carries none of this risk.
+> **Account scope.** Supercell's terms treat bots as cheating and can ban accounts. Use a throwaway account. The plan was Training Camp, Practice and two-phone friendlies only; **operator override 2026-11-26:** ladder is approved on `theblackcat99` (throwaway, nothing to lose). The general Android core carries none of this risk.
+
+**Two documents.** This README is the documentation: how to run, how it works, the design and the strategy playbook. [`todo.md`](todo.md) is the plan: current status, priorities, open tasks per milestone and the run log. Nothing else needs to be kept in sync. ([Where the old `docs/` files went](#where-the-old-docs-went).)
+
+## Contents
+
+1. [Status](#1-status)
+2. [Install and smoke-test](#2-install-and-smoke-test-no-phone-needed)
+3. [Play matches](#3-play-matches-on-a-calibrated-phone)
+4. [Studio: live view and replay inspector](#4-studio-live-view-and-replay-inspector)
+5. [Improvement loop](#5-improvement-loop)
+6. [Strategies: files, rules, promotion](#6-strategies-files-rules-promotion)
+7. [Strategy playbook](#7-strategy-playbook)
+8. [Analyze matches](#8-analyze-matches)
+9. [Set up a new phone](#9-set-up-a-new-phone)
+10. [Detector: retrain or add cards](#10-detector-retrain-or-add-cards)
+11. [Architecture and design](#11-architecture-and-design)
+12. [Evaluation and statistics](#12-evaluation-and-statistics)
+13. [LLM roles, learned policy, general Android](#13-llm-roles-learned-policy-general-android)
+14. [Design history](#14-design-history)
+15. [Troubleshooting and operational limits](#15-troubleshooting-and-operational-limits)
+16. [Sources](#16-sources)
 
 ---
 
-## Current status (verified on `phone-a`)
+## 1. Status
+
+Measured on `phone-a` (OnePlus N10, `741be240`), account `theblackcat99`. The latest numbers and the open work are in [`todo.md`](todo.md).
 
 | Component | Current measured state |
 | --- | --- |
-| **Transport & loop** | `scrcpy-server-v2.4` over USB + PyAV H.264 decode; battle loop `2.51–4.76 ms` `p50` / `3.95–12.38 ms` `p99` with `--async-detect` |
-| **31-class YOLO26-n v2 detector** | Trained across 31 classes ([`models/classes.txt`](models/classes.txt)): `mAP50=0.728`, `mAP50-95=0.474`, `P=0.742`, `R=0.632`; PyTorch-ROCm `TorchDetector` `4.14 ms` `p50` (`4.23 ms` mean) on RX 7900 XT |
-| **Opponent & crown perception** | Card/cost/cycle tracker locks 8-card opponent decks across Arena 1–3 (`10/10` matches in both recent batches); Arena 2 golden-sand false crown bug fixed in [`perception/screens.py`](src/droid_harness/domains/clash_royale/perception/screens.py) |
-| **Perception additions** | Tower HP digits (`digits/phone-a/`), countdown clock, King HP seeding; triage `PERCEPTION` share ~89% → ~18% on recorded matches |
-| **Verified live batches (`phone-a`)** | [`ladder-vision-v4.yaml`](configs/strategies/ladder-vision-v4.yaml) **9W–1L–0D (90.0%)** (champion); [`ladder-vision-v5.yaml`](configs/strategies/ladder-vision-v5.yaml) **5W–5L–0D (50.0%)** (rejected candidate — compacted telemetry in [`data/matches/`](data/matches/)) |
-| **Unit tests & lint** | `pytest -ra` all passing (incl. `tests/test_three_speed_flywheel.py`); `ruff check src/ tests/` clean |
+| Transport and loop | `scrcpy-server-v2.4` over USB + PyAV H.264 decode; battle loop `2.5–4.8 ms` p50 / `4–12 ms` p99 with `--async-detect` |
+| Detector | 31-class YOLO26-n v2 ([`models/classes.txt`](models/classes.txt)): mAP50 0.728, mAP50-95 0.474; `TorchDetector` (PyTorch-ROCm) 4.1 ms p50 on the RX 7900 XT |
+| Opponent tracking | Card, cost and cycle tracker locks 8-card opponent decks (10/10 matches in recent batches) |
+| HUD | Tower-HP digits, countdown clock, King HP seeding; opponent tower HP is read in only part of the frames (see `todo.md`) |
+| Results | `ladder-vision-v4` 9W–1L near 0 trophies; at ~476 trophies EXP-0001 (v4 vs v6, 16 matches) went 2–6 vs 2–5, inconclusive |
+| Studio | Live view (`play --ui`, `watch`), replay inspector (`inspect`), no-phone demo (`sim --ui`) |
+| Tests | `pytest` 220 passed, 2 skipped without torch/local calibration; `ruff check src tests tools` clean |
 
 ---
 
-## 1. Install & smoke-test (no phone needed)
+## 2. Install and smoke-test (no phone needed)
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 
 pytest -ra
-ruff check src/ tests/
+ruff check src/ tests/ tools/
 
-# Synthetic closed-loop simulation (~3 ms loop latency, no phone)
+# Synthetic closed loop (~3 ms loop latency, no phone); add --ui to watch it in the Studio
 droid-harness sim --seconds 10 --out data/sim
 droid-harness analyze --data data/sim --cards tests/fixtures/cards_min.json
 
-# View SPRT sample-size table for win-rate testing
+# SPRT sample-size table for win-rate tests
 droid-harness sprt
 ```
 
-Optional dependencies live in extras (`[detector]`, `[rocm]`, `[onnx]`, `[tuning]`). You do **not** need `[coach]` unless you run an offline LLM coach.
+Optional extras: `[detector]` (ONNX Runtime), `[tuning]` (Optuna), `[gui]` (pywebview for a desktop Studio window), `[coach]` (offline LLM coach, rarely needed). PyTorch-ROCm for `TorchDetector` and training is installed separately on the GPU host (see [§10](#10-detector-retrain-or-add-cards)).
 
 ---
 
-## 2. Run matches on an already-calibrated phone (`phone-a`)
+## 3. Play matches on a calibrated phone
 
-`phone-a` (OnePlus N10 `741be240`) already has checked-in configs under [`configs/`](configs/). Verify ADB sees the device (`adb devices`), unlock the screen onto Clash Royale's Home screen, and run:
-
-### One-command Ladder or Training Camp play (recommended)
-
-`--device phone-a` is the default preset and auto-resolves `profile`, `rois`, `tiles`, `arena`, `templates`, `screens`, `towers`, `digits`, `cards.json`, `models/yolo26n-cr.pt`, `models/classes.txt`, and `--async-detect` (short strategy aliases like `v6` or `v4` also resolve automatically):
+`phone-a` has its calibration checked in under [`configs/`](configs/). Check `adb devices`, unlock the phone onto Clash Royale's home screen, then:
 
 ```bash
-# 1-second pre-flight check (calibration, 10/10 digits, 8/8 deck templates, ROCm GPU, ADB)
+# Pre-flight: calibration, 10/10 digits, 8/8 deck templates, GPU detector, ADB
 .venv/bin/droid-harness doctor --live
 
-# Stuck on a loss/result screen or any menu? Walk it back to HOME (taps -> visual
-# buttons -> BACK -> app restart). Safe to run while the harness is stopped.
-.venv/bin/droid-harness recover --dry-run   # preview the plan
-.venv/bin/droid-harness recover             # do it
+# Stuck on a loss/result screen or a menu? Walk it back to HOME (safe while the harness is stopped)
+.venv/bin/droid-harness recover --dry-run   # print the plan
+.venv/bin/droid-harness recover
 
-# Play 10 ladder matches with pro starter beatdown v6 + auto win-video pruning
-.venv/bin/droid-harness play --strategy v6 --mode ladder --matches 10 --prune-win-video
+# Play 10 ladder matches with v6, deleting the video of clean wins; --ui serves the Studio
+.venv/bin/droid-harness play --strategy v6 --mode ladder --matches 10 --prune-win-video --ui
 
-# Persistent-session paired evaluation (v4 vs v6; loads GPU & scrcpy ONCE, Stage-A futility + SPRT)
-.venv/bin/droid-harness experiment --champion v4 --candidate v6 --mode ladder --prune-win-video \
-  --title "v6 pro rules + tower HP digits" --hypothesis "Eliminate opening throws and add cycle-lock/chip/punish"
-
-# 3-Speed Offline Flywheel commands (0 phone time, 0 LLM calls):
-.venv/bin/droid-harness tune-offline --champion v6 --data data/matches --trials 100 --out configs/strategies/ladder-vision-v7-opt.yaml
-.venv/bin/droid-harness shadow --champion v4 --candidate v6 --data data/matches
-.venv/bin/droid-harness digest --data data/matches --out data/agent_digest.md
-.venv/bin/droid-harness retain --data data/matches
+# Paired evaluation, v4 vs v6, in one persistent session (GPU weights and scrcpy load once)
+.venv/bin/droid-harness experiment --champion v4 --candidate v6 --mode ladder --prune-win-video --ui \
+  --title "v6 pro rules + tower HP digits" --hypothesis "Fewer opening throws; cycle-lock/chip/punish"
 ```
 
-Explicit paths (`droid-harness run --profile ... --layout ...`) remain supported for custom setups:
+`--device phone-a` is the default preset. It resolves `profile`, `rois`, `tiles`, `arena`, `templates`, `screens`, `towers`, `digits`, `cards.json`, `models/yolo26n-cr.pt`, `models/classes.txt` and turns on `--async-detect`. Short strategy names resolve too (`v6` → `configs/strategies/ladder-vision-v6.yaml`). `--mode training_camp` farms the Trainer instead of the ladder.
+
+Explicit paths still work for custom setups:
 
 ```bash
-# Explicit-flag invocation (equivalent to `droid-harness play --strategy v4`)
 .venv/bin/droid-harness run \
   --profile configs/device_profiles/phone-a.yaml \
   --layout configs/domains/clash_royale/rois/phone-a.yaml \
@@ -88,296 +102,874 @@ Explicit paths (`droid-harness run --profile ... --layout ...`) remain supported
   --digits configs/domains/clash_royale/digits/phone-a \
   --cards configs/domains/clash_royale/cards.json \
   --strategy configs/strategies/ladder-vision-v4.yaml \
-  --detector models/yolo26n-cr.pt \
-  --classes models/classes.txt \
-  --async-detect \
-  --mode ladder \
-  --matches 10 \
-  --balance-epoch 2026-11 \
-  --data data/matches-batch
+  --detector models/yolo26n-cr.pt --classes models/classes.txt --async-detect \
+  --mode ladder --matches 10 --balance-epoch 2026-11 --data data/matches-batch
 ```
-
-Switch `--mode ladder` to `--mode training_camp` to farm against Trainer bots instead of ladder opponents.
-
-### Stuck-screen recovery (automatic)
-
-A result screen that does not change for **8 s**, or any other non-battle menu/overlay
-for **15 s**, arms a deterministic HOME walk inside the live loop:
-
-1. the calibrated buttons for that screen (the normal flow, again),
-2. wide saturated buttons found **visually** in the lower frame, rightmost first — this
-   is what recovers a mis-calibrated `ok` (a ladder loss with a reward chest adds
-   "Play Again" and shifts "OK" right, so the calibrated centre lands between them),
-3. BACK through scrcpy,
-4. force-stop + relaunch after the plan is exhausted (or 60 s of liveness findings).
-
-A battle whose clock, hand and elixir all stop changing for **30 s** is also treated as
-over: the purple post-match chest animation reads as a full elixir bar, so the session
-would otherwise stay "in battle" forever. That case is recorded as
-`aborted:battle_no_progress` and handed to the same ladder.
-
-Recovery keeps acting on each new screen until HOME, where it disarms. A finished batch
-walks itself back to HOME before disconnecting, using only this ladder — the normal menu
-flow (including HOME→Battle) is suspended, so the settle cannot queue a new game. The
-same ladder is available as a standalone command:
-`droid-harness recover` (add `--dry-run` to print the taps without sending them,
-`--stuck-after` to shorten the wait).
 
 ### Key runtime flags
 
 | Flag | Purpose |
 | --- | --- |
-| `--detector <path>` | `.pt` runs `TorchDetector` (PyTorch GPU/ROCm); `.onnx` runs `OnnxDetector` (MIGraphX EP if available, else CPU). Omit only when running a blind strategy such as [`training-camp-blind-v1.yaml`](configs/strategies/training-camp-blind-v1.yaml). |
-| `--classes models/classes.txt` | Cross-checks embedded model class names and fails fast on mismatch. |
-| `--async-detect` | Runs object detection on a dedicated background worker so the 60 Hz HUD/policy/touch loop never blocks on inference. |
-| `--detect-every N` | Runs detector every Nth frame (`1` default; units extrapolate between frames). |
-| `--det-conf` / `--det-iou` | Detection confidence threshold (`0.35`) and NMS IoU (`0.5`). |
-| `--matches N` | Plays `N` completed matches unattended (menu navigation, battle queue, end screen OK dismissal, Trophy Road popups). Press `Ctrl+C` to stop cleanly. |
-| `--data <dir>` | Output directory. Each match creates `<dir>/<match_id>/` with `meta.json`, `summary.json`, `decisions.jsonl`, `frames.jsonl`, and `stream.h264` + `stream.pts`. |
+| `--detector <path>` | `.pt` runs `TorchDetector` (PyTorch GPU/ROCm); `.onnx` runs `OnnxDetector` (MIGraphX EP if built, else CPU). Omit only for a blind strategy such as [`training-camp-blind-v1.yaml`](configs/strategies/training-camp-blind-v1.yaml). |
+| `--classes models/classes.txt` | Cross-checks the model's embedded class names; refuses to load on mismatch. |
+| `--async-detect` | Detection on its own thread, so the 60 Hz HUD/policy/touch loop never waits for inference. |
+| `--detect-every N` | Detector every Nth frame (default 1); units are extrapolated in between. |
+| `--det-conf` / `--det-iou` | Confidence threshold (0.35) and NMS IoU (0.5). |
+| `--matches N` | Completed matches to play unattended (menus, queue, result screen, popups). `Ctrl+C` stops cleanly. |
+| `--data <dir>` | Output. Each match writes `<dir>/<match_id>/` with `meta.json`, `summary.json`, `decisions.jsonl`, `frames.jsonl`, `stream.h264` + `stream.pts`. |
+| `--ui` | Serve the Studio while playing (also on `run`, `experiment`, `run-experiment`, `sim`). See [§4](#4-studio-live-view-and-replay-inspector). |
+
+### Stuck-screen recovery (automatic)
+
+A result screen that doesn't change for **8 s**, or any other non-battle screen for **15 s**, arms a deterministic walk to HOME inside the live loop:
+
+1. the calibrated buttons for that screen (the normal flow, again);
+2. wide saturated buttons found **visually** in the lower frame, rightmost first. This is what recovers a mis-calibrated `ok`: a ladder loss with a reward chest adds "Play Again" and shifts "OK" right, so the calibrated centre lands between them;
+3. BACK through scrcpy;
+4. force-stop and relaunch once the plan is exhausted (or after 60 s of liveness findings).
+
+A battle whose clock, hand and elixir all stop changing for **30 s** is also treated as over. The purple post-match chest reads as a full elixir bar, so the session would otherwise stay "in battle"; it's recorded as `aborted:battle_no_progress` and handed to the same ladder. Recovery keeps acting on each new screen until HOME. A finished batch walks itself back to HOME before disconnecting, with the normal menu flow suspended so the settle can't queue a new game. The standalone `droid-harness recover` uses the same ladder (`--dry-run`, `--stuck-after`, `--battle-stuck-after`).
 
 ---
 
-## Improvement loop (what you do to keep improving the bot)
+## 4. Studio: live view and replay inspector
 
-Three speeds: seconds on CPU, hours on the phone, and an agent only when plateaued. No LLM runs inside the harness.
+One browser page, served by the harness itself (standard library only, no build step). It shows the phone with what perception found drawn on top, a top-down tactical map in arena tiles, and the numbers the policy decided from.
 
 ```bash
-# 0. Pre-flight before every session (phone plugged in, unlocked, on Clash Royale home)
+droid-harness play --strategy v6 --ui            # play and watch: http://localhost:8765
+droid-harness experiment --champion v4 --candidate v6 --ui   # adds the SPRT strip
+droid-harness watch                              # you play; the bot shows what it would do, never taps
+droid-harness inspect                            # replay every match under data/
+droid-harness inspect data/matches-exp-v4-v6 --match matches-exp-v4-v6/32dc3e473260
+droid-harness sim --ui --seconds 60              # try the live view with no phone
+
+# From another machine (e.g. the GPU host runs the bot):
+ssh -L 8765:localhost:8765 nick@192.168.1.199    # then open http://localhost:8765
+```
+
+`--native` opens the same page in a desktop window instead (`pip install -e ".[gui]"`, which installs pywebview); without pywebview it falls back to the browser. `--open` opens the default browser, `--ui-port` and `--ui-host` change the address (it binds to localhost by default), `--ui-fps` caps the live snapshot rate (15).
+
+**What's on screen**
+
+- **Phone** (left): the live frame (or the decoded recording) with toggleable overlays: detector boxes with class, confidence and HP; tracked units with velocity vectors; the 18×32 tile grid and river; HUD regions; the top candidates as numbered rings; the chosen play as a gold ring with a dashed line to where its target is predicted to be; and fading rings where touches landed.
+- **Tactical map**: the same moment in tile space: towers with HP, units by side (air units hollow), candidates and the chosen play. It needs no video, so it's the default for recorded matches whose video was pruned.
+- **Right column**: clock, elixir phase and posture; your elixir and the opponent's estimated range; the hand with stale (unread) slots outlined; the decision table (every candidate's `score × weight × posture multiplier = total`, the act threshold as a line, the chosen row in gold, and each rule's reason); the opponent's 8-card cycle (what could be in hand, what's cycling back and how much elixir it takes to return); towers; the experiment strip (record per arm, pairs, dense margin, LLR between its bounds); latency per stage.
+- **Replay** adds the elixir tape along the bottom: your elixir, the opponent's range, your plays, their plays and fallen towers over the whole match, with a playhead you can drag. Space plays or pauses, arrow keys step through logged states, Shift+arrows jump between chosen plays.
+
+**What it costs the bot.** The brain thread hands the Studio references it already holds (frame, observation, decision, timings, detector boxes): one lock and one tuple assignment per frame. A separate publisher thread samples that at `--ui-fps`, builds the snapshot JSON and the JPEG, and serves them; building took 0.6–0.8 ms per snapshot in the simulator. Nothing in `policy/` changed, so strategy IDs are unchanged.
+
+**Replay data.** `inspect` reads `decisions.jsonl` (logged every 5th frame and on every play), `summary.json` and `meta.json`. If `stream.h264` survived retention, it's decoded once in the background at 10 fps. Detector boxes aren't logged, so recorded video shows tracked units projected from their logged tiles. Strategy IDs from older policy code don't resolve to a file; the table then derives `× weight` from `total ÷ score`.
+
+Code: [`src/droid_harness/ui/`](src/droid_harness/ui/) (`telemetry.py` tap and publisher, `snapshot.py` shared schema, `library.py` recorded matches, `server.py` routes, `static/studio.html` the page).
+
+---
+
+## 5. Improvement loop
+
+Three speeds: seconds on CPU, hours on the phone, and a coding agent only when progress plateaus. No LLM runs inside the harness.
+
+```bash
+# 0. Pre-flight before every session
 .venv/bin/droid-harness doctor --live
 
-# 1. Collect games (champion = v4 until v6 is proven)
+# 1. Collect games with the champion
 .venv/bin/droid-harness play --strategy v4 --mode ladder --matches 30 --prune-win-video
 
-# 2. Paired live test: candidate vs champion (randomized pairs cancel ladder drift;
-#    clearly worse candidates stop early via dense-margin futility; result -> ledger/)
+# 2. Speed 2: paired live test of candidate vs champion. Randomized pairs cancel ladder drift;
+#    clearly worse candidates stop early (dense-margin futility); the result goes to ledger/
 .venv/bin/droid-harness experiment --champion v4 --candidate v6 --mode ladder --prune-win-video \
   --title "v6 pro rules" --hypothesis "fewer opening throws"
 .venv/bin/droid-harness ledger        # renders ledger/STRATEGY_LEDGER.md
 
-# 3. Speed 1 - offline, between phone runs (seconds, no phone, no LLM)
+# 3. Speed 1: offline, between phone runs (seconds, no phone, no LLM)
 .venv/bin/droid-harness analyze --data data/matches
 .venv/bin/droid-harness tune-offline --champion v6 --trials 200 --out configs/strategies/ladder-vision-v7.yaml
 .venv/bin/droid-harness shadow --champion v6 --candidate v7
 .venv/bin/droid-harness replay-diff --champion v6 --candidate v7 --expected-pct 5
 # then repeat step 2 with --champion v6 --candidate v7
 
-# 4. Speed 3 - when progress plateaus: hand an artifact to your coding agent
+# 4. Speed 3: when progress plateaus, hand a <30 KB digest to your coding agent
 .venv/bin/droid-harness digest --data data/matches --out data/agent_digest.md
-# The agent adds ONE structural rule + unit test in a NEW strategy file (never edit a strategy that has played matches).
+# The agent adds ONE structural rule + unit test in a NEW strategy file (never edit a strategy that has played).
 
 # 5. Housekeeping
-.venv/bin/droid-harness retain --data data/matches   # prune old win videos
+.venv/bin/droid-harness retain --data data/matches   # prune win videos, keep loss keyframes
 ```
 
 Notes:
-- `tune-offline` enforces a replay-diff guardrail (`--min-diff-pct`, `--max-diff-pct`); if it finds nothing, raise `--trials`, lower `--min-diff-pct`, or collect more matches.
-- Use a new `--balance-epoch` after a game update; experiments are voided across updates.
-- Short names resolve automatically (`v6` → `configs/strategies/ladder-vision-v6.yaml`).
+- `tune-offline` enforces a replay-diff guardrail (`--min-diff-pct`, `--max-diff-pct`); if nothing passes, raise `--trials`, lower `--min-diff-pct`, or collect more matches.
+- Use a new `--balance-epoch` after a game update; experiments are void across updates.
 
-**Things only you can do**
-- **Card levels:** upgrade cards that survive into the Hog EQ deck (Musketeer, Knight, Fireball); keep Giant/Mini P.E.K.K.A/Archers/Minions/Arrows at minimum. Reach King Level 2 early.
-- **New cards after arena unlocks:** capture `affordable` + `greyed` hand templates (`droid-harness template`); `doctor` flags missing deck templates. Then fine-tune the detector (section 6).
-- **Hog Rider (Arena 5):** switch to the Hog EQ blueprint in [`docs/pro-strategy-research.md`](docs/pro-strategy-research.md).
-- **M8 ranker (after ~50+ post-digit ladder matches):** `python -m droid_harness.learn.label_from_video --version 2 --cards configs/domains/clash_royale/cards.json`, then `train_ranker`, then test it with `experiment` like any candidate.
+### The three speeds in detail
+
+1. **Speed 1, offline counterfactual search** (`tune-offline` + `shadow`; CPU seconds, no phone games, no LLM). Samples 100–500 parameter sets around the champion (2–5 knobs each, from `OFFLINE_SPACE` in [`offline_study.py`](src/droid_harness/flywheel/tuning/offline_study.py)), replays every logged state through the candidate policy, and scores each by how many decisions it changes inside losing engagements (`value < −0.5`) versus winning ones (`> 0.5`), with a 1–18 % change budget. Only the single best candidate goes on. It's a filter, not an estimate of win rate: see the review notes in `todo.md`.
+2. **Speed 2, persistent paired live gate** (`experiment`; phone hours, no LLM). One `BotRunner` (detector weights and scrcpy loaded once, `CRPolicy` hot-swapped per match) plays randomized two-game blocks. **Stage A** scores every pair by crowns + tower-HP difference + speed and stops a candidate early when the upper 95 % bound of the mean pair margin is below zero (`--futility-pairs 12`). **Stage B** runs the paired SPRT on discordant pairs to accept or reject, written to the [ledger](ledger/STRATEGY_LEDGER.md).
+3. **Speed 3, structural handoff** (`digest`; one agent turn when plateaued). A deterministic `< 30 KB` Markdown + JSON dossier for an external coding agent to add one structural rule with a unit test; numeric tuning then goes back to Speed 1.
+4. **Tie-breaker, M8 v2 residual ranker** (`learn/label_from_video.py --version 2` + `train_ranker.py`). Per-lane board value, threat ETA and opponent-cycle features (`droid-harness-ranker/2`), engagement-credit advantage-weighted / filtered BC, blended as a bounded residual (`ranker_mode: residual`, `rule_score + w·(p − 0.5)`) so safety and counter gates are never overwritten.
+
+### What the digest contains
+
+`droid-harness digest --data <dir> --out data/agent_digest.md` writes six deterministic sections (never raw `decisions.jsonl`):
+
+1. **Batch health and drift slices** by chronological quartile: W–L–D with Wilson 95 % CI, crown distribution, median duration, aborts, loop p50/p99, retry rate, 8-card deck-lock rate, triage mix.
+2. **Opponent card matchup matrix**: win rate and crown differential when facing each card seen in `opp_deck_seen`.
+3. **Rule and posture scorecard**: plays, share, mean and total engagement value, mean `(my_elixir, opp_elixir)` when triggered.
+4. **Six failure-pattern detectors**: `opening_throw` (early plays leaving < 3 elixir while they hold ≥ 6.5, then tower damage before 60 s), `wincon_starved` (win condition played ≤ 1 time in a ≥ 120 s match), `over_defend_bleed` (> 75 % of frames below 5 elixir), `spell_inefficiency`, `bad_counter_timing` (win condition into an in-hand, affordable counter vs when it was ≥ 2 cards away), card utilization skew.
+5. **Top 8–12 strategy loss stories** with elixir context and the runner-up candidates.
+6. **Optional visual pack** (≤ 5 keyframes, < 250 KB) when a perception blind spot is suspected.
+
+### Things only you can do
+
+- **Card levels.** Upgrade cards that survive into the Hog EQ deck (Musketeer, Knight, Fireball); keep Giant, Mini P.E.K.K.A, Archers, Minions and Arrows at minimum. Reach King Level 2 early. Update `tier0.spell_tower_damage` in a new strategy file when spell levels change.
+- **New cards after an arena unlock.** Capture `affordable` + `greyed` hand templates (`droid-harness template`; `doctor` flags missing ones), add counter rows, then fine-tune the detector ([§10](#10-detector-retrain-or-add-cards)).
+- **Hog Rider (Arena 5).** Switch to the Hog cycle blueprint in [§7](#7-strategy-playbook).
+- **M8 ranker** after ~50+ post-digits ladder matches: `python -m droid_harness.learn.label_from_video --version 2 --cards configs/domains/clash_royale/cards.json --min-credit -0.5`, then `train_ranker`, then test it with `experiment` like any candidate.
 - Ladder botting can get the account banned; that risk is yours.
 
-Deferred: live GUI / replay inspector (spec and alignment question in [`todo.md`](todo.md)).
-
 ---
 
-## 3. First-time setup for a new phone or card database
+## 6. Strategies: files, rules, promotion
 
-See [`docs/phone-a-bringup.md`](docs/phone-a-bringup.md) for a worked example. For a new device:
-
-1. **Pin `scrcpy-server-v2.4`** into `vendor/` and create `configs/device_profiles/<phone>.yaml` from [`phone-a.example.yaml`](configs/device_profiles/phone-a.example.yaml) (`serial`, `local_port`, `scrcpy_server_jar`). Each concurrent phone needs a unique `local_port`.
-2. **Test the H.264 stream and measure touch round-trip latency:**
-   ```bash
-   droid-harness stream --profile configs/device_profiles/<phone>.yaml --seconds 10 --save-frame data/frame.png
-   droid-harness loopback --profile configs/device_profiles/<phone>.yaml --x 30 --y 400
-   ```
-   Copy the reported `p50` into `exec_latency_ms` in your device profile. Static screens emit no H.264 frames; tap or animate the screen while testing. To test multi-minute stability without playing:
-   ```bash
-   droid-harness stream --profile configs/device_profiles/<phone>.yaml --duration 1800
-   ```
-3. **Generate `cards.json`** (only needed when game card stats change or setting up from scratch):
-   ```bash
-   git clone --depth 1 https://github.com/RoyaleAPI/cr-api-data ~/src/cr-api-data
-   python tools/build_card_db.py ~/src/cr-api-data --out configs/domains/clash_royale/cards.json
-   ```
-4. **Calibrate ROIs & tile homography:**
-   - Copy [`configs/domains/clash_royale/rois/phone-a.yaml`](configs/domains/clash_royale/rois/phone-a.yaml) and measure normalized fractions `[x0, y0, x1, y1]` for hand slots, `next_card`, `elixir_bar`, `clock`, tower HPs, `arena`, and menu buttons (`battle`, `ok`, `dismiss`, `trophy_ok`, etc.).
-   - Populate landmark pixel coordinates and fit the pixel-to-`18×32` tile homography (check max landmark error `< 0.5` tiles):
-     ```bash
-     droid-harness calibrate-tiles --landmarks <landmarks.yaml> --out configs/domains/clash_royale/tiles/<phone>.yaml
-     ```
-5. **Capture card, tower, and screen templates** from saved frames:
-   ```bash
-   # Capture BOTH affordable and greyed states for each card in your 8-card deck (plus slot "next")
-   droid-harness template --frame <battle.png> --layout <rois.yaml> --slot 0 --card knight --state affordable --out configs/domains/clash_royale/templates/<phone>
-   droid-harness template --frame <battle_low_elixir.png> --layout <rois.yaml> --slot 0 --card knight --state greyed --out configs/domains/clash_royale/templates/<phone>
-
-   # Tower alive / rubble states
-   droid-harness tower-template --frame <battle.png> --layout <rois.yaml> --tower all --state alive --out configs/domains/clash_royale/towers/<phone>
-
-   # Menu & end screens (HOME, MATCHMAKING, TROPHY_ROAD, POPUP, IN_BATTLE, RESULT_WIN, RESULT_LOSS)
-   droid-harness screen --frame <home.png> --name HOME --out configs/domains/clash_royale/screens/<phone>
-   ```
-
----
-
-## 4. Analyze matches & inspect telemetry (offline)
-
-All analytics run deterministically on recorded directories with zero API calls:
-
-```bash
-# Segment lane engagements, tag triage causes (PERCEPTION/EXECUTION/LATENCY/STRATEGY/OK), ingest into DuckDB, print report
-droid-harness analyze --data data/matches-batch --cards configs/domains/clash_royale/cards.json --db data/warehouse.duckdb
-
-# Plain-text flywheel dashboard (win rate CI by strategy & game version, rule/posture value, triage mix, loop p99)
-python notebooks/dashboard.py data/matches-batch
-```
-
-### Quick per-match CLI inspection
-
-Each match folder contains:
-- `summary.json`: `result`, `my_crowns`, `opp_crowns`, `strategy_id`, `status`, `duration_s`, `elixir_leaked`, `loop_p50_ms`, `loop_p99_ms`, `perception_warnings`, `opp_deck_seen`.
-- `decisions.jsonl`: every decision tick with `t_ms`, `posture`, `chosen_rule`, `chosen_card`, `tile`, `score`, `candidates`, and `state` snapshot (`my_elixir`, `opp_elixir`, `hand`, `opp_deck_seen`, `opp_last_four`, `towers`).
-- `frames.jsonl` / `stream.h264`: per-frame stage timings and raw captured video.
-
-### Re-running perception on saved videos (`replay`)
-
-To test a new detector checkpoint or perception change offline against past videos without touching the phone:
-
-```bash
-droid-harness replay \
-  --data data/matches-batch \
-  --layout configs/domains/clash_royale/rois/phone-a.yaml \
-  --tiles configs/domains/clash_royale/tiles/phone-a.yaml \
-  --arena configs/domains/clash_royale/arena/phone-a.yaml \
-  --templates configs/domains/clash_royale/templates/phone-a \
-  --towers configs/domains/clash_royale/towers/phone-a \
-  --cards configs/domains/clash_royale/cards.json \
-  --detector models/yolo26n-cr.pt --classes models/classes.txt \
-  --out data/replay/run-new.json \
-  --baseline data/replay/run-prev.json
-```
-
----
-
-## 5. Edit, screen & promote strategies manually (no LLM)
-
-**Immutability rule:** Never modify a strategy YAML or counter CSV once it has logged matches. Copy to a new version (for example `ladder-vision-v4.yaml` → `ladder-vision-v6.yaml`), update `strategy:` and `parent:`, and point `counters:` at its own CSV. Every strategy gets a 12-char `strategy_id` content hash covering [`policy/`](src/droid_harness/domains/clash_royale/policy/), the YAML, and its counter CSV.
+**Immutability rule.** Never modify a strategy YAML or counter CSV once it has logged matches. Copy it to a new version (`ladder-vision-v6.yaml` → `ladder-vision-v7.yaml`), update `strategy:` and `parent:`, and point `counters:` at its own CSV. Every strategy gets a 12-character `strategy_id` hashing the YAML, its counter CSV, any ranker model, **and every file under [`policy/`](src/droid_harness/domains/clash_royale/policy/)**: editing policy code changes every strategy's ID, which voids running experiments.
 
 ### Strategy file structure ([`policy/strategy.py`](src/droid_harness/domains/clash_royale/policy/strategy.py))
 
 | Section | Key fields | Meaning |
 | --- | --- | --- |
-| **Identity** | `strategy`, `parent`, `deck`, `win_conditions` | Strategy name, lineage, exact 8 card keys matching [`cards.json`](configs/domains/clash_royale/cards.json), win-condition card(s). |
-| **Tempo & defense** | `act_threshold`, `elixir_weight`, `defend_trigger_tiles`, `defend_horizon_s`, `opening_ms`, `min_action_gap_ms` | Minimum utility score to play, elixir penalty weight, defense activation radius & ETA horizon. |
-| **Beatdown & bridge gating** | `min_elixir_to_attack`, `press_opp_elixir_max`, `max_opp_elixir_to_bridge`, `min_elixir_advantage_to_bridge`, `attack_blocked_by_threat_eta_s` | Elixir floors and enemy-elixir ceilings before playing a bridge win condition. |
-| **Counter-push & back build** | `counterpush_min_value`, `counterpush_tank_ahead`, `counterpush_tank_bonus`, `giant_back_build`, `giant_safe_build_elixir`, `giant_back_build_score`, `giant_build_block_tiles`, `defense_reserve`, `reserve_penalty` | Snowball surviving defenders behind a win-condition tank; back-build a Giant above safe elixir while keeping reserve defense elixir. |
-| **Card / cycle / spell IQ** | `counter_gate`, `wc_counters`, `counter_in_hand_mult`, `counter_out_mult`, `counter_unaffordable_punish_mult`, `back_build_counter_in_hand_mult`, `cycle_punish_partial_deck`, `spell_aware`, `kill_aware_spells`, `save_counters_for_in_hand_threats`, `spell_value_threshold`, `spell_cycle_max_casts` | Scales pushes against opponent deck/cycle & elixir affordability (`wc_counters`), kills vs chip value on spells, avoids throwing Minions into in-hand Arrows or wasting tank killers in cycle. |
-| **Tier 0 reflexes (`tier0:`)** | `lethal_margin_hp`, `spell_tower_damage`, `leak_threshold`, `leak_ms`, `leak_card_preference`, `leak_tiles`, `emergency_eta_s`, `emergency_hp_frac` | Unconditional tower-finish spells, sub-`35%` HP emergency defense, and anti-leak dumps above `leak_threshold`. Set `spell_tower_damage` to **your** card levels. |
-| **Placement (`placement:`)** | `building_pull`, `ranged_standoff_tiles`, `bridge_tiles`, `back_tiles` | Anchor tiles and standoff distance on the `18×32` arena grid. |
-| **Rule weights & postures** | `weights`, `posture_multipliers` | Per-rule multipliers plus posture scaling across `OPENING`, `BALANCED`, `DEFEND_LEAD`, `PRESS`, and `SPELL_CYCLE`. |
-| **Counters CSV (`counters:`)** | `card,threat,effectiveness` (`0..1`) | Defense matchup matrix paired with `Card.can_hit(flying)`. |
+| Identity | `strategy`, `parent`, `deck`, `win_conditions` | Name, lineage, the exact 8 card keys from [`cards.json`](configs/domains/clash_royale/), win-condition card(s). |
+| Tempo and defense | `act_threshold`, `elixir_weight`, `defend_trigger_tiles`, `defend_horizon_s`, `opening_ms`, `min_action_gap_ms` | Minimum utility to play, elixir penalty, defense radius and ETA horizon. |
+| Bridge gating | `min_elixir_to_attack`, `press_opp_elixir_max`, `max_opp_elixir_to_bridge`, `min_elixir_advantage_to_bridge`, `attack_blocked_by_threat_eta_s` | Elixir floors and enemy-elixir ceilings before playing a win condition at the bridge. |
+| Counter-push and back build | `counterpush_min_value`, `counterpush_tank_ahead`, `counterpush_tank_bonus`, `giant_back_build`, `giant_safe_build_elixir`, `giant_back_build_score`, `giant_build_block_tiles`, `defense_reserve`, `reserve_penalty`, `giant_back_build_allow_in_opening`, `giant_x1_min_elixir` | Snowball surviving defenders behind a tank; back-build Giant only above a safe elixir level while keeping reserve. |
+| Card, cycle and spell IQ | `counter_gate`, `wc_counters`, `counter_in_hand_mult`, `counter_out_mult`, `counter_unaffordable_punish_mult`, `back_build_counter_in_hand_mult`, `cycle_punish_partial_deck`, `use_min_cycle_elixir`, `spell_aware`, `kill_aware_spells`, `save_counters_for_in_hand_threats`, `spell_value_threshold`, `spell_cycle_max_casts` | Scales pushes by the opponent's deck, cycle and affordability; kill-aware spell value; protects tank killers. |
+| Pro extensions (v6) | `ignore_chip_tower_hp_frac`, `ignore_chip_max_threat_value`, `opposite_lane_punish`, `punish_min_enemy_cost`, `punish_enemy_back_y`, `punish_min_my_elixir`, `punish_score`, `punish_cards`, `placement.anti_spell_tower_offset` | Tower HP as a resource, opposite-lane punish, anti-spell spacing. |
+| Tier 0 reflexes (`tier0:`) | `lethal_margin_hp`, `spell_tower_damage`, `leak_threshold`, `leak_ms`, `leak_card_preference`, `leak_tiles`, `emergency_eta_s`, `emergency_hp_frac` | Unconditional tower-finishing spells, emergency defense below 35 % HP, anti-leak dumps. Set `spell_tower_damage` to **your** card levels. |
+| Placement (`placement:`) | `building_pull`, `ranged_standoff_tiles`, `bridge_tiles`, `back_tiles` | Anchor tiles and standoff distance on the 18×32 grid. |
+| Weights and postures | `weights`, `posture_multipliers` | Per-rule multipliers and scaling for `OPENING`, `BALANCED`, `DEFEND_LEAD`, `PRESS`, `SPELL_CYCLE`. |
+| Counters CSV (`counters:`) | `card,threat,effectiveness` (0..1) | Defense matchup matrix, always subject to `Card.can_hit(flying)`. |
+| Ranker and advisor | `learned_ranker`, `ranker_mode`, `ranker_residual_weight`, `intent_advisor`, `advisor_may_set` | Optional M8 ranker and M9 advisor (off by default). |
 
-### Manual promotion funnel (4 deterministic gates)
+A candidate's final value is `score × weights[rule] × posture_multipliers[posture][family]`; the best one is played if it clears `act_threshold`. The Studio's decision table shows exactly this breakdown.
 
-1. **Gate 1 — Unit tests & lint:**
-   ```bash
-   pytest -ra && ruff check src/ tests/
-   ```
-2. **Gate 2 — Offline counterfactual diff (`replay-diff`):** Checks how often your candidate changes logged real-match decisions before running a single phone match.
-   ```bash
-   droid-harness replay-diff \
-     --champion configs/strategies/ladder-vision-v4.yaml \
-     --candidate configs/strategies/ladder-vision-v6.yaml \
-     --data data/matches \
-     --cards configs/domains/clash_royale/cards.json \
-     --arena configs/domains/clash_royale/arena/phone-a.yaml \
-     --expected-pct 5.0 --tolerance 4.0
-   ```
-3. **Gate 3 — Shadow scoring / Optuna sweeps (optional, no LLM):** `flywheel/shadow.py` compares candidate vs. champion on identical `GameState` snapshots; `flywheel/tuning/optuna_study.py` offers TPE hyperparameter search (`pip install -e ".[tuning]"`).
-4. **Gate 4 — Paired SPRT (`run-experiment`):** Alternates champion and candidate in randomized blocks of two (`--test pairs`) so matchmaking/trophy drift cancels cleanly, logs every result to [`ledger/experiments.jsonl`](ledger/experiments.jsonl), and renders [`ledger/STRATEGY_LEDGER.md`](ledger/STRATEGY_LEDGER.md).
-   ```bash
-   droid-harness run-experiment \
-     --profile configs/device_profiles/phone-a.yaml \
-     --layout configs/domains/clash_royale/rois/phone-a.yaml \
-     --tiles configs/domains/clash_royale/tiles/phone-a.yaml \
-     --arena configs/domains/clash_royale/arena/phone-a.yaml \
-     --templates configs/domains/clash_royale/templates/phone-a \
-     --screens configs/domains/clash_royale/screens/phone-a \
-     --towers configs/domains/clash_royale/towers/phone-a \
-     --cards configs/domains/clash_royale/cards.json \
-     --champion configs/strategies/ladder-vision-v4.yaml \
-     --candidate configs/strategies/ladder-vision-v6.yaml \
-     --detector models/yolo26n-cr.pt --classes models/classes.txt \
-     --async-detect --mode ladder --balance-epoch 2026-11 \
-     --test pairs --title "v6 safer back-build" --hypothesis "Raise safe build elixir to 8.6 to eliminate t=1s losses"
+### Promotion funnel (deterministic gates)
 
-   droid-harness ledger
+1. **Unit tests and lint:** `pytest -ra && ruff check src/ tests/ tools/`.
+2. **Offline counterfactual diff:** how often the candidate changes logged decisions, before any match.
+   ```bash
+   droid-harness replay-diff --champion v4 --candidate v6 --data data/matches --expected-pct 5.0 --tolerance 4.0
    ```
-   *(Never use `--test fixed` to promote a strategy; always use `--test pairs` or `--test h2h` for two-phone self-play via `selfplay-schedule`.)*
+3. **Shadow scoring and offline search (optional):** `droid-harness shadow` (disagreements × engagement value), `tune-offline`, or Optuna (`flywheel/tuning/optuna_study.py`, `pip install -e ".[tuning]"`).
+4. **Paired SPRT:** `droid-harness experiment` (ladder defaults) or `run-experiment` (Training Camp defaults). Randomized blocks of two (`--test pairs`) cancel matchmaking drift; every result goes to [`ledger/experiments.jsonl`](ledger/experiments.jsonl) and [`ledger/STRATEGY_LEDGER.md`](ledger/STRATEGY_LEDGER.md). Never use `--test fixed` to promote; use `pairs`, or `h2h` for two-phone self-play (`selfplay-schedule`).
 
 ---
 
-## 6. Retrain or expand the detector (when adding cards)
+## 7. Strategy playbook
 
-When you unlock new cards or promote a frequent enemy unit out of `other_ground_opp` / `other_air_opp`:
+Synthesized from web research (2026-11-26) on top-ladder macro and micro play and the Arena 1–5 card progression, translated into engine capabilities and valid strategy YAML.
 
-1. Add its `<unit>_me` / `<unit>_opp` class name to [`models/classes.txt`](models/classes.txt) and alias mapping to [`models/katacr_alias.json`](models/katacr_alias.json) (keep indices `0..30` stable or re-export cleanly).
-2. Rebuild synthetic + KataCR + own-frame datasets and verify zero train/val overlap:
+### Archetypes
+
+High-win-rate ladder decks exploit elixir and cycle rather than spamming one lane: control and bridge-spam hybrids (force elixir splits across both lanes, turn clean defense into immediate counter-pressure), anchored control beatdown (one tank or ranged anchor plus high-value defenders, two spells and cheap cycle), and 2.6–3.0 cycle or spell bait (out-rotate the opponent's one counter).
+
+| Archetype | Win conditions | How it wins | Edge against | Weak against |
+| --- | --- | --- | --- | --- |
+| Beatdown | Giant, Golem, Lava Hound, Electro Giant | Survive single elixir, back-plant the tank at +2..+4 or in double elixir, stack DPS behind it | Control, siege | Fast cycle and bridge-spam punishes; hard tank killers |
+| Cycle | Hog Rider, Wall Breakers, Miner | 2.6–3.0 average; out-cycle the counter building or spell, defend positively | Beatdown | Overlapping counters, heavy splash |
+| Control | Graveyard, Miner + Poison, Royal Giant + Fisherman | +2..+4 trades, full-HP defenders become counter-pushes | Bridge spam, aggro | Multi-wave beatdown in double/triple elixir |
+| Spell bait | Goblin Barrel, Goblin Drill, Skeleton Barrel | Bait the small spell, punish during its 3-card cooldown | Single-spell decks | Two small spells or fast cycle |
+| Bridge spam | Battle Ram, Ram Rider, Bandit, Prince | Punish the opposite lane whenever the opponent invests ≥ 5 in the back | Back-plant beatdown, siege | Cheap cycle with disciplined reserves |
+| Siege | X-Bow, Mortar | Protect a building on your side; spell-cycle the rest | Control without a big tank | Tanks that soak building fire |
+
+### Upgrade path: starter deck → 2.6 Hog EQ (`theblackcat99`)
+
+Ladder climbing raises opponents' card levels, so **gold and wildcards go only into cards that survive into the Hog EQ cycle deck** (Hog Rider, Earthquake [Fireball until Arena 9], The Log / Barbarian Barrel [Arrows until unlocked], Musketeer / Firecracker, Cannon, Knight / Ice Golem, Skeletons, Ice / Fire Spirit):
+
+1. **Now (Arena 1 → King Level 2):** one cheap upgrade reaches King Level 2 (+112 Princess HP, +168 King HP, +8 % tower DPS) and unlocks Bone Pit. Musketeer, Knight and Fireball can be upgraded freely: all three carry through Arena 9.
+2. **Arena 2 (Bone Pit, 400+):** unlock and slot Skeletons. Optional bridge card: Valkyrie or Bomber, without spending gold on Giant, Minions or Archers.
+3. **Arena 3 (Barbarian Bowl, 800+):** Cannon (the Hog deck's building) and Barbarian Barrel (replaces Arrows).
+4. **Arena 4 (Spell Valley, 1400+):** Fire Spirit or Electro Spirit.
+5. **Arena 5 (Builder's Workshop, 1600+):** Hog Rider: switch from Giant beatdown to the Hog cycle blueprint (`[hog_rider, knight, cannon, musketeer, skeletons, fire_spirit, fireball, barbarian_barrel]`, average 2.8).
+6. **Arena 8–9:** Ice Spirit / Ice Golem, then Earthquake: full Hog EQ.
+
+> **Before a new card goes into `deck:`** capture its `affordable` and `greyed` templates, add counter rows to its CSV, and add `<unit>_me` / `<unit>_opp` to `models/classes.txt` if the detector lacks it (then retrain, [§10](#10-detector-retrain-or-add-cards)).
+
+### Eight mechanics the engine models
+
+1. **Elixir gap and phase pacing.** Regeneration: 1 per 2.8 s in single, 1.4 s in double, ~0.9 s in triple overtime. Spending down to < 3 while the opponent holds 7.5–10 loses to opposite-lane rushes (v5's three ~95 s 0–3 losses opened with 1.1 s back Giants at 7.2–7.5 elixir). Never back-plant a Giant in single elixir unless at ≥ 8.5 (keeping ≥ 3.5 in reserve) or after a positive defense.
+2. **Four-card cycle and the elixir cost to return a counter.** A played card returns only after four other plays. If `opp_elixir + regen < min_cycle_elixir_to_return(counter)`, the win condition has an open window (`CycleTracker.min_cycle_elixir_to_return`).
+3. **Opposite-lane punish vs same-lane build.** When they spend ≥ 5 behind their King Tower in single elixir, punish the other lane if even or ahead; always keep one anti-punish card affordable when back-building.
+4. **Counter-push snowballing.** Defend on your side at a +2..+4 profit, then plant the tank in front of the survivors before they cross.
+5. **Tower HP as a resource.** On a healthy Princess Tower (> 60 %), accept 200–350 chip from low-value pokes rather than spending 3 elixir every 5 s; respect high-DPS threats and swarms.
+6. **Tile geometry** ([`arena.py`](src/droid_harness/domains/clash_royale/arena.py)). Center building pull at `x 7.5–10.5, y ≈ 10.5` drags building-targeters through both towers; cross-lane melee kite near `(7.5–10.5, 11–13)`; ranged defenders 3–4 tiles behind the contact tile; units are tracked by their foot (shadow) tile.
+7. **Spell value discipline.** No Fireball on a lone tank; spread backline defenders ≥ 3.5 tiles from your own towers when they hold Fireball or Poison.
+8. **Overtime spell cycle.** With ≤ 2–3 spells needed to finish a low tower in overtime, defend and rotate spells onto it (`SPELL_CYCLE`).
+
+### Capability audit
+
+| Mechanic | State | Mechanism |
+| --- | --- | --- |
+| Elixir-gated bridge pushes and Giant back-build | YAML | `max_opp_elixir_to_bridge`, `min_elixir_advantage_to_bridge`, `giant_safe_build_elixir`, `giant_build_block_tiles`, `defense_reserve`, `reserve_penalty` |
+| Counter availability and affordability | YAML | `counter_gate`, `wc_counters`, `counter_in_hand_mult`, `counter_out_mult`, `counter_unaffordable_punish_mult`, `cycle_punish_partial_deck`, `back_build_counter_in_hand_mult` |
+| Kill-aware spells, Minions vs Arrows | YAML | `spell_aware`, `kill_aware_spells`, `spell_value_threshold`, `tier0.spell_tower_damage` |
+| Save tank killers while cycling | YAML | `save_counters_for_in_hand_threats` ([`rules/cycle.py`](src/droid_harness/domains/clash_royale/policy/rules/cycle.py)) |
+| Counter-push tank ahead | YAML | `counterpush_tank_ahead`, `counterpush_tank_bonus`, `counterpush_min_value` |
+| Overtime spell cycle | YAML | `posture.py::SPELL_CYCLE`, `spell_cycle_max_casts`, `tier0.lethal_spell` |
+| Opening / single-elixir guard on Giant back-build | Code, v6 | `giant_back_build_allow_in_opening: false`, `giant_x1_min_elixir` |
+| `min_cycle_elixir_to_return` in scoring | Code, v6 | `use_min_cycle_elixir: true` |
+| Tower-HP-as-resource chip filter | Code, v6 | `ignore_chip_tower_hp_frac`, `ignore_chip_max_threat_value` |
+| `OppositeLanePunish` rule | Code, v6 | `opposite_lane_punish` and `punish_*` |
+| Cross-lane kite, anti-spell offset | Code, v6 | `placement.anti_spell_tower_offset` (3.2 tiles) |
+| Predictive pre-hover Arrows on a bridge Giant push | Open | Preselect Arrows ahead of the Giant when Skeleton Army or Minion Horde can be played |
+
+### Blueprints
+
+Each uses only keys accepted by `StrategySpec`. **Blueprint 1** is checked in as [`ladder-vision-v6.yaml`](configs/strategies/ladder-vision-v6.yaml) (+ [`counters/ladder-vision-v6.csv`](configs/strategies/counters/ladder-vision-v6.csv)): it fixes v5's opening throws with `defense_reserve: 2.5` and `giant_safe_build_elixir: 8.6`, narrower hard-counter `wc_counters`, moderate multipliers (0.55 / 1.45) and the v6 extensions above. The others need templates, counter CSVs and detector classes for their cards before use, and `spell_tower_damage` set to your levels.
+
+<details><summary>Blueprint 2: 2.6 Hog cycle (<code>pro-hog-cycle-blueprint</code>)</summary>
+
+Out-rotates building counters (Cannon, Tesla, Tombstone, Inferno Tower) with high bridge tempo.
+
+```yaml
+strategy: pro-hog-cycle-blueprint
+parent: null
+deck: [hog_rider, ice_golem, cannon, musketeer, skeletons, ice_spirit, fireball, the_log]
+win_conditions: [hog_rider]
+params:
+  act_threshold: 0.08
+  elixir_weight: 0.25
+  defend_trigger_tiles: 11.5
+  defend_horizon_s: 7.5
+  min_elixir_to_attack: 4.5
+  press_opp_elixir_max: 4.5
+  max_opp_elixir_to_bridge: 6.5
+  min_elixir_advantage_to_bridge: 1.0
+  spell_value_threshold: 3.5
+  spell_cycle_max_casts: 4
+  opening_ms: 12000
+  min_action_gap_ms: 350
+  counter_push_bonus: 0.45
+  counterpush_min_value: 2.0
+  counterpush_tank_ahead: true
+  counterpush_tank_bonus: 0.20
+  giant_back_build: false
+  attack_blocked_by_threat_eta_s: 5.5
+  counter_gate: true
+  wc_counters: [cannon, tesla, tombstone, bomb_tower, inferno_tower, mini_pekka, pekka, skeleton_army, tornado, fisherman]
+  counter_in_hand_mult: 0.40
+  counter_out_mult: 1.60
+  counter_unaffordable_punish_mult: 1.35
+  cycle_punish_partial_deck: true
+  defense_reserve: 1.5
+  reserve_penalty: 0.65
+  spell_aware: true
+  kill_aware_spells: true
+  save_counters_for_in_hand_threats: false
+tier0:
+  lethal_margin_hp: 20
+  spell_tower_damage: {fireball: 207, the_log: 58}  # update to your card levels
+  leak_threshold: 9.2
+  leak_ms: 600
+  leak_card_preference: [skeletons, ice_spirit, ice_golem, the_log, musketeer]
+  emergency_eta_s: 1.6
+  emergency_hp_frac: 0.35
+placement:
+  building_pull: {left: [8.0, 10.5], right: [10.0, 10.5]}
+  ranged_standoff_tiles: 3.5
+  bridge_tiles: {left: [2.5, 14.0], right: [15.5, 14.0]}  # edge hog pig-push alignment
+weights:
+  defend.lane_threat: 1.05
+  defend.air_threat: 1.05
+  offense.win_condition_when_opp_low: 1.15
+  offense.counter_push: 0.85
+  spell.value: 0.90
+  spell.tower_chip: 0.85
+  opening.safe_first_play: 1.0
+  cycle.cheap_cycle: 1.20
+posture_multipliers:
+  OPENING:     {offense: 0.7, cycle: 1.4}
+  DEFEND_LEAD: {offense: 0.8, defend: 1.35}
+  PRESS:       {offense: 1.5, cycle: 1.2}
+  SPELL_CYCLE: {spell: 2.2, offense: 0.7}
+counters: null  # add a counters CSV covering hog/tank/swarm defense
+```
+</details>
+
+<details><summary>Blueprint 3: control / counter-push (<code>pro-control-blueprint</code>)</summary>
+
+Positive defensive trades first, high counter-push reward, strict anti-punish reserve.
+
+```yaml
+strategy: pro-control-blueprint
+parent: null
+deck: [royal_giant, knight, baby_dragon, mini_pekka, skeletons, bomber, fireball, arrows]
+win_conditions: [royal_giant]
+params:
+  act_threshold: 0.10
+  elixir_weight: 0.45
+  defend_trigger_tiles: 10.5
+  defend_horizon_s: 7.5
+  min_elixir_to_attack: 6.5
+  press_opp_elixir_max: 3.5
+  max_opp_elixir_to_bridge: 5.0
+  min_elixir_advantage_to_bridge: 2.5
+  spell_value_threshold: 4.0
+  spell_cycle_max_casts: 3
+  opening_ms: 20000
+  min_action_gap_ms: 350
+  counter_push_bonus: 0.85
+  counterpush_min_value: 2.5
+  counterpush_tank_ahead: true
+  counterpush_tank_bonus: 0.30
+  giant_back_build: false
+  attack_blocked_by_threat_eta_s: 6.5
+  counter_gate: true
+  wc_counters: [inferno_tower, mini_pekka, pekka, barbarians, goblin_cage, cannon, tombstone]
+  counter_in_hand_mult: 0.45
+  counter_out_mult: 1.50
+  counter_unaffordable_punish_mult: 1.35
+  cycle_punish_partial_deck: true
+  defense_reserve: 3.0
+  reserve_penalty: 0.45
+  spell_aware: true
+  kill_aware_spells: true
+  save_counters_for_in_hand_threats: true
+tier0:
+  lethal_margin_hp: 25
+  spell_tower_damage: {fireball: 207, arrows: 93}
+  leak_threshold: 9.4
+  leak_ms: 900
+  leak_card_preference: [skeletons, bomber, knight, baby_dragon]
+  emergency_eta_s: 1.8
+  emergency_hp_frac: 0.35
+weights:
+  defend.lane_threat: 1.15
+  defend.air_threat: 1.15
+  offense.win_condition_when_opp_low: 0.90
+  offense.counter_push: 1.15
+  spell.value: 0.95
+  spell.tower_chip: 0.65
+  opening.safe_first_play: 1.0
+  cycle.cheap_cycle: 1.0
+posture_multipliers:
+  OPENING:     {offense: 0.4, defend: 1.1, cycle: 1.2}
+  DEFEND_LEAD: {offense: 0.6, defend: 1.4}
+  PRESS:       {offense: 1.4}
+  SPELL_CYCLE: {spell: 2.0, defend: 1.2, offense: 0.5}
+counters: null
+```
+</details>
+
+<details><summary>Blueprint 4: dual-lane bridge spam (<code>pro-bridgespam-blueprint</code>)</summary>
+
+Punishes opponent elixir deficits immediately while holding P.E.K.K.A and Musketeer for heavy defense.
+
+```yaml
+strategy: pro-bridgespam-blueprint
+parent: null
+deck: [battle_ram, bandit, pekka, prince, musketeer, minions, fireball, arrows]
+win_conditions: [battle_ram, prince]
+params:
+  act_threshold: 0.08
+  elixir_weight: 0.30
+  defend_trigger_tiles: 12.0
+  defend_horizon_s: 8.0
+  min_elixir_to_attack: 4.5
+  press_opp_elixir_max: 5.0
+  max_opp_elixir_to_bridge: 6.0
+  min_elixir_advantage_to_bridge: 1.0
+  spell_value_threshold: 3.5
+  spell_cycle_max_casts: 2
+  opening_ms: 12000
+  min_action_gap_ms: 350
+  counter_push_bonus: 0.70
+  counterpush_min_value: 2.5
+  counterpush_tank_ahead: true
+  counterpush_tank_bonus: 0.30
+  giant_back_build: false
+  attack_blocked_by_threat_eta_s: 5.0
+  counter_gate: true
+  wc_counters: [tombstone, goblin_cage, cannon, barbarians, skeleton_army, valkyrie, mega_knight]
+  counter_in_hand_mult: 0.60
+  counter_out_mult: 1.45
+  counter_unaffordable_punish_mult: 1.40
+  cycle_punish_partial_deck: true
+  defense_reserve: 2.0
+  reserve_penalty: 0.55
+  spell_aware: true
+  kill_aware_spells: true
+  save_counters_for_in_hand_threats: true
+  opposite_lane_punish: true
+tier0:
+  lethal_margin_hp: 20
+  spell_tower_damage: {fireball: 207, arrows: 93}
+  leak_threshold: 9.0
+  leak_ms: 700
+  leak_card_preference: [bandit, minions, battle_ram, knight]
+  emergency_eta_s: 1.6
+  emergency_hp_frac: 0.35
+weights:
+  defend.lane_threat: 1.0
+  defend.air_threat: 1.0
+  offense.win_condition_when_opp_low: 1.25
+  offense.counter_push: 1.0
+  spell.value: 0.85
+  spell.tower_chip: 0.5
+  opening.safe_first_play: 0.9
+  cycle.cheap_cycle: 1.0
+posture_multipliers:
+  OPENING:     {offense: 0.8, cycle: 1.1}
+  DEFEND_LEAD: {offense: 0.7, defend: 1.3}
+  PRESS:       {offense: 1.6}
+  SPELL_CYCLE: {spell: 1.8, offense: 0.7}
+counters: null
+```
+</details>
+
+<details><summary>Blueprint 5: spell bait (<code>pro-spellbait-blueprint</code>)</summary>
+
+Holds Goblin Barrel while their small spell is in hand and affordable, spikes as soon as it leaves the cycle, finishes with Rocket in overtime.
+
+```yaml
+strategy: pro-spellbait-blueprint
+parent: null
+deck: [goblin_barrel, princess, goblin_gang, knight, valkyrie, inferno_tower, rocket, the_log]
+win_conditions: [goblin_barrel]
+params:
+  act_threshold: 0.08
+  elixir_weight: 0.35
+  defend_trigger_tiles: 12.0
+  defend_horizon_s: 8.5
+  min_elixir_to_attack: 4.0
+  press_opp_elixir_max: 5.0
+  max_opp_elixir_to_bridge: 7.5
+  min_elixir_advantage_to_bridge: 0.5
+  spell_value_threshold: 4.5
+  spell_cycle_max_casts: 4
+  opening_ms: 15000
+  min_action_gap_ms: 350
+  counter_push_bonus: 0.40
+  counterpush_min_value: 2.0
+  counterpush_tank_ahead: true
+  counterpush_tank_bonus: 0.25
+  giant_back_build: false
+  attack_blocked_by_threat_eta_s: 5.5
+  counter_gate: true
+  wc_counters: [the_log, arrows, zap, barbarian_barrel, giant_snowball]
+  counter_in_hand_mult: 0.35
+  counter_out_mult: 1.70
+  counter_unaffordable_punish_mult: 1.45
+  cycle_punish_partial_deck: true
+  defense_reserve: 2.5
+  reserve_penalty: 0.60
+  spell_aware: true
+  kill_aware_spells: true
+  save_counters_for_in_hand_threats: false
+tier0:
+  lethal_margin_hp: 25
+  spell_tower_damage: {rocket: 371, the_log: 58}
+  leak_threshold: 9.2
+  leak_ms: 700
+  leak_card_preference: [princess, the_log, knight, goblin_gang]
+  emergency_eta_s: 1.7
+  emergency_hp_frac: 0.35
+weights:
+  defend.lane_threat: 1.1
+  defend.air_threat: 1.1
+  offense.win_condition_when_opp_low: 1.25
+  offense.counter_push: 0.70
+  spell.value: 0.90
+  spell.tower_chip: 1.10
+  opening.safe_first_play: 1.0
+  cycle.cheap_cycle: 1.25
+posture_multipliers:
+  OPENING:     {offense: 0.85, cycle: 1.3}
+  DEFEND_LEAD: {offense: 0.70, defend: 1.35}
+  PRESS:       {offense: 1.55}
+  SPELL_CYCLE: {spell: 2.4, defend: 1.3, offense: 0.6}
+counters: null
+# Goblin Barrel casts on tower coordinates would benefit from a dedicated spell-wincon placement rule.
+```
+</details>
+
+---
+
+## 8. Analyze matches
+
+All analytics run on recorded directories, with no API calls:
+
+```bash
+# Lane engagements, triage tags (PERCEPTION/EXECUTION/LATENCY/STRATEGY/OK), DuckDB ingest, report
+droid-harness analyze --data data/matches-batch --db data/warehouse.duckdb
+
+# Plain-text dashboard: win rate with CI by strategy and game version, rule/posture value, triage mix, loop p99
+python notebooks/dashboard.py data/matches-batch
+
+# Scrub any match visually
+droid-harness inspect data/matches-batch
+```
+
+Each match folder holds:
+- `summary.json`: `result`, `my_crowns`, `opp_crowns`, `tower_hp_diff`, `strategy_id`, `status`, `duration_s`, `elixir_leaked`, `loop_p50_ms`, `loop_p99_ms`, `perception_warnings`, `warning_counts`, `opp_deck_seen`, `events` (your plays, spawn plays, fallen towers).
+- `decisions.jsonl`: every 5th frame and every play: `t_ms`, `posture`, `chosen_rule`, `chosen_card`, `tile`, `predicted_tile`, `score`, `candidates` (with totals), the `state` snapshot (elixir, opponent range, hand and freshness, units, towers, opponent cycle), and stage latency.
+- `frames.jsonl`, `stream.h264`, `stream.pts`: per-frame timings and the raw video with exact device timestamps.
+
+Compact files are ~1.5 MB per match; video is ~60 MB per minute (see retention below).
+
+### Re-run perception on saved video (`replay`)
+
+Test a new detector checkpoint or perception change against past recordings without the phone:
+
+```bash
+droid-harness replay --data data/matches-batch \
+  --detector models/yolo26n-cr.pt --classes models/classes.txt \
+  --out data/replay/run-new.json --baseline data/replay/run-prev.json
+```
+
+---
+
+## 9. Set up a new phone
+
+1. **Pin `scrcpy-server-v2.4`** into `vendor/` and create `configs/device_profiles/<phone>.yaml` from [`phone-a.example.yaml`](configs/device_profiles/phone-a.example.yaml) (`serial`, `local_port`, `scrcpy_server_jar`). Each concurrent phone needs its own `local_port`. The client implements the v2.4 wire format (12-byte codec meta, no session packet); v5.0.1 adds a 12-byte session packet after the codec id, so don't point a profile at v5 without updating `scrcpy_bridge.py`.
+2. **Stream and latency:**
+   ```bash
+   droid-harness stream --profile configs/device_profiles/<phone>.yaml --seconds 10 --save-frame data/frame.png
+   droid-harness loopback --profile configs/device_profiles/<phone>.yaml --x 30 --y 400
+   droid-harness stream --profile configs/device_profiles/<phone>.yaml --duration 1800   # 30-min soak
+   ```
+   Put the loopback p50 into `exec_latency_ms`. Static screens send no frames; tap or animate while testing.
+3. **Card DB** (only when stats change or from scratch):
+   ```bash
+   git clone --depth 1 https://github.com/RoyaleAPI/cr-api-data ~/src/cr-api-data
+   python tools/build_card_db.py ~/src/cr-api-data --out configs/domains/clash_royale/cards.json
+   ```
+   The source dates from 2023: check costs and deploy times of your deck and common threats, and patch stale entries.
+4. **ROIs and tile homography.** Copy [`rois/phone-a.yaml`](configs/domains/clash_royale/rois/phone-a.yaml) and measure fractions `[x0, y0, x1, y1]` for hand slots, `next_card`, `elixir_bar`, `clock`, tower HP fields, `arena` and buttons (`battle`, `ok`, `dismiss`, `trophy_ok`, …). Then fit pixel → 18×32 tiles (max landmark error < 0.5 tiles):
+   ```bash
+   droid-harness calibrate-tiles --landmarks <landmarks.yaml> --out configs/domains/clash_royale/tiles/<phone>.yaml
+   ```
+   Use `droid-harness inspect` or the live Studio with *HUD regions* and *Tile grid* on to check the calibration visually.
+5. **Templates** from saved frames:
+   ```bash
+   droid-harness template --frame <battle.png> --layout <rois.yaml> --slot 0 --card knight --state affordable --out configs/domains/clash_royale/templates/<phone>
+   droid-harness template --frame <low_elixir.png> --layout <rois.yaml> --slot 0 --card knight --state greyed --out configs/domains/clash_royale/templates/<phone>
+   droid-harness tower-template --frame <battle.png> --layout <rois.yaml> --tower all --state alive --out configs/domains/clash_royale/towers/<phone>
+   droid-harness screen --frame <home.png> --name HOME --out configs/domains/clash_royale/screens/<phone>
+   ```
+
+### Reference: `phone-a` calibration
+
+| Item | Value |
+| --- | --- |
+| Phone | OnePlus N10 (BE2028), Android 11, 1080×2400, 90 Hz; serial `741be240` |
+| Stream | `464×1024` H.264, ~58 fps while the screen moves; decode p50 3.8 ms, p99 15 ms |
+| Profile | `configs/device_profiles/phone-a.yaml` (`exec_latency_ms: 40`: OxygenOS hides synthetic touch dots, so loopback can't measure it) |
+| ROIs | `rois/phone-a.yaml`: hand ×4, next, elixir (HSV `[135,80,120]–[175,255,255]`), clock (countdown), tower HP fields, arena, buttons `menu`, `training_camp`, `confirm`, `ok`, `battle`, `close`, `dismiss`, `trophy_ok` |
+| Screen classifier | The **top 18 %** of the frame only (clock, opponent name): the bottom half changes with the hand |
+| Tiles / arena | Homography max landmark error 0.31 tiles; river y 15.0–16.5, bridges x 3.6 / 14.4 |
+| Templates | 18 hand templates for the 8-card starter deck (affordable/greyed), 10 tower alive/rubble, digits 0–9 |
+| Screens | HOME, MENU, TRAINING_CONFIRM, LOADING, MATCHMAKING, TROPHY_ROAD (incl. the Bone Pit arena-lock modal near 275–299 trophies, dismissed by `trophy_ok`), IN_BATTLE, RESULT_WIN, RESULT_LOSS |
+| Menu path (Training Camp) | HOME → hamburger `menu` → `training_camp` → `confirm` → battle |
+| Deck | Knight, Archers, Minions, Arrows, Fireball, Giant, Musketeer, Mini P.E.K.K.A (the starter card is **Archers**, not Princess) |
+
+---
+
+## 10. Detector: retrain or add cards
+
+When you unlock cards or promote a frequent enemy out of `other_ground_opp` / `other_air_opp`:
+
+1. Add `<unit>_me` / `<unit>_opp` to [`models/classes.txt`](models/classes.txt) and the alias to [`models/katacr_alias.json`](models/katacr_alias.json) (keep existing indices stable or re-export cleanly).
+2. Build datasets and verify zero train/val overlap:
    ```bash
    python tools/fetch_katacr.py --out data/katacr --part2
    python tools/extract_backgrounds.py --data data/matches-batch --out data/backgrounds
-
-   # --synthesize-missing-sides shifts opp sprites -> blue _me sprites with blue HP bars when _me sprites are missing
-   droid-harness synth \
-     --backgrounds data/backgrounds data/katacr/backgrounds \
-     --sprites data/katacr/segment --bars data/katacr/bars \
-     --classes models/classes.txt --synthesize-missing-sides \
-     --out data/synth --n 4500 --imgsz 640 384
-
+   droid-harness synth --backgrounds data/backgrounds data/katacr/backgrounds \
+     --sprites data/katacr/segment --bars data/katacr/bars --classes models/classes.txt \
+     --synthesize-missing-sides --out data/synth --n 4500 --imgsz 640 384
    droid-harness convert-katacr --part2 data/katacr/_repo/images/part2 --classes models/classes.txt --out data/katacr-real
    droid-harness frames --data data/matches-batch --layout configs/domains/clash_royale/rois/phone-a.yaml \
      --detector models/yolo26n-cr.pt --classes models/classes.txt --out data/own
-
    droid-harness dataset \
      --train data/synth/data.yaml:train data/katacr-real/data.yaml:train data/own/data.yaml:train \
-     --val data/katacr-real/data.yaml:val data/own/data.yaml:val \
-     --out data/train.yaml
+     --val data/katacr-real/data.yaml:val data/own/data.yaml:val --out data/train.yaml
    ```
-3. Train (fast ROCm settings) and export ONNX + check per-class recall gate:
+3. Train, export, and gate on per-class threat recall:
    ```bash
-   python -m droid_harness.learn.train_detector \
-     --data data/train.yaml --model models/yolo26n-cr.pt \
+   python -m droid_harness.learn.train_detector --data data/train.yaml --model models/yolo26n-cr.pt \
      --epochs 30 --batch 64 --cache ram --workers 8 --patience 8 \
      --imgsz 640 --export-imgsz 640 384 --name yolo26n-cr-next --out models/yolo26n-cr-next.onnx
-
-   droid-harness eval-detector \
-     --model models/yolo26n-cr-next.onnx --classes models/classes.txt \
+   droid-harness eval-detector --model models/yolo26n-cr-next.onnx --classes models/classes.txt \
      --data data/katacr-real/data.yaml --min-threat-recall 0.70 --min-support 20
    ```
-   Copy `models/runs/yolo26n-cr-next/weights/best.pt` → `models/yolo26n-cr.pt` (backing up your previous `.pt`/`.onnx` first) once `eval-detector` and `replay` pass.
+   Invoke `learn.train_detector` directly: the CLI's `train-detector` parser intercepts `--data`. Copy `models/runs/yolo26n-cr-next/weights/best.pt` → `models/yolo26n-cr.pt` (back up the old `.pt`/`.onnx`) once `eval-detector` and `replay` pass.
+
+**GPU host (`veritas`, nick@192.168.1.199).** Venv `~/venvs/droid-det` (Python 3.13, `torch 2.7.1+rocm6.3` on the RX 7900 XT, `ultralytics`, `onnx`), symlinked as `.venv` in `~/src/droid-harness`. To fine-tune on new real frames: export with `frames … --detector models/yolo26n-cr.pt --out data/own`, fix the labels, merge with `dataset`, train ~15–20 epochs from `models/yolo26n-cr.pt`, gate with `eval-detector`, then run live with `--detector models/yolo26n-cr.pt --classes models/classes.txt --async-detect` (`TorchDetector` 7.9 ms p50 / 9.8 ms p95 for the 18-class model vs CPU ONNX 26.8 / 53.4 ms).
 
 ---
 
-## 7. Troubleshooting & operational limits
+## 11. Architecture and design
 
-- **Phone sleeps or drops ADB:** Verify Developer Options *Stay awake* is enabled while plugged into USB; re-check `adb devices`. If `scrcpy-server` is busy after a crash, wait ~3 s for the previous socket on `local_port` to close or kill stray `adb`/`droid-harness` processes.
-- **Stuck on a loss/result screen or a popup:** run `droid-harness recover` (or wait 8–15 s for the live loop to arm the same ladder). `recover --dry-run` prints the taps first. If the calibrated `ok` keeps missing, re-capture the result screen with `droid-harness screen` or recalibrate the `buttons:` block; recovery finds the real button visually either way.
-- **Deck changed in Clash Royale:** Capture new `affordable` and `greyed` templates via `droid-harness template` into a clean directory, update `deck:` in your strategy YAML, and re-run `replay` / `pytest` — stale hand templates produce `hand_unreadable` / wrong card plays.
-- **Disk usage on long runs:** Raw H.264 video grows at **~60 MB/min** (~2–4 GB per 10 matches). After running `analyze` and exporting any frames you want via `droid-harness frames`, keep only `meta.json`, `summary.json`, and `decisions.jsonl` (~1.5 MB/match) for completed matches whose video you no longer need.
-- **AMD GPU vs CPU ONNX:** ONNX Runtime removed its ROCm EP upstream. Pass `--detector models/yolo26n-cr.pt` for GPU inference via PyTorch-ROCm (`~4.14 ms p50` at `640×384` on RX 7900 XT); `.onnx` runs via `MIGraphXExecutionProvider` if built, or falls back to CPU (`~26.8 ms p50`).
-- **License:** Ultralytics YOLO (`[detector]` / training) is AGPL-3.0; keep the runtime MIT/private or swap in an Apache-2.0 detector such as RF-DETR before public/hosted redistribution.
+### Decisions at a glance
+
+1. **No LLM in the reflex loop.** Capture → perceive → decide → touch runs on deterministic code plus small models, targeting ≤ 60 ms p50 / ≤ 100 ms p99 (measured: under 5 ms p50 for the loop after decode). LLMs only appear in slower loops: an optional non-blocking advisor and an offline coach/agent.
+2. **One persistent scrcpy session per phone is the device bus.** Video and touches ride `scrcpy-server`'s sockets through a small Python client with a per-device port. No `screencap`, no `adb shell input` in the hot path.
+3. **Perception = fixed-region HUD parsing + one YOLO26 detector + a tracker.** Card matching works on lightness with masks so greyed and selected cards still classify.
+4. **Decisions in layers:** Tier 0 reflex invariants → posture → utility-scored rules (→ optional ranker), with lead targeting by deploy time, spell travel and measured action latency.
+5. **A strategy is versioned code + YAML + optional weights, content-hashed.** Every decision is logged with the candidates it beat; every lane engagement gets a value and a root-cause tag.
+6. **Win rate is the gate, not the guide.** Cheap filters first (replay diff, shadow, engagement value), then a paired SPRT with an outcome-blind inclusion rule and game-version pinning.
+7. **Only strategy problems reach the coach.** Perception, execution and latency problems go to their own queues.
+8. **The same harness drives any Android app** (accessibility tree first, then templates/OCR, then a GUI model), with successful action sequences cached.
+
+| Goal | Measured by |
+| --- | --- |
+| Fastest decision-to-action | Per-stage timestamps on every frame; loopback round-trip test |
+| Highest win rate | Win rate vs a fixed opponent pool under a pinned game version (§12) |
+| Calculated, iterable strategies | Every change is a hypothesis with an ID, a test and a recorded result |
+| Reusable for general Android | Core harness + domain plugins; same logging and experiment tables |
+
+Non-goals: reading game memory, sniffing traffic, modifying the APK, emulators, champion-heavy decks, 2v2.
+
+### Runtime
+
+```
+ PHONE                                        HOST (Linux, RX 7900 XT)
+┌────────────────────────────┐  USB   ┌───────────────────────────────────────────────────────────┐
+│ scrcpy-server (app_process) │       │ T1 video:   socket → tee(T4) → H.264 decode → [latest slot]│
+│  ├ MediaCodec H.264 encoder ├─video▶│                                          │                 │
+│  ├ InputManager injection   │◀ctrl──┤ T3 executor ◀── timed touches ◀── T2 brain:                │
+│  └ display power control    │       │   (TCP_NODELAY)        screen → HUD → detector → tracker    │
+└────────────────────────────┘       │                        → Tier 0 → posture → rules → placement│
+                                      │ T4 recorder: raw .h264 (config + pre-roll) + JSONL, drops if full│
+                                      │ T5 liveness: socket/process/ADB ping, stuck-screen detector     │
+                                      │ UI publisher (optional): snapshot + JPEG at --ui-fps → Studio   │
+                                      │ P2 advisor (optional, separate process): LLM → posture intent   │
+                                      └───────────────────────────────────────────────────────────┘
+ OFFLINE: matches → engagements → triage → { STRATEGY → digest/coach → candidate → funnel → SPRT }
+                                           { PERCEPTION → labeling/calibration queue           }
+                                           { EXECUTION / LATENCY → bug & profiling queue        }
+```
+
+| Loop | Cadence | What runs | May block the reflex loop? |
+| --- | --- | --- | --- |
+| L1 reflex | every frame (30–60 Hz), event-driven decisions | capture, HUD, detector, tracker, Tier 0, posture, rules, executor | — |
+| L2 intent (optional) | every 3–5 s, async | LLM reads a compact text state, may suggest a posture | Never: stale intent expires (TTL = 2× cadence) |
+| L3 learning | between batches | engagements, triage, digest, tuning, model training, SPRT | n/a |
+
+A `threading.Condition` guards the latest-frame slot. If GIL contention ever shows up, the brain moves to its own process with shared memory.
+
+### Latency budget and speed rules
+
+| Stage | Target p50 |
+| --- | --- |
+| Game frame → encoder output | 10–25 ms (device-dependent, the largest term) |
+| USB transfer | < 2 ms |
+| Decode (~460×1024 H.264, 1 thread) | 2–5 ms (measured 3.8 ms) |
+| HUD parse | < 1 ms |
+| Arena detector | 3–8 ms (measured 4.1 ms, async) |
+| Tracker + state + Tier 0 + posture + rules | < 2 ms |
+| Control message → injected | 1–3 ms |
+| Game picks up the touch | 0–17 ms (next frame at 60 Hz) |
+| **Frame out → touch injected** | **≈ 35–60 ms** |
+
+1. Drop decoded frames, never packets (H.264 frames reference earlier ones).
+2. No bitstream parser: feed whole scrcpy packets, config prepended.
+3. Single-threaded, low-delay decoder (frame threading adds frames of delay).
+4. `TCP_NODELAY` on the control socket.
+5. Static ONNX input shapes plus warm-up.
+6. Adaptive detector cadence with tracker extrapolation (`--detect-every`, `--async-detect`).
+7. Event-driven decisions plus a heartbeat.
+8. Timed actions (`execute_at_ms`): deciding fast and placing at the right moment are separate.
+9. Resolution is a sweep judged by small-unit recall and latency, not a guess (720 px long edge is only ~324 px wide on a portrait phone).
+10. Phone hygiene: USB, cooling, fixed refresh rate, stay awake, display off for unattended runs.
+
+Once p99 is under ~100 ms the bot is several times faster than human reaction (~200–250 ms); after that, perception accuracy and decision quality bound the win rate.
+
+### Stack
+
+| Layer | Pick | Avoid (why) |
+| --- | --- | --- |
+| Transport | ADB over USB | Wi-Fi in the hot path (jitter) |
+| Capture + input | scrcpy-server v2.4 + own Python client | `screencap` (hundreds of ms), `adb shell input` (a process per tap) |
+| Decode | PyAV software, 1 thread, low-delay | A parser in front; frame threading |
+| Detector | Ultralytics YOLO26-n → `.pt` (PyTorch-ROCm) or static ONNX | A VLM per frame |
+| GPU inference | PyTorch-ROCm `TorchDetector` (MIGraphX EP optional) | ONNX Runtime ROCm EP (removed upstream); TensorRT/NVDEC (NVIDIA-only) |
+| Policy | Tier 0 + postures + utility rules + optional ranker | String-eval rules in YAML |
+| Logging / warehouse | JSONL + raw `.h264`; DuckDB | Synchronous DB writes in the loop |
+| Tuning / statistics | Offline search, Optuna, own SPRT | Eyeballing win rates under ~200 games |
+| Studio | stdlib HTTP server + one HTML page (optional pywebview) | Anything that blocks the brain |
+| Game data | RoyaleAPI `cr-api-data` | Hard-coded stats |
+
+License: Ultralytics YOLO is AGPL-3.0 (or a paid license). Fine for a private project; switch to an Apache-2.0 detector such as RF-DETR before publishing or hosting.
+
+### Device I/O
+
+Per-device profile (`configs/device_profiles/<phone>.yaml`): serial, unique `local_port`, account, pinned `scrcpy_server_version` + jar, `max_size`, `max_fps`, `video_bit_rate`, encoder, display-power byte, `exec_latency_ms`. Server options: `video_codec=h264`, low-latency codec hints, `audio=false`, `control=true`, `tunnel_forward=true`, frame meta on, `stay_awake=true`. The server refuses a client of another version, so pin one and test the structs ([`scrcpy_protocol.py`](src/droid_harness/core/transport/scrcpy_protocol.py), [`tests/test_scrcpy_protocol.py`](tests/test_scrcpy_protocol.py)).
+
+- **Card play is tap-tap:** tap the slot, then the tile (20 ms hold / 20 ms gap, [`gestures.py`](src/droid_harness/core/actuate/gestures.py)); pre-selection makes placement a single tap at `execute_at`. Drag stays available.
+- **Execution check:** the card must leave the hand within ~300 ms (one re-tap at 400 ms if the slot still shows the same card, fresh and affordable) and a matching spawn must appear near the target.
+- **Liveness, not frame gaps:** scrcpy sends frames only when the screen changes, so a gap outside battle is normal. Socket errors and server exit reconnect; ADB ping failures reconnect ADB; a gap > 250 ms in battle is a latency anomaly; a stuck screen arms recovery ([`liveness.py`](src/droid_harness/core/runtime/liveness.py), [`recovery.py`](src/droid_harness/domains/clash_royale/recovery.py)). An app watchdog relaunches a dead game.
+- **Recorder:** tees every packet before decode; a match file starts with the latest SPS/PPS and the packets since the last key frame, so it decodes from its first byte; `stream.pts` keeps exact device timestamps for replay.
+- **Display off** (`turn_display_off`) cools the phone during long runs; on some LCDs only the backlight turns off.
+
+### Perception (Clash Royale)
+
+- **Layout:** normalized ROIs per phone; arena pixels ↔ 18×32 tiles through a homography fitted from ≥ 4 landmarks.
+- **HUD every frame (< 1 ms):** hand and next card by masked normalized cross-correlation on lightly blurred luma (`local_znorm`, bottom-center/border mask), affordability from slot saturation (cross-checked against elixir), elixir by HSV fill, clock (1 Hz) and tower HP (2 Hz) by digit templates, King HP seeded from Princess max HP. A slot that fails to read keeps its last card for play detection but is **stale**: the policy never plays it.
+- **Detector:** YOLO26-n on the arena crop (letterboxed to 640×384), side-aware classes (`knight_me` / `knight_opp`), `other_ground_*` / `other_air_*` catch-alls for unknown cards, spell effects attributed by your own recent casts (they land on the other half), class-offset NMS.
+- **Tracking:** side-keyed association, velocity, extrapolation between detections (capped at 500 ms), flying-unit foot offset; spawn grouping turns tracks into play events, which drive opponent elixir and cycle tracking; swarms upgrade (≥ 4 minions → Minion Horde).
+- **Screens:** perceptual hash of the top HUD band + battle evidence from the elixir bar (works in any arena); results are verified from the banners and crowns and must settle before a match ends.
+- **QA:** replay regression over recorded matches, `eval-detector` per-class recall, `perception_warnings` per match.
+
+### Game state and opponent model
+
+`GameState` ([`state.py`](src/droid_harness/domains/clash_royale/state.py)) holds time and phase, your elixir (HUD fused with a model), the opponent's elixir **interval**, hand with affordability and freshness, next card, units, towers, crowns, the opponent's seen deck and last four plays, pocket state and posture.
+
+- **Phases:** single elixir for 2 minutes, double in the third; overtime double then triple. About 1 elixir per 2.8 s in single, cap 10.
+- **Opponent elixir** = generation − costs of detected plays, as an interval. A full bar collapses it (10 is known); uncertainty comes from unknown costs and missed plays.
+- **Opponent cycle:** 8 cards, 4 in hand; a played card returns after four more plays. Once their deck is known, their hand = deck − last four.
+- **Card DB:** cost, type, targets, range, speed, deploy time, spell travel speed, crown-tower damage % (level 1 stats; level-dependent spell damage is set per strategy in `tier0.spell_tower_damage`).
+
+### Decision layer
+
+| Layer | What |
+| --- | --- |
+| Hard constraints | Legal deploy zone (own half; pocket once a tower falls; spells anywhere), elixir at `execute_at`, one play in flight, minimum spacing, no input outside battle. Never learned, never LLM-editable. |
+| Tier 0 reflexes | `t0.lethal_spell` (an affordable spell that finishes a tower), `t0.leak_guard` (elixir above a threshold too long), `t0.emergency_defend` (threat ETA to a low tower). |
+| Posture | `OPENING`, `BALANCED`, `DEFEND_LEAD`, `PRESS`, `SPELL_CYCLE` from phase, crowns, time, opponent elixir and spells-to-finish; an advisor may set only allowlisted postures. |
+| Utility rules | `defend.lane_threat`, `defend.air_threat`, `offense.win_condition_when_opp_low`, `offense.counter_push`, `offense.giant_back_build`, `offense.opposite_lane_punish`, `spell.value`, `spell.tower_chip`, `cycle.cheap_cycle`, `opening.safe_first_play`, … ([`policy/rules/`](src/droid_harness/domains/clash_royale/policy/rules/)) |
+| Ranker (optional) | Bounded residual on top of rule scores. |
+
+**Lead targeting:** a placed card takes effect after action latency + deploy time (+ travel for spells), so targets are advanced along their lane path ([`path.py`](src/droid_harness/domains/clash_royale/path.py)) by that much; predictions beyond ~1.5 s get unreliable. `predicted_tile` is logged for every play.
+
+### Identity, logging and credit
+
+- `strategy_id = sha256(policy source + YAML + counters + model)[:12]`.
+- **Engagements:** each lane is segmented into engagements that open when a unit enters contested ground (or a card is placed there) and close when no unit is past the river in that lane for 2 s (cap 25 s). Spells join the open engagement.
+- **Value with shared credit:** board value = Σ (card cost ÷ units per card) × `hp_pct`. `value = (net_me − net_opp) + λ·(tower damage dealt − taken)`, with λ = 1 elixir per 100 HP. Each of your decisions gets `value × its elixir ÷ elixir spent`. Value ranks rules and finds problems; it doesn't accept changes.
+- **Root-cause triage:**
+
+| Tag | Detection (any) | Routed to |
+| --- | --- | --- |
+| `PERCEPTION` | Elixir disagreement or tower HP rising in ≥ 2 frames; unreadable hand or affordability contradictions in ≥ 12 frames and ≥ 45 % of the engagement, outside the card-slide window around your plays | Labeling/calibration |
+| `EXECUTION` | Card didn't leave the hand, spawn far from target, rejected placement | Executor bugs |
+| `LATENCY` | Loop p99 > 100 ms or frame gap > 250 ms during the engagement | Profiling |
+| `STRATEGY` | None of the above and value below threshold | Digest / coach |
+
+- **Storage:** raw video ~60 MB/min. `retain` deletes video of clean wins and keeps loss keyframes; compact files are kept forever.
 
 ---
 
-## Companion documentation
+## 12. Evaluation and statistics
 
-- [`docs/refinement-loop-plan.md`](docs/refinement-loop-plan.md) — Scaling from 10-match batches to a 50–100 match farm → single deterministic digest → single LLM review → offline gate → paired SPRT workflow.
-- [`docs/pro-strategy-research.md`](docs/pro-strategy-research.md) — Top Clash Royale macro/micro mechanics mapped to `droid-harness` capabilities + ready-to-load strategy YAML blueprints (`ladder-vision-v6.yaml` and archetype templates).
-- [`docs/phone-a-bringup.md`](docs/phone-a-bringup.md) — Hardware bring-up and calibration measurements for `phone-a`.
-- [`docs/plan.md`](docs/plan.md) & [`docs/review.md`](docs/review.md) — Architecture design spec and engineering review rationale.
-- [`todo.md`](todo.md) — Milestone tracker and chronological test/experiment log.
+**Opponent pools.** Training Camp (baseline); the ladder (approved on the throwaway account; trophy-based matchmaking keeps moving the pool, so only paired comparisons are meaningful); a Practice gauntlet of 10–20 archetypes from your battle log (keep opponents where the champion wins 15–85 %); two-phone self-play with strategy ↔ (phone, account) swapped every game so device and card-level bias cancel.
+
+**Inclusion rule (fixed before results):** count every completed match. Exclude only infrastructure aborts and compare abort rates between arms (an arm that aborts more is failing). Never exclude by triage tags. Every match records `game_version` and `balance_epoch`; an experiment that spans an update is void.
+
+**Sample size.** ~3–5 min per match plus menus → ~10–15 matches/hour per phone. 95 % Wilson interval at 50 %: ±13 pts at 50 games, ±10 at 100, ±7 at 200, ±5 at 400.
+
+| True candidate edge (H1) | ≈ Elo | Avg decisive comparisons to decide (H0 = 50 %, α = β = 0.05) | Hours at 12/h, one phone |
+| --- | --- | --- | --- |
+| 55 % | +35 | ~530 | ~44 |
+| 58 % | +56 | ~205 | ~17 |
+| 60 % | +70 | ~130 | ~11 |
+| 65 % | +108 | ~57 | ~5 |
+
+In the paired test only **discordant pairs** count, so the games needed are this number divided by the share of discordant pairs (~40–50 % at a 25–50 % win rate): several hundred games for a +8-point edge. Filter candidates offline and test changes worth having.
+
+**SPRT** ([`sprt.py`](src/droid_harness/flywheel/eval/sprt.py)): `LLR = wins·ln(p1/p0) + losses·ln((1−p1)/(1−p0))`, accept at `ln((1−β)/α)`, reject at `ln(β/(1−α))`. Non-regression changes use bounds like [0.47, 0.50]. `pairs` (default) tests whether the candidate wins discordant pairs > 50 %; draws are the middle score; aborted slots are replayed. Stage A futility uses the dense pair margin.
+
+**Optuna** (`flywheel/tuning/optuna_study.py`): search over `params`, `tier0` and posture multipliers; one trial = a block of ~8 matches; objective = crown + tower-HP differential; ≤ 30 trials per study. The best trial is a candidate that still goes through the funnel.
+
+---
+
+## 13. LLM roles, learned policy, general Android
+
+**Offline coach / agent.** After a batch: digest → **one** proposal (title, hypothesis, evidence, change type, patch, target metric, expected decision-change %) → replay-diff gate → paired SPRT → ledger. Guardrails: patches touch only `configs/strategies/**`, counters and `policy/rules/**`; a rule change ships with a unit test; a replay diff much larger than claimed is rejected; one hypothesis per proposal; the ledger blocks near-duplicates of failed ideas unless the context changed.
+
+**In-match advisor (M9, off by default)** ([`advisor.py`](src/droid_harness/core/runtime/advisor.py)): every 3–5 s an OpenAI-compatible model reads ~300 tokens of state and may set an allowlisted posture; 1.5 s timeout, ignored after 2× cadence, separate process, never blocks. Enabled only as a strategy variant that wins an SPRT; if it wins, distill it into a small classifier. `droid-harness advise --dry-run` replays a recorded match offline.
+
+**Learned policy (M8).** Data: the bot's logs (`label_from_video` keeps a chosen play only when a `my_play` event proves it happened) plus, later, auto-labeled human demos: `droid-harness watch` records your own matches with your plays as `my_play` events next to what the bot would have done, but the labeler doesn't turn those into demonstrations yet. Model: small network over units, hand, elixir, clock, posture and opponent cycle; numpy MLP behavior cloning → filtered BC → offline RL; ONNX, ~1–2 ms. Deployment: shadow → residual score inside the utility engine → standalone, each step SPRT-gated; the model checksum is part of `strategy_id`.
+
+**General Android (M10).** Same core and tables (task success instead of wins). Observation ladder, cheapest first: the accessibility tree via DroidRun Portal (uiautomator2 behind the same interface; some Android skins restrict it), then templates / small detectors / OCR (RapidOCR) for what the tree can't see (game engines, Flutter canvases, custom WebViews), then a GUI-agent model with a Set-of-Mark overlay. Successful action sequences are cached by `(package, screen signature, goal)` with pre/post-condition checks. Settled = no new frame for `quiet_ms` (scrcpy only sends frames on change) or N near-identical frames, and an unchanged tree hash ([`settle.py`](src/droid_harness/domains/android_os/settle.py)).
+
+**Risks.**
+
+| Risk | Mitigation |
+| --- | --- |
+| Account ban | Throwaway accounts |
+| Game updates, balance patches | `game_version` + `balance_epoch`; void tests across updates; re-check templates |
+| scrcpy protocol changes | Pinned version; protocol tests |
+| Thermals, burn-in | Display off, cooling, watch `loop_p99_ms` drift |
+| Perception errors steering strategy | Triage before the coach; replay regression |
+| Biased win-rate tests | Outcome-blind inclusion, abort-rate comparison, paired blocks |
+| Too few matches | Offline filters, dense secondary metrics, meaningful SPRT bounds |
+| Disk growth | `retain`, `--prune-win-video` |
+| Coach churn | Path allowlist, replay-diff gate, one hypothesis per proposal, ledger dedupe |
+
+### Repository layout
+
+```
+configs/device_profiles/            per-phone profiles (phone-a.yaml tracked)
+configs/domains/clash_royale/       rois/, tiles/, arena/, templates/, screens/, towers/, digits/, cards.json (local)
+configs/strategies/                 strategy YAMLs + counters/*.csv (immutable once played)
+src/droid_harness/core/             transport (scrcpy, decoder, frame slot), actuate, runtime (brain, liveness,
+                                    watchdog, advisor), telemetry (recorder, latency, loopback, soak)
+src/droid_harness/domains/clash_royale/   perception/, policy/ (hashed into strategy IDs), state, opponent model,
+                                    session, menus, recovery, replay
+src/droid_harness/domains/android_os/     a11y, settle, Set-of-Mark, skills cache
+src/droid_harness/flywheel/         engagements, triage, report, digest, retention, shadow, eval/ (runner, SPRT,
+                                    replay diff), tuning/, coach/, ledger, warehouse
+src/droid_harness/learn/            synth, KataCR conversion, datasets, detector/ranker training, labeling
+src/droid_harness/ui/               the Studio (live view + replay inspector)
+src/droid_harness/sim/              synthetic scene + fake scrcpy server (CI, `sim`)
+ledger/                             experiments.jsonl + STRATEGY_LEDGER.md
+notebooks/dashboard.py              plain-text / marimo dashboard
+tools/                              card DB builder, KataCR fetch, background extraction, bootstrap bot
+data/                               recordings (gitignored; compact match files are committed selectively)
+```
+
+---
+
+## 14. Design history
+
+The design merged a first plan, an outside plan ("Aegis-Droid") and a critique of the first plan. Kept from the first plan: the whole backbone (stack, loops, wire-level details, data strategy with KataCR synthetic sprites, rule engine, logging, evaluation funnel, coach guardrails, macro cache, explicit account scope). Adopted from Aegis: tap-tap + pre-selection, HP-bar strip for ownership and `hp_pct`, an "avoid" column, the AGPL license note, Set-of-Mark/OCR fallbacks for general apps, core + domain plugins with per-phone profiles, display-off runs, deploy-delay lead targeting, discrete postures with reflex invariants, and root-cause triage. Rejected: an NVIDIA-only stack, an LLM in the tactical tier, a 720 px default, an "atomic index" buffer in Python, sparse-keyframe-only recording, and an all-at-once learning stack.
+
+Flaws found and fixed in the first plan: a frame-gap watchdog (scrcpy sends no frames on static screens) → liveness checks; settle detection that waited for frames → quiescence; a hard-coded port → per-device ports; per-unit kill credit (not observable) → engagement value with shared credit; a coach fed perception errors → triage first; BGR templates failing on greyed cards → masked lightness matching; no deploy/travel model → lead targeting; recordings without SPS/PPS → config + pre-roll; excluding "unhealthy" matches from tests (biased) → outcome-blind inclusion; self-play device/account bias → seat swapping; no game-version tracking → `game_version` + `balance_epoch`; unbudgeted storage → retention.
+
+Build notes since: the elixir cap *collapses* the opponent interval (a full bar is known); offense stands down while an unanswered threat is inbound (`attack_blocked_by_threat_eta_s`); a lane stays live while a unit is still advancing toward the river; triage ignores the ~300 ms card-slide window around confirmed plays (it had tagged 89 % of engagements `PERCEPTION`).
+
+### Where the old docs went
+
+| Old file | Now |
+| --- | --- |
+| `docs/plan.md` | [§11](#11-architecture-and-design)–[§13](#13-llm-roles-learned-policy-general-android) (code skeletons dropped: the real code is in `src/`) |
+| `docs/review.md` | [§14](#14-design-history) |
+| `docs/pro-strategy-research.md` | [§7](#7-strategy-playbook) (comments in `policy/strategy.py` and `ladder-vision-v6.yaml` still cite it; those files are hashed into strategy IDs, so they weren't edited) |
+| `docs/refinement-loop-plan.md` | [§5](#5-improvement-loop); its measured bottlenecks are in the run log in `todo.md` |
+| `docs/phone-a-bringup.md` | [§9](#9-set-up-a-new-phone) (reference table) and the run log in `todo.md` |
+| `docs/overnight-plan.md` | [§15](#15-troubleshooting-and-operational-limits) (guardrails) and the run log in `todo.md` |
+| `docs/run-2026-11-27-recovery-v4-v6.md` | The run log in `todo.md` |
+
+---
+
+## 15. Troubleshooting and operational limits
+
+- **Phone sleeps or drops ADB:** enable *Stay awake* while charging; check `adb devices`. If `scrcpy-server` is busy after a crash, wait ~3 s for the old socket on `local_port` or kill stray `adb` / `droid-harness` processes. Only one scrcpy client per phone/port.
+- **Stuck on a result screen or popup:** `droid-harness recover` (or wait 8–15 s for the live loop to do the same). If the calibrated `ok` keeps missing, re-capture the result screen or recalibrate `buttons:`; recovery finds the real button visually either way.
+- **Deck changed in the game:** capture `affordable` and `greyed` templates into a clean directory, update `deck:` in a **new** strategy file, re-run `replay` / `pytest`. Stale templates show up as `hand_unreadable` warnings and dashed slots in the Studio.
+- **Disk:** raw video is ~60 MB/min (2–4 GB per 10 matches). Use `--prune-win-video` and `droid-harness retain`; keep `meta.json`, `summary.json`, `decisions.jsonl` (~1.5 MB/match).
+- **AMD GPU:** ONNX Runtime removed its ROCm EP upstream. Pass `--detector models/yolo26n-cr.pt` for PyTorch-ROCm; `.onnx` runs on MIGraphX if built, else CPU (~27 ms p50).
+- **Unattended runs:** use `tmux` or a systemd user service; keep the phone plugged in with sleep disabled; test `turn_display_off: true` and thermals before a long run; bump `--balance-epoch` after a game update.
+- **Studio:** binds to localhost; use an SSH tunnel rather than `--ui-host 0.0.0.0` on untrusted networks. A live page that says "Waiting for the first frame" on a menu is normal: static screens send no frames.
+
+---
+
+## 16. Sources
+
+- scrcpy: https://github.com/Genymobile/scrcpy (frames only on change: `doc/develop.md`, `doc/video.md`; display power: `doc/device.md`)
+- KataCR: https://arxiv.org/abs/2504.04783 · https://github.com/wty-yy/katacr · https://github.com/wty-yy/Clash-Royale-Detection-Dataset · https://github.com/wty-yy/Clash-Royale-Replay-Dataset
+- YOLO26: https://docs.ultralytics.com/models/yolo26/
+- ONNX Runtime ROCm EP removal: https://github.com/microsoft/onnxruntime/pull/25181 · MIGraphX EP: https://onnxruntime.ai/docs/execution-providers/MIGraphX-ExecutionProvider.html
+- DroidRun Portal: https://github.com/droidrun/droidrun-portal · GUI-Owl-1.5: https://arxiv.org/abs/2602.16855 · MobileWorld: https://arxiv.org/abs/2512.19432
+- Supercell: https://support.clashroyale.com/hc/en-us/articles/49484901806747-Don-t-Be-a-Cheat · https://supercell.com/en/safe-and-fair-play/ · Elixir: https://support.clashroyale.com/hc/en-us/articles/49484936933403-Elixir
+- Card data: https://developer.clashroyale.com · https://github.com/RoyaleAPI/cr-api-data · Meta tracking: https://royaleapi.com/decks/meta
+- SPRT: https://official-stockfish.github.io/docs/fishtest-wiki/Fishtest-Mathematics.html · https://dannyhammer.github.io/engine-testing-guide/sprt.html

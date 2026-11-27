@@ -1,4 +1,4 @@
-"""Disk retention & compaction for 50-100+ game campaigns (refinement-loop-plan §3 Fix B).
+"""Disk retention & compaction for 50-100+ game campaigns (README §11 "Storage"; run log Fix B).
 
 Keeps compact JSON/JSONL telemetry (~1.5 MB/match) on 100% of matches, prunes raw
 ~180 MB ``stream.h264`` files on clean completed wins, and extracts diagnostic keyframes

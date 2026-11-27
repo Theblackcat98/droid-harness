@@ -1,4 +1,4 @@
-"""Unattended champion/candidate experiment loop (overnight-plan Phase 2 / M5).
+"""Unattended champion/candidate experiment loop (README §12; todo.md M5).
 
 No LLM here: the runner assigns strategy files to matches, tags every match with
 ``experiment_id``/``arm``/``pair_id``, checks the game version, and stops on an SPRT
