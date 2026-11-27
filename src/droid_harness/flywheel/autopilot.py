@@ -66,6 +66,7 @@ class AutopilotConfig:
     publish_branch: str = "autopilot/reports"
     cards: Path | None = None
     arena: Path | None = None
+    repo: Path = Path(".")  # git checkout to publish from
     extra: dict = field(default_factory=dict)
 
     @property
@@ -252,8 +253,14 @@ class Autopilot:
             shutil.copy(out_dir / "digest.md", cfg.reports_dir / "latest-digest.md")
         if cfg.notify_url:
             rep["notified"] = notify(cfg.notify_url, short_summary(rep), title="droid-harness autopilot")
+            if not rep["notified"]:
+                log.warning("autopilot: notification to %s failed", cfg.notify_url)
         if cfg.publish_git:
-            rep["published"] = publish(cfg, stamp)
+            rep["published"] = publish(cfg, stamp, repo=cfg.repo)
+            if not rep["published"].get("ok"):
+                log.warning("autopilot: publishing reports failed: %s", rep["published"].get("error"))
+        if cfg.notify_url or cfg.publish_git:  # the local copy records how notify/publish went
+            (out_dir / "report.json").write_text(json.dumps(rep, indent=1, default=str))
         return rep
 
     def run(self) -> list[dict]:
@@ -344,18 +351,25 @@ def publish(cfg: AutopilotConfig, stamp: str, *, repo: Path = Path("."), push: b
             base = f"origin/{cfg.publish_branch}" if git("rev-parse", "--verify", f"origin/{cfg.publish_branch}",
                                                          check=False).returncode == 0 else "HEAD"
             git("worktree", "add", "-B", cfg.publish_branch, str(wt), base)
-        for rel in [cfg.reports_dir / stamp, cfg.reports_dir / "latest.md", cfg.reports_dir / "latest-digest.md",
-                    cfg.store, cfg.store.with_name("STRATEGY_LEDGER.md"), cfg.champion_file, cfg.auto_dir]:
-            src = repo / rel
+        added = []
+        for item in [cfg.reports_dir / stamp, cfg.reports_dir / "latest.md", cfg.reports_dir / "latest-digest.md",
+                     cfg.store, cfg.store.with_name("STRATEGY_LEDGER.md"), cfg.champion_file, cfg.auto_dir]:
+            src = item if Path(item).is_absolute() else repo / item
             if not src.exists():
                 continue
+            try:
+                rel = src.resolve().relative_to(repo.resolve())
+            except ValueError:
+                continue  # outside the checkout: nothing to publish
             dst = wt / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             if src.is_dir():
                 shutil.copytree(src, dst, dirs_exist_ok=True)
             else:
                 shutil.copy(src, dst)
-        git("add", "-A", cwd=wt)
+            added.append(str(rel))
+        if added:
+            git("add", "-f", "--", *added, cwd=wt)  # -f: reports/ is ignored on the working branch
         if git("diff", "--cached", "--quiet", cwd=wt, check=False).returncode == 0:
             return {"ok": True, "commit": None}
         git("-c", "user.name=droid-harness autopilot", "-c", "user.email=autopilot@localhost",

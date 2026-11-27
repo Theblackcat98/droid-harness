@@ -36,3 +36,6 @@ configs/domains/clash_royale/rois/phone-*.yaml
 configs/domains/clash_royale/landmarks/phone-*.yaml
 configs/domains/clash_royale/arena/phone-*.yaml
 !configs/domains/clash_royale/arena/phone-a.yaml
+# autopilot: reports are published to the autopilot/reports branch via this worktree
+.autopilot-publish/
+reports/
