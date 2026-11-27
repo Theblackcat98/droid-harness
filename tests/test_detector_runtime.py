@@ -290,6 +290,7 @@ def test_tower_state_reader_confirms_rubble(starter, arena):
 
 
 def test_torch_detector_and_load_detector(tmp_path, monkeypatch):
+    pytest.importorskip("torch")  # TorchDetector imports torch itself; CI has no ROCm/torch
     import droid_harness.domains.clash_royale.perception.detector as det_mod
 
     class _Boxes:

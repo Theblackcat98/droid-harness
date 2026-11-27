@@ -73,6 +73,9 @@ class RunConfig:
     async_detect: bool = False
     towers: Path | None = None  # tower-state templates dir (droid-harness tower-template)
     prune_win_video: bool = False
+    # `droid-harness watch`: perceive and decide, but never touch the phone (no taps, no BACK,
+    # no app restarts). You play; the Studio shows what the bot sees and would do.
+    observe_only: bool = False
 
 
 def resolve_strategy_path(strategy: str | Path, root: Path = Path(".")) -> Path:
@@ -225,8 +228,10 @@ def load_digits(directory: Path | None) -> DigitReader | None:
 class BotRunner:
     """One phone, N matches, with liveness-driven recovery."""
 
-    def __init__(self, cfg: RunConfig) -> None:
+    def __init__(self, cfg: RunConfig, *, ui=None) -> None:
         self.cfg = cfg
+        self.ui = ui  # droid_harness.ui.telemetry.TelemetryTap (Studio), or None
+        self.ui_experiment: Callable[[], dict | None] | None = None
         self.profile = DeviceProfile(**{**yaml.safe_load(cfg.profile.read_text()), "name": cfg.profile.stem})
         self.cards = CardDB.load(cfg.cards)
         self.arena = Arena.load(cfg.arena) if cfg.arena else Arena()
@@ -321,15 +326,51 @@ class BotRunner:
     def _connect(self) -> None:
         self.client = ScrcpyClient(self.profile, on_packet=self.recorder.on_packet)
         self.client.start()
+        observe = self.cfg.observe_only
         # Stuck-screen recovery sends BACK through scrcpy's control channel, not ADB.
-        self.session.send_key = self.client.keycode
+        self.session.send_key = None if observe else self.client.keycode
         self.session.recovery.reset()
-        self.executor = Executor(self.client.touch).start()
+        sink = self._observe_sink if observe else self.client.touch
+        self.executor = Executor(sink, on_sent=self.ui.on_sent if self.ui is not None else None).start()
+        on_step = None
+        if self.ui is not None:
+            tap, perception = self.ui, self.perception
+
+            def on_step(frame, obs, decision, durations):
+                # References only; the Studio's publisher thread does the work.
+                tap.publish((frame, obs, decision, durations, perception.last_detections))
         self.brain = BrainLoop(self.client.slot, self.session, self.session, self.session, self.executor,
-                               logger=self.recorder, on_timing=lambda d: self.session.match_latency.add_many(d))
+                               logger=self.recorder, on_timing=lambda d: self.session.match_latency.add_many(d),
+                               on_step=on_step)
         self.brain.start()
         self.liveness = LivenessMonitor(self.client, in_battle=lambda: self.session.screen in BATTLE_SCREENS,
                                         screen=self.session.screen_age_s, on_finding=self.findings.put).start()
+
+    @staticmethod
+    def _observe_sink(action: int, x: int, y: int, pointer_id: int = 0) -> int:
+        """Observe-only touch sink: the executor runs as usual, nothing reaches the phone."""
+        return time.perf_counter_ns()
+
+    def ui_context(self) -> dict:
+        """Read by the Studio publisher thread (never by the brain)."""
+        m = self.session.match
+        tally: dict[str, int] = {}
+        for s in list(self._match_summaries):
+            r = str(s.get("result") or "")
+            key = "aborted" if r.startswith("aborted") else r
+            tally[key] = tally.get(key, 0) + 1
+        return {
+            "perception": self.perception, "session": self.session, "params": self.params,
+            "screen": self.session.screen, "observe_only": self.cfg.observe_only,
+            "match": None if m is None else {
+                "id": m.match_id, "arm": m.arm, "experiment_id": m.experiment_id, "pair_id": m.pair_id,
+                "opponent_kind": m.opponent_kind, "device": m.device},
+            "strategy": {"id": self.strategy_id, "name": self.params.spec.strategy,
+                         "act_threshold": self.params.act_threshold, "deck": list(self.params.deck)},
+            "runner": {"completed": self.completed, "target": self.cfg.matches, "mode": self.cfg.mode,
+                       "device": self.profile.name, "data": str(self.cfg.data), "results": tally},
+            "experiment": self.ui_experiment() if self.ui_experiment is not None else None,
+        }
 
     def _disconnect(self) -> None:
         for part in ("liveness", "brain", "executor"):
@@ -369,14 +410,17 @@ class BotRunner:
             while self.completed < self.cfg.matches and not (stop_when and stop_when()):
                 # Checked every pass, not only when liveness is quiet: a dead game shows a
                 # stuck launcher, whose findings would otherwise starve this check.
-                if watchdog.due() and watchdog.died():
+                if not self.cfg.observe_only and watchdog.due() and watchdog.died():
                     log.warning("watchdog: %s is not running; relaunching", PACKAGE)
                     self.session.abort_match("app_died")
                     self.client.adb.launch(PACKAGE)
                     self.session.screen_since = time.monotonic()
                     stuck_since = None
                 # Recovery already walked every tap and BACK; a fresh app is the next rung.
-                if self.session.take_restart_request():
+                restart = self.session.take_restart_request()
+                if restart and self.cfg.observe_only:
+                    self.session.recovery.reset()  # watching: never restart the app under the player
+                elif restart:
                     log.warning("stuck-screen recovery exhausted taps; restarting %s", PACKAGE)
                     self.session.abort_match("stuck_screen")
                     self.client.adb.force_stop(PACKAGE)
@@ -398,6 +442,8 @@ class BotRunner:
                         self.client.adb.run("reconnect", check=False)
                     time.sleep(1.0)
                     self._connect()
+                elif f.action == "recover_ui" and self.cfg.observe_only:
+                    self.session.screen_since = time.monotonic()  # the player is in charge of menus
                 elif f.action == "recover_ui":
                     # Arm the deterministic HOME walk: calibrated taps, then buttons
                     # found visually (a mis-calibrated `ok` is the common stall), then
@@ -416,7 +462,7 @@ class BotRunner:
                 # battle frame gaps are logged by the recorder via the brain's frame log
             # Batch finished (or a graceful stop_when): leave the phone on HOME, not on
             # a result screen, so the next run can queue without a manual tap.
-            if self.client.running and self.client.error is None:
+            if self.client.running and self.client.error is None and not self.cfg.observe_only:
                 self._settle_home()
         finally:
             self._disconnect()
@@ -431,8 +477,12 @@ class BotRunner:
             return None
 
 
-def run_sim(seconds: float = 10.0, out: Path = Path("data/sim")) -> dict:
-    """The closed loop with no phone: synthetic scene -> H.264 -> bot -> touches -> scene."""
+def run_sim(seconds: float = 10.0, out: Path = Path("data/sim"), *, ui: dict | None = None) -> dict:
+    """The closed loop with no phone: synthetic scene -> H.264 -> bot -> touches -> scene.
+
+    ``ui={"host":..., "port":..., "fps":...}`` serves the live Studio on the synthetic match (a
+    no-phone way to try ``--ui``); enemy waves then keep coming until ``seconds`` elapse.
+    """
     from .core.runtime.orchestrator import BrainLoop
     from .sim.cr_scene import CRScene, SceneDetector, build_matcher_from_scene
     from .sim.fake_scrcpy import FakeScrcpyServer, free_port
@@ -460,9 +510,25 @@ def run_sim(seconds: float = 10.0, out: Path = Path("data/sim")) -> dict:
                               matcher=build_matcher_from_scene(scene), detector=SceneDetector(scene),
                               on_my_play=policy.confirm_played)
     client.start(launch=False)
-    executor = Executor(client.touch).start()
+    tap = server = None
+    if ui is not None:
+        from .ui.launch import serve_live
+        from .ui.telemetry import TelemetryTap
+
+        tap = TelemetryTap()
+        context = {"perception": perception, "params": params, "screen": "IN_BATTLE",
+                   "strategy": {"id": sid, "name": params.spec.strategy, "act_threshold": params.act_threshold,
+                                "deck": list(params.deck)},
+                   "runner": {"completed": 0, "target": 1, "mode": "sim", "device": "sim", "data": str(out)}}
+        server = serve_live(tap, lambda: context, cards=cards, layout=scene.layout, tiles=scene.tiles,
+                            arena=arena, replay_roots=[out], title="droid-harness Studio: simulator",
+                            host=ui.get("host", "127.0.0.1"), port=ui.get("port", 8765), fps=ui.get("fps", 15.0))
+        print(f"Studio: {server.url}", flush=True)
+    executor = Executor(client.touch, on_sent=tap.on_sent if tap else None).start()
     brain = BrainLoop(client.slot, perception, policy, CRActionMapper(scene.layout, scene.tiles), executor,
-                      logger=rec).start()
+                      logger=rec,
+                      on_step=(lambda f, o, d, lat: tap.publish((f, o, d, lat, perception.last_detections)))
+                      if tap else None).start()
     match_id = f"sim-{uuid.uuid4().hex[:6]}"
     rec.start_match(match_id, {"strategy_id": sid, "mode": "sim"})
     stop = threading.Event()
@@ -479,6 +545,10 @@ def run_sim(seconds: float = 10.0, out: Path = Path("data/sim")) -> dict:
     threading.Thread(target=pump, daemon=True).start()
     t0 = time.time()
     waves = [(1.0, "hog_rider", (3.5, 24.0), (0.0, -2.0)), (6.0, "knight", (14.5, 24.0), (0.0, -1.0))]
+    if ui is not None:  # a longer show: alternate lanes every 7 s
+        kinds = ["hog_rider", "knight", "minion", "musketeer", "baby_dragon"]
+        waves += [(11.0 + 7 * i, kinds[i % len(kinds)], (3.5 if i % 2 else 14.5, 24.0),
+                   (0.0, -2.0 if kinds[i % len(kinds)] == "hog_rider" else -1.0)) for i in range(int(seconds // 7))]
     try:
         while time.time() - t0 < seconds:
             el = time.time() - t0
@@ -496,5 +566,7 @@ def run_sim(seconds: float = 10.0, out: Path = Path("data/sim")) -> dict:
         rec.close()
         client.stop()
         srv.stop()
+        if server is not None:
+            server.stop()
     return {"match_dir": str(out / match_id), "plays": scene.plays, "decisions": brain.decisions,
             "latency_ms": brain.stats.summary("total"), "errors": brain.errors}

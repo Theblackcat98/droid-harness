@@ -283,14 +283,60 @@ def cmd_doctor(a) -> None:
 def cmd_run(a) -> None:
     from .app import BotRunner
 
-    _fill_device_defaults(a, with_detector=True, default_async=getattr(a, "cmd", "") == "play")
-    BotRunner(_build_run_config(a)).run()
+    _fill_device_defaults(a, with_detector=True, default_async=getattr(a, "cmd", "") in ("play", "watch"))
+    cfg = _build_run_config(a)
+    if not getattr(a, "ui", False):
+        BotRunner(cfg).run()
+        return
+    import threading
+
+    from .ui.launch import run_with_window, start_live_studio
+    from .ui.telemetry import TelemetryTap
+
+    bot = BotRunner(cfg, ui=TelemetryTap())
+    server = start_live_studio(bot, host=a.ui_host, port=a.ui_port, fps=a.ui_fps)
+    stop = threading.Event()
+    try:
+        run_with_window(lambda: bot.run(stop_when=stop.is_set), server.url, native=a.native,
+                        open_browser=a.open, title=server.studio.title, on_close=stop.set)
+    finally:
+        server.stop()
+
+
+def cmd_watch(a) -> None:
+    """Observe-only live Studio: you play, the bot perceives and shows what it would do."""
+    a.ui = True
+    a.observe_only = True
+    a.matches = a.matches or 10**9
+    cmd_run(a)
+
+
+def cmd_inspect(a) -> None:
+    """Replay inspector over recorded matches (decisions.jsonl, plus video when kept)."""
+    from .app import resolve_device_bundle
+    from .ui.launch import run_with_window, start_replay_studio, wait_forever
+
+    cards = a.cards or resolve_device_bundle(a.device, with_detector=False)["cards"]
+    roots = [Path(p) for p in (a.data or ["data"])]
+    missing = [str(p) for p in roots if not p.exists()]
+    if missing:
+        raise SystemExit(f"no such directory: {', '.join(missing)}")
+    server = start_replay_studio(roots, host=a.ui_host, port=a.ui_port, cards=Path(cards) if cards else None,
+                                 strategies=Path(a.strategies), ledger=Path(a.store), initial_match=a.match)
+    n = len(server.studio.library.refresh())
+    print(f"inspect: {n} recorded matches under {', '.join(map(str, roots))}", flush=True)
+    try:
+        run_with_window(wait_forever, server.url, native=a.native, open_browser=a.open,
+                        title=server.studio.title)
+    finally:
+        server.stop()
 
 
 def cmd_sim(a) -> None:
     from .app import run_sim
 
-    r = run_sim(a.seconds, Path(a.out))
+    ui = {"host": a.ui_host, "port": a.ui_port, "fps": a.ui_fps} if a.ui else None
+    r = run_sim(a.seconds, Path(a.out), ui=ui)
     print(json.dumps(r, indent=1, default=str))
 
 
@@ -416,7 +462,12 @@ def cmd_experiment(a) -> None:
     a.strategy = a.champion
     cfg = _build_run_config(a)
     cfg.matches = a.max_games * 2
-    bot = BotRunner(cfg)
+    tap = None
+    if getattr(a, "ui", False):
+        from .ui.telemetry import TelemetryTap
+
+        tap = TelemetryTap()
+    bot = BotRunner(cfg, ui=tap)
     game_version = bot.client_version()
     bot.game_version = game_version
 
@@ -452,8 +503,26 @@ def cmd_experiment(a) -> None:
             bot.set_strategy(a.champion if nxt_arm == "champion" else a.candidate,
                              experiment_id=exp_id, arm=nxt_arm, pair_id=nxt_pid)
 
-    bot.run(stop_when=lambda: runner.done or len(runner.matches) >= a.max_games * 2,
-            on_summary=_on_match_done)
+    def _play(stop_when=lambda: False) -> None:
+        bot.run(stop_when=lambda: stop_when() or runner.done or len(runner.matches) >= a.max_games * 2,
+                on_summary=_on_match_done)
+
+    if tap is None:
+        _play()
+    else:
+        import threading
+
+        from .ui.launch import attach_experiment, run_with_window, start_live_studio
+
+        attach_experiment(bot, runner)
+        server = start_live_studio(bot, host=a.ui_host, port=a.ui_port, fps=a.ui_fps,
+                                   title=f"droid-harness Studio: {exp_id}")
+        stop = threading.Event()
+        try:
+            run_with_window(lambda: _play(stop.is_set), server.url, native=a.native, open_browser=a.open,
+                            title=server.studio.title, on_close=stop.set)
+        finally:
+            server.stop()
     print(json.dumps({"experiment_id": exp_id, "status": runner.status,
                       "matches": len(runner.matches), "decision": runner.decision.__dict__
                       if runner.decision else None, "void": runner.void_reason,
@@ -599,6 +668,19 @@ def _iter_advise_states(data: str) -> list[tuple[str, dict]]:
     return out
 
 
+def _add_ui_args(s, *, always_on: bool = False) -> None:
+    if not always_on:
+        s.add_argument("--ui", action="store_true",
+                       help="serve the live Studio (annotated phone view + strategy numbers) while playing")
+    s.add_argument("--ui-host", dest="ui_host", default="127.0.0.1",
+                   help="bind address (default localhost; use an SSH tunnel for remote viewing)")
+    s.add_argument("--ui-port", dest="ui_port", type=int, default=8765)
+    s.add_argument("--ui-fps", dest="ui_fps", type=float, default=15.0,
+                   help="snapshot rate of the live view; the bot loop never waits on it")
+    s.add_argument("--native", action="store_true", help="open in a desktop window (needs the [gui] extra)")
+    s.add_argument("--open", action="store_true", help="open the Studio in the default browser")
+
+
 def _add_runtime_args(s, *, default_mode: str = "training_camp", require_strategy: bool = False,
                       default_strategy: str | None = None) -> None:
     s.add_argument("--device", default="phone-a",
@@ -668,7 +750,26 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--matches", type=int, default=10)
     s.add_argument("--experiment-id", dest="experiment_id")
     s.add_argument("--arm")
+    _add_ui_args(s)
     s.set_defaults(fn=cmd_run)
+
+    s = sub.add_parser("watch", help="live Studio in observe-only mode: you play, the bot shows what it sees "
+                                     "and would do (never taps)")
+    _add_runtime_args(s, default_mode="ladder", default_strategy="v6")
+    s.set_defaults(data="data/watch")
+    s.add_argument("--matches", type=int, default=0, help="stop after N matches (default: until Ctrl+C)")
+    _add_ui_args(s, always_on=True)
+    s.set_defaults(fn=cmd_watch)
+
+    s = sub.add_parser("inspect", help="replay inspector: scrub recorded matches (state, candidates, video)")
+    s.add_argument("data", nargs="*", help="match dirs or folders of matches (default: data)")
+    s.add_argument("--match", default=None, help="open this match id first (e.g. matches-exp-v4-v6/32dc3e473260)")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--cards", default=None, help="card DB for costs (default: the device bundle's cards.json)")
+    s.add_argument("--strategies", default="configs/strategies", help="resolves strategy ids to names/params")
+    s.add_argument("--store", default="ledger/experiments.jsonl")
+    _add_ui_args(s, always_on=True)
+    s.set_defaults(fn=cmd_inspect)
 
     s = sub.add_parser("stream", help="connect to a phone and report fps/decode time")
     s.add_argument("--profile", required=True)
@@ -781,11 +882,13 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--matches", type=int, default=10)
     s.add_argument("--experiment-id", dest="experiment_id")
     s.add_argument("--arm")
+    _add_ui_args(s)
     s.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("sim", help="closed-loop demo with no phone (synthetic scene)")
     s.add_argument("--seconds", type=float, default=10)
     s.add_argument("--out", default="data/sim")
+    _add_ui_args(s)
     s.set_defaults(fn=cmd_sim)
 
     s = sub.add_parser("analyze", help="engagements, triage, report, and warehouse ingest")
@@ -864,6 +967,7 @@ def main(argv: list[str] | None = None) -> None:
                        help="Stage-A early futility stop when dense-margin UCB95 < 0 after N pairs (0 = off)")
         s.add_argument("--store", default="ledger/experiments.jsonl")
         s.add_argument("--db", default="data/warehouse.duckdb")
+        _add_ui_args(s)
         s.set_defaults(fn=cmd_experiment)
 
     s = sub.add_parser("replay", help="re-run recorded matches through perception and diff the events (M3)")

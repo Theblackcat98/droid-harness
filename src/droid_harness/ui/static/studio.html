@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>droid-harness Studio</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --night: #181d33; --deck: #212845; --deck-2: #2a3256; --line: #343d66;
+  --ink: #eef0fa; --ink-2: #a7aed0; --ink-3: #737ba3;
+  --blue: #4fa6ff; --red: #ff5c69; --elixir: #d65cf2; --gold: #f2c230;
+  --grass: #3b7550; --grass-2: #356b49; --river: #2c79b8; --bridge: #8a6a45;
+  --f-defend: #5cc8c0; --f-offense: #ff9f43; --f-spell: #b48cff; --f-cycle: #8f98bf;
+  --f-opening: #7ccf7a; --f-t0: #ffd25e;
+  --display: "Barlow Semi Condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--night); color: var(--ink); font: 14px/1.45 var(--body); }
+body { display: grid; grid-template-rows: auto 1fr auto; min-height: 100vh; }
+button, select, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.num { font-family: var(--display); font-variant-numeric: tabular-nums; }
+
+/* header */
+header { display: flex; align-items: center; gap: 18px; padding: 10px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { font: 700 20px/1 var(--display); letter-spacing: .01em; }
+.brand small { font-weight: 500; color: var(--ink-3); margin-left: 6px; font-size: 15px; }
+.tabs { display: flex; gap: 2px; background: var(--deck); border-radius: 8px; padding: 3px; }
+.tabs button { border: 0; background: none; padding: 5px 12px; border-radius: 6px; cursor: pointer; color: var(--ink-2); }
+.tabs button[aria-pressed="true"] { background: var(--deck-2); color: var(--ink); }
+.headline { display: flex; gap: 18px; align-items: baseline; flex-wrap: wrap; margin-left: auto; color: var(--ink-2); }
+.headline b { color: var(--ink); font-weight: 600; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--ink-3); margin-right: 6px; vertical-align: 1px; }
+.dot.ok { background: #6fd38b; } .dot.warn { background: var(--gold); } .dot.bad { background: var(--red); }
+
+/* main */
+main { display: grid; grid-template-columns: minmax(360px, 1.2fr) minmax(400px, 1fr); min-height: 0; }
+.stagecol { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+.toolbar { display: flex; gap: 14px; align-items: center; padding: 10px 16px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; background: none; padding: 4px 11px; cursor: pointer; color: var(--ink-2); }
+.seg button[aria-pressed="true"] { background: var(--deck-2); color: var(--ink); }
+.toggles { display: flex; gap: 4px 12px; flex-wrap: wrap; color: var(--ink-2); font-size: 13px; }
+.toggles label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
+.toggles input { accent-color: var(--elixir); }
+.stage { flex: 1; min-height: 0; display: flex; gap: 14px; padding: 4px 16px 16px; justify-content: center; align-items: stretch; }
+.pane { position: relative; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+.pane h2 { font: 600 14px/1 var(--display); color: var(--ink-2); margin: 0 0 6px; }
+.pane .canvaswrap { position: relative; flex: 1; min-height: 0; }
+.pane canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.pane .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--ink-3); }
+.pane .empty p { max-width: 34ch; margin: 0; }
+
+/* right column panels */
+.side { overflow-y: auto; padding: 12px 18px 24px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; align-content: start; }
+.side > section { min-width: 0; }
+#cands { overflow-x: auto; }
+section.panel h3 { font: 600 16px/1.1 var(--display); margin: 0 0 8px; display: flex; align-items: baseline; gap: 10px; }
+section.panel h3 .aside { font: 400 13px var(--body); color: var(--ink-3); margin-left: auto; }
+.clockrow { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.clock { font: 700 34px/1 var(--display); font-variant-numeric: tabular-nums; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 5px; background: var(--deck-2); font: 600 13px/1.4 var(--display); color: var(--ink); }
+.badge.x2 { background: #5a2f6b; } .badge.ot { background: #6b2f3a; }
+.crowns { margin-left: auto; font: 700 26px/1 var(--display); }
+.crowns .me { color: var(--blue); } .crowns .opp { color: var(--red); }
+
+.bar { position: relative; height: 22px; background: #151a2e; border-radius: 5px; overflow: hidden; }
+.bar .fill { position: absolute; inset: 0 auto 0 0; background: var(--elixir); }
+.bar .band { position: absolute; top: 0; bottom: 0; background: rgba(255, 92, 105, .45); border-left: 2px solid var(--red); border-right: 2px solid var(--red); }
+.bar .ticks { position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(24, 29, 51, .9) calc(10% - 1px) 10%); }
+.bar .val { position: absolute; right: 8px; top: 0; line-height: 22px; font: 600 15px var(--display); text-shadow: 0 1px 2px #000; }
+.elixir-grid { display: grid; grid-template-columns: 92px 1fr; gap: 6px 10px; align-items: center; }
+.elixir-grid .who { color: var(--ink-2); }
+.small { color: var(--ink-3); font-size: 12.5px; }
+
+.towers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 10px; }
+.tower { background: var(--deck); border-radius: 7px; padding: 6px 9px 8px; }
+.tower .t { display: flex; justify-content: space-between; color: var(--ink-2); font-size: 12.5px; }
+.tower .hp { font: 600 18px/1.2 var(--display); font-variant-numeric: tabular-nums; }
+.tower .hpbar { height: 5px; background: #151a2e; border-radius: 3px; overflow: hidden; margin-top: 3px; }
+.tower .hpbar i { display: block; height: 100%; }
+.tower.me .hpbar i { background: var(--blue); } .tower.opp .hpbar i { background: var(--red); }
+.tower.down { opacity: .5; } .tower.down .hp { text-decoration: line-through; }
+.towers .rowlabel { grid-column: 1 / -1; color: var(--ink-3); font-size: 12.5px; margin-top: 2px; }
+
+.hand { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, .8fr); gap: 8px; }
+.slot { background: var(--deck); border-radius: 8px; padding: 7px 9px; min-height: 58px; border: 1px solid transparent; }
+.slot .c { font: 600 15px/1.15 var(--display); }
+.slot .m { display: flex; justify-content: space-between; margin-top: 4px; font-size: 12px; color: var(--ink-3); }
+.slot.ready { border-color: var(--elixir); }
+.slot.ready .c { color: var(--ink); }
+.slot.short .c { color: var(--ink-2); }
+.slot.stale { border: 1px dashed var(--gold); }
+.slot.next { background: none; border: 1px solid var(--line); }
+.cost { display: inline-grid; place-items: center; width: 19px; height: 19px; border-radius: 50%; background: var(--elixir); color: #fff; font: 700 12px/1 var(--display); }
+
+.cycle { display: grid; gap: 8px; }
+.cycle .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.cycle .row > span.lbl { width: 92px; color: var(--ink-2); font-size: 13px; }
+.chip { display: inline-flex; gap: 6px; align-items: center; padding: 3px 8px; border-radius: 6px; background: var(--deck); font-size: 13px; }
+.chip.live { box-shadow: inset 0 0 0 1px var(--red); }
+.chip .q { color: var(--ink-3); font-size: 12px; }
+.chip.unknown { color: var(--ink-3); border: 1px dashed var(--line); background: none; }
+
+table.cands { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.cands th { text-align: left; font-weight: 500; color: var(--ink-3); padding: 0 6px 5px; }
+table.cands td { padding: 5px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+table.cands td.r, table.cands th.r { text-align: right; font-variant-numeric: tabular-nums; }
+table.cands tr.chosen td { background: rgba(242, 194, 48, .12); }
+table.cands tr.chosen td:first-child { box-shadow: inset 3px 0 0 var(--gold); }
+table.cands tr.below td { color: var(--ink-3); }
+table.cands tr.threshold td { border-top: 2px dashed var(--ink-3); padding: 2px 6px; color: var(--ink-3); font-size: 12px; }
+.rule { white-space: nowrap; }
+.rule i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+.why { color: var(--ink-3); font-size: 12px; max-width: 30ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.totalbar { display: inline-block; height: 6px; background: var(--ink-2); border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+tr.chosen .totalbar { background: var(--gold); }
+.stalenote { color: var(--ink-3); font-size: 12.5px; margin: 0 0 6px; }
+
+.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.kv div { background: var(--deck); border-radius: 7px; padding: 6px 9px; }
+.kv span { display: block; color: var(--ink-3); font-size: 12px; }
+.kv b { font: 600 18px/1.2 var(--display); font-variant-numeric: tabular-nums; }
+.llr { position: relative; height: 26px; margin: 8px 0 2px; }
+.llr .track { position: absolute; left: 0; right: 0; top: 11px; height: 4px; background: linear-gradient(90deg, var(--red), var(--deck-2) 50%, #6fd38b); border-radius: 2px; }
+.llr .mark { position: absolute; top: 3px; width: 3px; height: 20px; background: var(--ink); border-radius: 2px; }
+.llr .ends { display: flex; justify-content: space-between; color: var(--ink-3); font-size: 12px; }
+.warns { display: flex; gap: 6px; flex-wrap: wrap; }
+.warns .chip { background: #3a2f22; color: #f3d9a4; }
+
+/* replay drawer */
+.drawer { position: fixed; top: 0; bottom: 0; left: 0; width: min(420px, 92vw); background: #1c2139; border-right: 1px solid var(--line); z-index: 20; transform: translateX(-102%); transition: transform .18s ease; display: flex; flex-direction: column; }
+.drawer.open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,.45); }
+.drawer header { border: 0; padding: 14px 16px 6px; }
+.drawer .search { margin: 0 16px 8px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--night); }
+.drawer .list { overflow-y: auto; padding: 0 8px 16px; }
+.drawer .grp { color: var(--ink-3); font-size: 12.5px; padding: 12px 8px 4px; }
+.mrow { display: grid; grid-template-columns: 36px 1fr auto; gap: 2px 10px; padding: 7px 8px; border-radius: 7px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; }
+.mrow:hover, .mrow[aria-current="true"] { background: var(--deck-2); }
+.res { grid-row: span 2; display: grid; place-items: center; border-radius: 6px; font: 700 15px/1 var(--display); height: 34px; }
+.res.win { background: rgba(79, 166, 255, .22); color: var(--blue); }
+.res.loss { background: rgba(255, 92, 105, .2); color: var(--red); }
+.res.draw, .res.other { background: var(--deck); color: var(--ink-2); }
+.mrow .l1 { font-weight: 500; }
+.mrow .l2 { color: var(--ink-3); font-size: 12.5px; }
+.mrow .vid { grid-row: span 2; align-self: center; color: var(--ink-3); font-size: 12px; }
+.ledger { margin: 0 16px 6px; padding: 8px 10px; background: var(--deck); border-radius: 8px; font-size: 13px; color: var(--ink-2); }
+.ledger b { color: var(--ink); }
+.scrim { position: fixed; inset: 0; background: rgba(10, 12, 24, .45); z-index: 15; display: none; }
+.scrim.open { display: block; }
+
+/* replay footer: the elixir tape */
+footer { border-top: 1px solid var(--line); padding: 10px 18px 12px; display: none; }
+body.replay footer { display: block; }
+.tapehead { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+.tapehead .title { font: 600 16px/1.2 var(--display); }
+.tapehead .meta { color: var(--ink-2); font-size: 13px; }
+.tapehead .meta b { color: var(--ink); font-weight: 500; }
+.tape { position: relative; height: 108px; cursor: crosshair; touch-action: none; }
+.tape canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.transport { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.btn { border: 1px solid var(--line); background: var(--deck); border-radius: 7px; padding: 5px 11px; cursor: pointer; }
+.btn:hover { background: var(--deck-2); }
+.btn.primary { background: var(--elixir); border-color: var(--elixir); color: #fff; min-width: 74px; }
+.transport .time { font: 600 16px var(--display); font-variant-numeric: tabular-nums; margin-left: 6px; }
+.transport .hint { margin-left: auto; color: var(--ink-3); font-size: 12.5px; }
+.legend { display: flex; gap: 14px; color: var(--ink-3); font-size: 12px; margin-top: 4px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 5px; }
+
+@media (max-width: 980px) {
+  body { display: block; min-height: 0; }
+  main { display: block; }
+  .stagecol { border-right: 0; border-bottom: 1px solid var(--line); height: 80vh; }
+  .side { overflow: visible; }
+  .hand { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .hand .next { grid-column: span 4; }
+  .transport .hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">droid-harness <small>Studio</small></div>
+  <div class="tabs" id="modeTabs" role="group" aria-label="Mode" hidden>
+    <button data-mode="live" aria-pressed="true">Live</button>
+    <button data-mode="replay" aria-pressed="false">Recorded matches</button>
+  </div>
+  <button class="btn" id="openDrawer" hidden>Matches</button>
+  <div class="headline" id="headline"><span><span class="dot" id="connDot"></span><span id="connText">Connecting</span></span></div>
+</header>
+
+<main>
+  <div class="stagecol">
+    <div class="toolbar">
+      <div class="seg" role="group" aria-label="View">
+        <button data-view="both" aria-pressed="true">Phone and map</button>
+        <button data-view="phone" aria-pressed="false">Phone</button>
+        <button data-view="map" aria-pressed="false">Map</button>
+      </div>
+      <div class="toggles" id="toggles"></div>
+    </div>
+    <div class="stage">
+      <div class="pane" id="phonePane">
+        <h2>Phone</h2>
+        <div class="canvaswrap"><canvas id="phone"></canvas><div class="empty" id="phoneEmpty"><p>Waiting for the first frame.</p></div></div>
+      </div>
+      <div class="pane" id="mapPane">
+        <h2>Tactical map</h2>
+        <div class="canvaswrap"><canvas id="map"></canvas><div class="empty" id="mapEmpty" hidden><p></p></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="side" id="side">
+    <section class="panel"><div class="clockrow">
+      <div class="clock" id="clock">0:00</div><span class="badge" id="phase">x1</span><span class="badge" id="posture">Balanced</span>
+      <span class="small" id="screen"></span>
+      <div class="crowns" id="crowns" title="Crowns: yours and theirs"><span class="me">0</span> <span class="small">to</span> <span class="opp">0</span></div>
+    </div></section>
+    <section class="panel"><h3>Elixir <span class="aside"><span id="leak"></span> The opponent's bar is an estimated range.</span></h3>
+      <div class="elixir-grid">
+        <span class="who">You</span><div class="bar"><div class="fill" id="exMe"></div><div class="ticks"></div><span class="val" id="exMeV">0.0</span></div>
+        <span class="who">Opponent</span><div class="bar"><div class="band" id="exOpp"></div><div class="ticks"></div><span class="val" id="exOppV">0–0</span></div>
+      </div>
+    </section>
+    <section class="panel"><h3>Hand <span class="aside">Dashed: not read this frame, so it won't be played</span></h3><div class="hand" id="hand"></div></section>
+    <section class="panel"><h3>Decision <span class="aside" id="decAside"></span></h3><p class="stalenote" id="decNote" hidden></p><div id="cands"></div></section>
+    <section class="panel"><h3>Opponent cycle <span class="aside" id="cycleAside"></span></h3><div class="cycle" id="cycle"></div></section>
+    <section class="panel"><h3>Towers <span class="aside" id="hpdiff"></span></h3><div class="towers" id="towers"></div></section>
+    <section class="panel" id="expPanel" hidden><h3>Experiment <span class="aside" id="expAside"></span></h3><div id="exp"></div></section>
+    <section class="panel"><h3>Run and latency <span class="aside" id="runAside"></span></h3><div class="kv" id="lat"></div><div class="warns" id="warns" style="margin-top:8px"></div></section>
+  </div>
+</main>
+
+<footer id="footer">
+  <div class="tapehead">
+    <button class="btn" id="drawerBtn">Matches</button>
+    <div class="title" id="mTitle">No match open</div>
+    <div class="meta" id="mMeta"></div>
+  </div>
+  <div class="tape" id="tape" aria-label="Match timeline: drag to scrub"><canvas id="tapeCanvas"></canvas></div>
+  <div class="legend">
+    <span><i style="background:var(--elixir)"></i>Your elixir</span>
+    <span><i style="background:rgba(255,92,105,.6);height:8px"></i>Opponent elixir range</span>
+    <span><i style="background:var(--blue)"></i>Your plays</span>
+    <span><i style="background:var(--red)"></i>Their plays</span>
+    <span><i style="background:var(--gold)"></i>Tower destroyed</span>
+  </div>
+  <div class="transport">
+    <button class="btn primary" id="play">Play</button>
+    <select class="btn" id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select>
+    <button class="btn" id="prevAct" title="Previous action (Shift+←)">Previous action</button>
+    <button class="btn" id="prev" title="Previous logged state (←)">Back</button>
+    <button class="btn" id="next" title="Next logged state (→)">Forward</button>
+    <button class="btn" id="nextAct" title="Next action (Shift+→)">Next action</button>
+    <span class="time" id="tRead">0:00.0</span><span class="small" id="idxRead"></span>
+    <span class="hint">Space plays or pauses. Arrow keys step; with Shift they jump between actions.</span>
+  </div>
+</footer>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="Recorded matches">
+  <header><div class="brand" style="font-size:18px">Recorded matches</div><button class="btn" id="closeDrawer" style="margin-left:auto">Close</button></header>
+  <div class="ledger" id="ledger" hidden></div>
+  <input class="search" id="search" placeholder="Filter by strategy, result, card or id" aria-label="Filter matches">
+  <div class="list" id="mlist"></div>
+</aside>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const FAMILY = { defend: "--f-defend", offense: "--f-offense", spell: "--f-spell", cycle: "--f-cycle", opening: "--f-opening", t0: "--f-t0" };
+const NAMES = { mini_pekka: "Mini P.E.K.K.A", pekka: "P.E.K.K.A", x_bow: "X-Bow", the_log: "The Log",
+  other_ground: "Unknown ground unit", other_air: "Unknown air unit", archer: "Archer", minion: "Minion" };
+const TOWER_LABEL = { left: "Left", king: "King", right: "Right" };
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const C = {};
+const OVERLAYS = [
+  ["boxes", "Detections", true], ["units", "Tracked units", true], ["labels", "Labels", true],
+  ["vectors", "Velocity", true], ["cands", "Candidates", true], ["grid", "Tile grid", false],
+  ["rois", "HUD regions", false], ["taps", "Touches", true],
+];
+const S = {
+  info: null, mode: "live", view: "both", overlay: {}, live: { config: null, snap: null, img: null, imgSeq: -1, fetching: false, es: null, lastCands: null },
+  replay: { list: [], match: null, idx: 0, playing: false, speed: 1, t: 0, img: null, imgT: -1, fetching: false, wantT: null, lastCands: null, current: null },
+};
+
+function cardName(k) {
+  if (!k) return "—";
+  if (NAMES[k]) return NAMES[k];
+  return k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+function short(k) {
+  if (!k) return "?";
+  if (k.startsWith("other_")) return "?";
+  const p = k.split("_");
+  return p.length > 1 ? p.map((w) => w[0].toUpperCase()).join("").slice(0, 3) : k.slice(0, 3).replace(/^\w/, (c) => c.toUpperCase());
+}
+function fmtT(ms, dec = true) {
+  if (ms == null || !isFinite(ms)) return "–";
+  const s = Math.max(0, ms) / 1000, m = Math.floor(s / 60), r = s - m * 60;
+  return m + ":" + (dec ? r.toFixed(1).padStart(4, "0") : String(Math.floor(r)).padStart(2, "0"));
+}
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fx = (v, n = 2) => (v == null || !isFinite(v) ? "–" : Number(v).toFixed(n));
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("studio." + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem("studio." + k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
+};
+
+// ---------- geometry ----------
+function project(H, x, y) {
+  const X = H[0][0] * x + H[0][1] * y + H[0][2], Y = H[1][0] * x + H[1][1] * y + H[1][2], W = H[2][0] * x + H[2][1] * y + H[2][2];
+  return [X / W, Y / W];
+}
+function geometryNow() { return S.mode === "live" ? S.live.config : (S.replay.match && S.replay.match.geometry); }
+function snapNow() { return S.mode === "live" ? S.live.snap : S.replay.current; }
+
+function fitCanvas(cv, aspect) {
+  const wrap = cv.parentElement, dpr = window.devicePixelRatio || 1;
+  const W = wrap.clientWidth, Hh = wrap.clientHeight;
+  let w = W, h = W / aspect;
+  if (h > Hh) { h = Hh; w = Hh * aspect; }
+  cv.style.width = w + "px"; cv.style.height = h + "px";
+  cv.style.left = (W - w) / 2 + "px"; cv.style.top = "0px";
+  cv.width = Math.max(1, Math.round(w * dpr)); cv.height = Math.max(1, Math.round(h * dpr));
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
+}
+
+// ---------- phone view ----------
+function drawPhone() {
+  const cv = $("#phone"), snap = snapNow(), geo = geometryNow();
+  const img = S.mode === "live" ? S.live.img : S.replay.img;
+  const fw = (img && img.width) || (snap && snap.frame && snap.frame.w) || 464;
+  const fh = (img && img.height) || (snap && snap.frame && snap.frame.h) || 1024;
+  const { ctx, w, h } = fitCanvas(cv, fw / fh);
+  ctx.clearRect(0, 0, w, h);
+  const empty = $("#phoneEmpty");
+  if (!img) {
+    empty.hidden = false;
+    const p = empty.querySelector("p");
+    if (S.mode === "replay" && S.replay.match && !S.replay.match.has_video)
+      p.textContent = "This match kept no video (retention prunes it). The map shows the logged state.";
+    else if (S.mode === "replay" && S.replay.match) p.textContent = "Decoding the recording…";
+    else if (S.mode === "replay") p.textContent = "Open a match to see its recording.";
+    else p.textContent = "Waiting for the first frame. Static menus send no frames: tap the phone or start a battle.";
+    ctx.fillStyle = "#11152a"; ctx.fillRect(0, 0, w, h);
+  } else {
+    empty.hidden = true;
+    ctx.drawImage(img, 0, 0, w, h);
+  }
+  if (!snap) return;
+  const sx = w / fw, sy = h / fh;
+  const H = geo && geo.tile_to_screen;
+  const toPx = (t) => { const [nx, ny] = project(H, t[0], t[1]); return [nx * w, ny * h]; };
+  ctx.lineWidth = 1.5; ctx.font = "600 12px " + css("--display");
+  if (S.overlay.rois && geo && geo.rois) {
+    ctx.strokeStyle = "rgba(242,194,48,.75)"; ctx.setLineDash([4, 3]);
+    const r = geo.rois, rect = (b) => b && ctx.strokeRect(b[0] * w, b[1] * h, (b[2] - b[0]) * w, (b[3] - b[1]) * h);
+    (r.hand || []).forEach(rect); rect(r.next_card); rect(r.elixir_bar); rect(r.clock); rect(r.arena);
+    Object.values(r.tower_hp || {}).forEach(rect);
+    ctx.setLineDash([]);
+  }
+  if (S.overlay.grid && H && geo.arena) drawGridOnPhone(ctx, toPx, geo.arena);
+  const dets = snap.detections || [];
+  if (S.overlay.boxes && dets.length) {
+    for (const d of dets) {
+      const col = d.side === "me" ? C.blue : d.side === "opp" ? C.red : C.ink2;
+      const [x1, y1, x2, y2] = d.box; ctx.strokeStyle = col; ctx.lineWidth = 1.6;
+      ctx.strokeRect(x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy);
+      if (d.hp != null) { ctx.fillStyle = col; ctx.fillRect(x1 * sx, y1 * sy - 4, (x2 - x1) * sx * d.hp, 3); }
+      if (S.overlay.labels) label(ctx, `${cardName(d.cls)} ${Math.round(d.conf * 100)}%`, x1 * sx, y1 * sy - 6, col);
+    }
+  }
+  if (H && S.overlay.units && (!dets.length || !S.overlay.boxes)) {
+    for (const u of snap.units || []) drawUnit(ctx, toPx(u.tile), u, 7, toPx);
+  } else if (H && S.overlay.vectors) {
+    for (const u of snap.units || []) drawVector(ctx, toPx, u);
+  }
+  if (H && S.overlay.cands) drawCandidates(ctx, toPx, snap, 8);
+  if (S.overlay.taps && snap.taps) {
+    for (const t of snap.taps) {
+      const a = Math.max(0, 1 - t.age_ms / 1200), r = 6 + (1 - a) * 22;
+      ctx.strokeStyle = `rgba(242,194,48,${a})`; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(t.x * sx, t.y * sy, r, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+}
+function drawGridOnPhone(ctx, toPx, A) {
+  ctx.strokeStyle = "rgba(238,240,250,.16)"; ctx.lineWidth = 1;
+  for (let x = 0; x <= A.width; x++) { ctx.beginPath(); ctx.moveTo(...toPx([x, 0])); ctx.lineTo(...toPx([x, A.height])); ctx.stroke(); }
+  for (let y = 0; y <= A.height; y++) { ctx.beginPath(); ctx.moveTo(...toPx([0, y])); ctx.lineTo(...toPx([A.width, y])); ctx.stroke(); }
+  ctx.fillStyle = "rgba(44,121,184,.25)"; ctx.beginPath();
+  [[0, A.river_y[0]], [A.width, A.river_y[0]], [A.width, A.river_y[1]], [0, A.river_y[1]]].forEach((p, i) => (i ? ctx.lineTo(...toPx(p)) : ctx.moveTo(...toPx(p))));
+  ctx.fill();
+}
+function label(ctx, text, x, y, col, flipBy = 0) {
+  ctx.font = "600 12px " + css("--display");
+  const w = ctx.measureText(text).width + 8;
+  if (flipBy && x + w > ctx.canvas.clientWidth) x = x - w - flipBy;  // keep labels inside the canvas
+  x = Math.max(0, x); y = Math.max(14, y);
+  ctx.fillStyle = "rgba(17,21,42,.82)"; ctx.fillRect(x, y - 13, w, 15);
+  ctx.fillStyle = col; ctx.fillText(text, x + 4, y - 2);
+}
+function drawVector(ctx, toPx, u) {
+  if (!u.vel || (Math.abs(u.vel[0]) + Math.abs(u.vel[1])) < 0.15) return;
+  const a = toPx(u.tile), b = toPx([u.tile[0] + u.vel[0], u.tile[1] + u.vel[1]]);
+  ctx.strokeStyle = u.side === "me" ? C.blue : C.red; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.stroke();
+  const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+  ctx.beginPath(); ctx.moveTo(...b);
+  ctx.lineTo(b[0] - 7 * Math.cos(ang - 0.45), b[1] - 7 * Math.sin(ang - 0.45));
+  ctx.lineTo(b[0] - 7 * Math.cos(ang + 0.45), b[1] - 7 * Math.sin(ang + 0.45)); ctx.closePath();
+  ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+}
+function drawUnit(ctx, p, u, r, toPx) {
+  const col = u.side === "me" ? C.blue : u.side === "opp" ? C.red : C.ink2;
+  ctx.fillStyle = col; ctx.globalAlpha = 0.9;
+  ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+  if (u.hp != null && u.hp < 0.99) {
+    ctx.strokeStyle = "#11152a"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(p[0], p[1], r + 2.5, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - u.hp)); ctx.stroke();
+  }
+  if (S.overlay.vectors) drawVector(ctx, toPx, u);
+  if (S.overlay.labels) {
+    ctx.font = `700 ${Math.max(9, r * 1.15)}px ` + css("--display"); ctx.fillStyle = "#fff";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(short(u.kind), p[0], p[1] + 0.5);
+    ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+  }
+}
+function drawCandidates(ctx, toPx, snap, r) {
+  const d = snap.decision; if (!d) return;
+  const rows = (d.candidates || []).filter((c) => c.tile).slice(0, 6);
+  rows.forEach((c, i) => {
+    if (c.chosen) return;
+    const p = toPx(c.tile);
+    ctx.strokeStyle = "rgba(238,240,250,.7)"; ctx.lineWidth = 1.4; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(238,240,250,.85)"; ctx.font = "600 11px " + css("--display");
+    ctx.fillText(String(i + 1), p[0] + r + 2, p[1] - r + 2);
+  });
+  if (d.acted && d.tile) {
+    const p = toPx(d.tile);
+    if (d.predicted_tile) {
+      const q = toPx(d.predicted_tile); ctx.strokeStyle = C.gold; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(...p); ctx.lineTo(...q); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(q[0], q[1], r * 0.55, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.strokeStyle = C.gold; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(p[0], p[1], r + 2, 0, Math.PI * 2); ctx.stroke();
+    label(ctx, cardName(d.chosen_card), p[0] + r + 6, p[1] + 4, C.gold, 2 * r + 12);
+  }
+}
+
+// ---------- tactical map ----------
+function drawMap() {
+  const geo = geometryNow(), snap = snapNow();
+  const A = (geo && geo.arena) || { width: 18, height: 32, river_y: [15, 17], bridges_x: [3.5, 14.5], tower_radius: 1.5,
+    towers: { me_left: [3.5, 6.5], me_right: [14.5, 6.5], me_king: [9, 3], opp_left: [3.5, 25.5], opp_right: [14.5, 25.5], opp_king: [9, 29] } };
+  const { ctx, w, h } = fitCanvas($("#map"), A.width / A.height);
+  const k = w / A.width;
+  const toPx = (t) => [t[0] * k, h - t[1] * k];
+  ctx.fillStyle = C.grass; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = C.grass2;
+  for (let x = 0; x < A.width; x++) for (let y = 0; y < A.height; y++) if ((x + y) % 2) ctx.fillRect(x * k, h - (y + 1) * k, k, k);
+  if (S.overlay.grid) {
+    ctx.strokeStyle = "rgba(0,0,0,.18)"; ctx.lineWidth = 1;
+    for (let x = 0; x <= A.width; x += 1) { ctx.beginPath(); ctx.moveTo(x * k, 0); ctx.lineTo(x * k, h); ctx.stroke(); }
+    for (let y = 0; y <= A.height; y += 1) { ctx.beginPath(); ctx.moveTo(0, y * k); ctx.lineTo(w, y * k); ctx.stroke(); }
+  }
+  const [r0, r1] = A.river_y;
+  ctx.fillStyle = C.river; ctx.fillRect(0, h - r1 * k, w, (r1 - r0) * k);
+  ctx.fillStyle = C.bridge;
+  for (const bx of A.bridges_x) ctx.fillRect((bx - 1) * k, h - (r1 + 0.2) * k, 2 * k, (r1 - r0 + 0.4) * k);
+  const towers = (snap && snap.towers) || {}, tmax = (snap && snap.tower_max) || {};
+  for (const [name, pos] of Object.entries(A.towers)) {
+    const king = name.endsWith("king"), half = king ? 2 : 1.5, me = name.startsWith("me_");
+    const hp = towers[name], down = hp === 0;
+    const [px, py] = toPx(pos);
+    ctx.fillStyle = down ? "rgba(20,20,30,.55)" : (me ? "#2f5f99" : "#99343d");
+    ctx.fillRect(px - half * k, py - half * k, half * 2 * k, half * 2 * k);
+    ctx.strokeStyle = me ? C.blue : C.red; ctx.lineWidth = 2; ctx.strokeRect(px - half * k, py - half * k, half * 2 * k, half * 2 * k);
+    if (down) { ctx.beginPath(); ctx.moveTo(px - half * k, py - half * k); ctx.lineTo(px + half * k, py + half * k); ctx.moveTo(px + half * k, py - half * k); ctx.lineTo(px - half * k, py + half * k); ctx.stroke(); }
+    if (hp != null && !down) {
+      const frac = Math.max(0, Math.min(1, hp / (tmax[name] || hp || 1)));
+      ctx.fillStyle = "#11152a"; ctx.fillRect(px - half * k, py + half * k + 2, half * 2 * k, 4);
+      ctx.fillStyle = me ? C.blue : C.red; ctx.fillRect(px - half * k, py + half * k + 2, half * 2 * k * frac, 4);
+      ctx.font = `600 ${Math.max(10, k * 0.62)}px ` + css("--display"); ctx.fillStyle = "#fff"; ctx.textAlign = "center";
+      ctx.fillText(String(hp), px, py + 4); ctx.textAlign = "start";
+    }
+  }
+  if (!snap) return;
+  for (const u of snap.units || []) drawUnit(ctx, toPx(u.tile), u, Math.max(5, k * 0.42), toPx);
+  if (S.overlay.cands) drawCandidates(ctx, toPx, snap, Math.max(6, k * 0.5));
+}
+
+// ---------- panels ----------
+function renderPanels() {
+  const s = snapNow();
+  if (!s) return;
+  $("#clock").textContent = fmtT(s.t_ms, false);
+  const ph = s.phase || "x1";
+  $("#phase").textContent = ph === "x1" ? "Single elixir" : ph === "x2" ? "Double elixir" : ph === "ot_x2" ? "Overtime ×2" : ph === "ot_x3" ? "Overtime ×3" : ph;
+  $("#phase").className = "badge " + (ph === "x2" ? "x2" : ph.startsWith("ot") ? "ot" : "");
+  const posture = (s.decision && s.decision.posture) || s.posture || "";
+  $("#posture").textContent = posture ? posture.toLowerCase().replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()) : "";
+  $("#screen").textContent = s.mode === "live" && s.screen && s.screen !== "IN_BATTLE" ? `Screen: ${s.screen.toLowerCase().replace(/_/g, " ")}` : "";
+  $("#crowns").innerHTML = `<span class="me">${(s.crowns || [0, 0])[0]}</span> <span class="small">to</span> <span class="opp">${(s.crowns || [0, 0])[1]}</span>`;
+
+  const me = s.elixir ? s.elixir.me : 0, opp = s.elixir ? s.elixir.opp : [0, 0];
+  $("#exMe").style.width = Math.min(100, me * 10) + "%"; $("#exMeV").textContent = fx(me, 1);
+  $("#exOpp").style.left = Math.min(100, opp[0] * 10) + "%"; $("#exOpp").style.width = Math.max(0.6, (opp[1] - opp[0]) * 10) + "%";
+  $("#exOppV").textContent = Math.abs(opp[1] - opp[0]) < 0.05 ? fx(opp[0], 1) : `${fx(opp[0], 1)}–${fx(opp[1], 1)}`;
+  $("#leak").textContent = s.elixir_leaked != null ? `Leaked ${fx(s.elixir_leaked, 1)}.` : "";
+
+  const T = s.towers || {}, M = s.tower_max || {};
+  let html = "";
+  for (const side of ["opp", "me"]) {
+    html += `<div class="rowlabel">${side === "opp" ? "Opponent" : "You"}</div>`;
+    for (const pos of ["left", "king", "right"]) {
+      const key = `${side}_${pos}`, hp = T[key], mx = M[key] || hp;
+      const down = hp === 0, frac = hp != null && mx ? Math.max(0, Math.min(1, hp / mx)) : 0;
+      html += `<div class="tower ${side}${down ? " down" : ""}"><div class="t"><span>${TOWER_LABEL[pos]}</span><span>${down ? "destroyed" : (mx ? Math.round(frac * 100) + "%" : "")}</span></div>
+        <div class="hp">${hp == null ? "<span class='small'>not read</span>" : hp}</div><div class="hpbar"><i style="width:${frac * 100}%"></i></div></div>`;
+    }
+  }
+  $("#towers").innerHTML = html;
+  const mine = ["me_left", "me_right", "me_king"].reduce((a, k2) => a + (T[k2] || 0), 0);
+  const theirs = ["opp_left", "opp_right", "opp_king"].reduce((a, k2) => a + (T[k2] || 0), 0);
+  const unread = ["opp_left", "opp_right", "opp_king"].filter((k2) => T[k2] == null).length;
+  $("#hpdiff").textContent = unread === 3 ? "Opponent tower HP not read" : `HP difference ${mine - theirs > 0 ? "+" : ""}${mine - theirs}`;
+
+  html = "";
+  for (const c of s.hand || []) {
+    const cls = !c.card ? "" : (!c.fresh ? "stale" : c.affordable ? "ready" : "short");
+    html += `<div class="slot ${cls}"><div class="c">${esc(cardName(c.card))}</div><div class="m"><span>${c.cost != null ? `<span class="cost">${c.cost}</span>` : ""}</span><span>${!c.card ? "empty" : !c.fresh ? "stale" : c.affordable ? "ready" : "saving"}</span></div></div>`;
+  }
+  html += `<div class="slot next"><div class="c">${esc(cardName(s.next))}</div><div class="m"><span>Next</span></div></div>`;
+  $("#hand").innerHTML = html;
+
+  renderCycle(s.opp || {});
+  renderDecision(s);
+  renderRun(s);
+}
+function renderCycle(o) {
+  const cards = o.cards || [];
+  const inHand = cards.filter((c) => c.in_hand), queued = cards.filter((c) => !c.in_hand).sort((a, b) => a.until_back - b.until_back);
+  let h = `<div class="row"><span class="lbl">Could play</span>`;
+  h += inHand.length ? inHand.map((c) => `<span class="chip${c.can_play_now ? " live" : ""}" title="${c.can_play_now ? "In hand and affordable now" : "In hand, likely short of elixir"}">${esc(cardName(c.card))}${c.cost != null ? ` <span class="cost">${c.cost}</span>` : ""}</span>`).join("") : `<span class="small">Nothing seen yet</span>`;
+  for (let i = 0; i < (o.unknown_slots || 0); i++) h += `<span class="chip unknown" title="Not seen yet">unseen</span>`;
+  h += `</div><div class="row"><span class="lbl">Cycling back</span>`;
+  h += queued.length ? queued.map((c) => `<span class="chip">${esc(cardName(c.card))} <span class="q">in ${c.until_back} ${c.until_back === 1 ? "play" : "plays"}, ≥${fx(c.min_elixir_to_return, 1)} elixir</span></span>`).join("") : `<span class="small">—</span>`;
+  h += `</div>`;
+  $("#cycle").innerHTML = h;
+  $("#cycleAside").textContent = o.deck_known ? "Deck known: their hand is the deck minus the last four plays" : `${(o.cards || []).length} of 8 cards seen`;
+}
+function renderDecision(s) {
+  const d = s.decision || { candidates: [] };
+  const holder = S.mode === "live" ? S.live : S.replay;
+  let shown = d, note = "";
+  if ((!d.candidates || !d.candidates.length) && holder.lastCands && s.t_ms - holder.lastCands.t_ms < 2500 && s.t_ms >= holder.lastCands.t_ms) {
+    shown = holder.lastCands.d;
+    note = `Showing the last scored moment (${fmtT(holder.lastCands.t_ms)}): the bot waits for its previous play to register before scoring again.`;
+  } else if (d.candidates && d.candidates.length) {
+    holder.lastCands = { t_ms: s.t_ms, d };
+  }
+  $("#decNote").hidden = !note; $("#decNote").textContent = note;
+  const thr = shown.threshold;
+  $("#decAside").textContent = `${shown.n_candidates || 0} candidates` + (thr != null ? `, acts above ${fx(thr, 2)}` : "");
+  const rows = shown.candidates || [];
+  if (!rows.length) { $("#cands").innerHTML = `<p class="small">${s.mode === "live" && !s.in_battle ? "Menus: the bot only scores plays in battle." : "No legal play scored at this moment."}</p>`; return; }
+  const maxT = Math.max(0.0001, ...rows.map((r) => Math.abs(r.total || 0)));
+  let h = `<table class="cands"><thead><tr><th>Rule</th><th>Card and tile</th><th class="r">Score</th><th class="r" title="Rule weight × posture multiplier">× weight</th><th class="r">Total</th></tr></thead><tbody>`;
+  let thrDrawn = false;
+  rows.forEach((r) => {
+    if (thr != null && !thrDrawn && (r.total ?? -Infinity) < thr) { h += `<tr class="threshold"><td colspan="5">Act threshold ${fx(thr, 2)}: nothing below this line is played</td></tr>`; thrDrawn = true; }
+    const below = thr != null && (r.total ?? -Infinity) < thr;
+    const col = css(FAMILY[r.family] || "--ink-2");
+    const tile = r.tile ? `(${fx(r.tile[0], 1)}, ${fx(r.tile[1], 1)})` : "";
+    h += `<tr class="${r.chosen ? "chosen" : ""}${below ? " below" : ""}"><td class="rule"><i style="background:${col}"></i>${esc(r.rule_id)}<div class="why" title="${esc(r.reason)}">${esc(r.reason)}</div></td>
+      <td>${esc(cardName(r.card))} <span class="small">${tile}</span></td><td class="r num">${fx(r.score, 3)}</td><td class="r num">${r.wm != null ? fx(r.wm, 2) : "–"}</td>
+      <td class="r num"><span class="totalbar" style="width:${Math.round(34 * Math.abs(r.total || 0) / maxT)}px"></span>${fx(r.total, 3)}</td></tr>`;
+  });
+  h += `</tbody></table>`;
+  $("#cands").innerHTML = h;
+}
+function renderRun(s) {
+  const lat = s.latency || {};
+  const items = [["Decode", lat.decode], ["Perceive", lat.perceive], ["Decide", lat.decide], ["Loop total", lat.total]];
+  if (lat.p50) items.push(["Loop p50", lat.p50], ["Loop p99", lat.p99]);
+  if (s.ui_build_ms != null) items.push(["Studio build", s.ui_build_ms]);
+  $("#lat").innerHTML = items.map(([k, v]) => `<div><span>${k}</span><b>${v == null ? "–" : fx(v, 1) + " ms"}</b></div>`).join("");
+  const counts = s.warning_counts && Object.keys(s.warning_counts).length ? s.warning_counts : null;
+  const ws = counts ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<span class="chip" title="Count this match">${esc(k.replace(/_/g, " "))} ${v}</span>`)
+    : (s.warnings || []).map((k) => `<span class="chip">${esc(k.replace(/_/g, " "))}</span>`);
+  $("#warns").innerHTML = ws.join("");
+  if (s.mode === "live") {
+    const r = s.runner || {}, st = s.strategy || {}, res = r.results || {};
+    const done = `${r.completed ?? 0}${r.target && r.target < 1e8 ? ` of ${r.target}` : ""} matches`;
+    $("#runAside").textContent = `${s.observe_only ? "Watching. " : ""}${done}: ${res.win || 0} won, ${res.loss || 0} lost${res.draw ? `, ${res.draw} drawn` : ""}${res.aborted ? `, ${res.aborted} aborted` : ""}`;
+    renderHeadline(s);
+    renderExperiment(s.experiment);
+  } else {
+    $("#runAside").textContent = "Logged with each decision";
+    $("#expPanel").hidden = true;
+  }
+}
+function renderExperiment(e) {
+  $("#expPanel").hidden = !e;
+  if (!e) return;
+  $("#expAside").textContent = `${e.id}, ${e.status}`;
+  const a = e.arms || {}, ch = a.champion || {}, ca = a.candidate || {};
+  const span = e.upper - e.lower, pos = span ? Math.max(0, Math.min(1, (e.llr - e.lower) / span)) : 0.5;
+  const ds = e.dense || {};
+  $("#exp").innerHTML = `<div class="kv">
+    <div><span>Champion</span><b>${ch.wins || 0}–${ch.losses || 0}–${ch.draws || 0}</b></div>
+    <div><span>Candidate</span><b>${ca.wins || 0}–${ca.losses || 0}–${ca.draws || 0}</b></div>
+    <div><span>Now playing</span><b>${esc(e.active_arm || "–")}</b></div>
+    <div><span>Pairs won / lost / tied</span><b>${e.pairs.candidate_better}/${e.pairs.champion_better}/${e.pairs.tied}</b></div>
+    <div><span>Dense margin</span><b>${fx(ds.mean, 2)}</b></div>
+    <div><span>Matches</span><b>${e.matches} of ${e.max_games}</b></div></div>
+    <div class="llr" title="SPRT log-likelihood ratio between its reject and accept bounds"><div class="track"></div><div class="mark" style="left:calc(${pos * 100}% - 1px)"></div></div>
+    <div class="llr ends" style="height:auto;margin:0"><span>Reject ${fx(e.lower, 2)}</span><span>LLR ${fx(e.llr, 2)}</span><span>Accept ${fx(e.upper, 2)}</span></div>
+    ${e.futility ? `<p class="small">${esc(e.futility)}</p>` : ""}${e.void ? `<p class="small">Void: ${esc(e.void)}</p>` : ""}`;
+}
+function renderHeadline(s) {
+  const st = s.strategy || {}, m = s.match || {};
+  const parts = [];
+  if (st.name) parts.push(`<span>Strategy <b>${esc(st.name)}</b></span>`);
+  if (m.id) parts.push(`<span>Match <b>${esc(m.id)}</b></span>`);
+  if (m.arm) parts.push(`<span>Arm <b>${esc(m.arm)}</b></span>`);
+  const conn = `<span><span class="dot ${S.live.connected ? "ok" : "warn"}"></span>${S.live.connected ? (s.observe_only ? "Watching" : "Live") : "Reconnecting"}</span>`;
+  $("#headline").innerHTML = parts.join("") + conn;
+}
+
+// ---------- live ----------
+async function startLive() {
+  S.live.config = await (await fetch("/api/live/config")).json();
+  connectLive();
+}
+function connectLive() {
+  if (S.live.es) S.live.es.close();
+  const es = new EventSource("/api/live/events");
+  S.live.es = es;
+  es.onopen = () => { S.live.connected = true; };
+  es.onerror = () => { S.live.connected = false; if (S.mode === "live") renderHeadlineStatus("Reconnecting", "warn"); };
+  es.onmessage = (ev) => {
+    let snap; try { snap = JSON.parse(ev.data); } catch (e) { return; }
+    S.live.connected = true;
+    S.live.snap = snap;
+    if (S.mode !== "live") return;
+    if (snap.frame && snap.frame.has_image && snap.frame.seq !== S.live.imgSeq && !S.live.fetching) fetchLiveFrame();
+    scheduleDraw();
+  };
+}
+async function fetchLiveFrame() {
+  S.live.fetching = true;
+  try {
+    const r = await fetch("/api/live/frame.jpg?ts=" + Date.now());
+    if (r.ok) {
+      const seq = Number(r.headers.get("X-Frame-Seq"));
+      const bmp = await createImageBitmap(await r.blob());
+      S.live.img = bmp; S.live.imgSeq = seq; scheduleDraw();
+    }
+  } catch (e) { /* next snapshot retries */ }
+  S.live.fetching = false;
+}
+function renderHeadlineStatus(text, cls) {
+  $("#headline").innerHTML = `<span><span class="dot ${cls}"></span>${esc(text)}</span>`;
+}
+
+// ---------- replay ----------
+async function loadList() {
+  try {
+    S.replay.list = await (await fetch("/api/matches")).json();
+  } catch (e) { S.replay.list = []; }
+  renderList();
+  try {
+    const led = await (await fetch("/api/ledger")).json();
+    if (led.length) {
+      const e = led[0];
+      $("#ledger").hidden = false;
+      $("#ledger").innerHTML = `Latest experiment <b>${esc(e.experiment_id)}</b>, ${esc(String(e.status).toLowerCase())}: ${esc(e.title)}. Candidate ${e.wins}–${e.losses}–${e.draws}, LLR ${fx(e.llr, 2)}.`;
+    }
+  } catch (e) { /* no ledger */ }
+}
+function renderList() {
+  const q = ($("#search").value || "").toLowerCase().trim();
+  const rows = S.replay.list.filter((r) => !q || [r.id, r.result, r.strategy, r.arm, r.experiment_id, (r.opp_deck_seen || []).join(" ")].join(" ").toLowerCase().includes(q));
+  if (!S.replay.list.length) {
+    $("#mlist").innerHTML = `<p class="small" style="padding:12px 8px">No recorded matches here. Run <b>droid-harness play</b>, or point <b>inspect</b> at a folder of matches.</p>`;
+    return;
+  }
+  let h = "", grp = null;
+  for (const r of rows) {
+    if (r.group !== grp) { grp = r.group; h += `<div class="grp">${esc(grp || "Top level")}</div>`; }
+    const res = r.result === "win" ? "win" : r.result === "loss" ? "loss" : r.result === "draw" ? "draw" : "other";
+    const resTxt = res === "other" ? "–" : `${r.my_crowns ?? "?"}–${r.opp_crowns ?? "?"}`;
+    const when = r.started_unix ? new Date(r.started_unix * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+    h += `<button class="mrow" data-id="${esc(r.id)}" aria-current="${S.replay.match && S.replay.match.id === r.id}">
+      <span class="res ${res}">${resTxt}</span>
+      <span class="l1">${esc(r.strategy || (r.strategy_id ? "strategy " + r.strategy_id : "unknown strategy"))}${r.arm ? `, ${esc(r.arm)}` : ""}</span>
+      <span class="vid">${r.has_video ? "video" : ""}</span>
+      <span class="l2">${esc(r.match_id)}, ${r.duration_s ? fmtT(r.duration_s * 1000, false) : "–"}${when ? ", " + when : ""}${res === "other" && r.result ? ", " + esc(r.result) : ""}</span>
+    </button>`;
+  }
+  $("#mlist").innerHTML = h || `<p class="small" style="padding:12px 8px">No match matches “${esc(q)}”.</p>`;
+}
+async function openMatch(id) {
+  closeDrawer();
+  $("#mTitle").textContent = "Loading…";
+  const r = await fetch("/api/match?id=" + encodeURIComponent(id));
+  if (!r.ok) { $("#mTitle").textContent = "Couldn't open that match: " + (await r.json()).error; return; }
+  const m = await r.json();
+  S.replay.match = m; S.replay.idx = 0; S.replay.t = 0; S.replay.img = null; S.replay.imgT = -1; S.replay.lastCands = null;
+  S.replay.actIdx = m.timeline.map((s, i) => (s.decision && s.decision.acted ? i : -1)).filter((i) => i >= 0);
+  S.replay.times = m.timeline.map((s) => s.t_ms);
+  const sm = m.summary || {};
+  const res = String(sm.result || "unknown result");
+  const word = { win: "Win", loss: "Loss", draw: "Draw", sim: "Simulated match" }[res] || res.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+  const crowns = sm.my_crowns != null && sm.opp_crowns != null ? ` ${sm.my_crowns}–${sm.opp_crowns}` : "";
+  $("#mTitle").textContent = word + crowns;
+  const st = m.strategy || {};
+  const meta = [];
+  meta.push(`Strategy <b>${esc(st.name || sm.strategy_id || "unknown")}</b>${st.known ? "" : " <span class='small'>(recorded under older policy code)</span>"}`);
+  if (sm.arm) meta.push(`arm <b>${esc(sm.arm)}</b> in <b>${esc(sm.experiment_id)}</b>`);
+  if (sm.opp_deck_seen && sm.opp_deck_seen.length) meta.push(`their deck <b>${esc(sm.opp_deck_seen.map(cardName).join(", "))}</b>`);
+  meta.push(`<b>${m.timeline.length}</b> logged states, <b>${S.replay.actIdx.length}</b> plays chosen`);
+  $("#mMeta").innerHTML = meta.join("; ");
+  if (!m.has_video && S.view !== "map") setView("map", false);
+  else if (m.has_video && S.view === "map" && !store.get("viewPinned", false)) setView("both", false);
+  renderList();
+  history.replaceState(null, "", "#match=" + encodeURIComponent(id));
+  seekIdx(0);
+  if (m.has_video) pollVideo(id);
+}
+async function pollVideo(id) {
+  for (let i = 0; i < 600 && S.replay.match && S.replay.match.id === id; i++) {
+    try {
+      const st = await (await fetch("/api/match/video?id=" + encodeURIComponent(id))).json();
+      if (!S.replay.img) requestReplayFrame();
+      if (st.done) { requestReplayFrame(); return; }
+    } catch (e) { return; }
+    await new Promise((r) => setTimeout(r, 700));
+  }
+}
+function seekIdx(i) {
+  const m = S.replay.match; if (!m || !m.timeline.length) return;
+  i = Math.max(0, Math.min(m.timeline.length - 1, i));
+  S.replay.idx = i; S.replay.t = m.timeline[i].t_ms; S.replay.current = { ...m.timeline[i], mode: "replay" };
+  requestReplayFrame(); scheduleDraw();
+}
+function seekT(t) {
+  const times = S.replay.times; if (!times || !times.length) return;
+  let lo = 0, hi = times.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (times[mid] <= t) lo = mid; else hi = mid - 1; }
+  S.replay.t = t;
+  if (lo !== S.replay.idx) { S.replay.idx = lo; S.replay.current = { ...S.replay.match.timeline[lo], mode: "replay" }; scheduleDraw(); }
+  else drawTape();
+  requestReplayFrame();
+}
+async function requestReplayFrame() {
+  const m = S.replay.match; if (!m || !m.has_video) return;
+  S.replay.wantT = S.replay.t;
+  if (S.replay.fetching) return;
+  S.replay.fetching = true;
+  while (S.replay.wantT != null) {
+    const t = S.replay.wantT; S.replay.wantT = null;
+    try {
+      const r = await fetch(`/api/match/frame.jpg?id=${encodeURIComponent(m.id)}&t=${Math.round(t)}`);
+      if (r.ok) { S.replay.img = await createImageBitmap(await r.blob()); S.replay.imgT = Number(r.headers.get("X-Frame-T")); scheduleDraw(); }
+    } catch (e) { break; }
+  }
+  S.replay.fetching = false;
+}
+function step(d) { stop(); seekIdx(S.replay.idx + d); }
+function stepAction(d) {
+  stop();
+  const acts = S.replay.actIdx || [], i = S.replay.idx;
+  const target = d > 0 ? acts.find((a) => a > i) : [...acts].reverse().find((a) => a < i);
+  if (target != null) seekIdx(target);
+}
+let lastFrameTs = 0;
+function play() {
+  const m = S.replay.match; if (!m) return;
+  if (S.replay.idx >= m.timeline.length - 1) seekIdx(0);
+  S.replay.playing = true; $("#play").textContent = "Pause"; lastFrameTs = performance.now();
+  requestAnimationFrame(tick);
+}
+function stop() { S.replay.playing = false; $("#play").textContent = "Play"; }
+function tick(ts) {
+  if (!S.replay.playing) return;
+  const m = S.replay.match, dt = ts - lastFrameTs; lastFrameTs = ts;
+  const end = m.timeline[m.timeline.length - 1].t_ms;
+  const t = Math.min(end, S.replay.t + dt * S.replay.speed);
+  seekT(t);
+  if (t >= end) { stop(); return; }
+  requestAnimationFrame(tick);
+}
+
+// ---------- the elixir tape ----------
+function drawTape() {
+  const cv = $("#tapeCanvas"), wrap = cv.parentElement, dpr = window.devicePixelRatio || 1;
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  cv.width = w * dpr; cv.height = h * dpr; const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const m = S.replay.match;
+  if (!m || !m.timeline.length) { ctx.fillStyle = C.ink3; ctx.font = "13px " + css("--body"); ctx.fillText("Open a match to see its elixir over time.", 4, h / 2); return; }
+  const tl = m.timeline, end = Math.max(tl[tl.length - 1].t_ms, ((m.summary && m.summary.duration_s) || 0) * 1000, 1);
+  const top = 14, bot = h - 30, eh = bot - top, axis = h - 13;
+  const X = (t) => (t / end) * w, Y = (e) => bot - (Math.max(0, Math.min(10, e)) / 10) * eh;
+  // phase shading: double elixir from 2:00, overtime from 3:00
+  ctx.fillStyle = "rgba(214,92,242,.07)"; if (end > 120000) ctx.fillRect(X(120000), top, X(Math.min(end, 180000)) - X(120000), eh);
+  ctx.fillStyle = "rgba(255,92,105,.07)"; if (end > 180000) ctx.fillRect(X(180000), top, w - X(180000), eh);
+  ctx.strokeStyle = "rgba(167,174,208,.12)"; ctx.lineWidth = 1;
+  for (const e of [0, 5, 10]) { ctx.beginPath(); ctx.moveTo(0, Y(e)); ctx.lineTo(w, Y(e)); ctx.stroke(); }
+  ctx.fillStyle = C.ink3; ctx.font = "11px " + css("--body");
+  for (let s = 30; s * 1000 < end; s += 30) { const x = X(s * 1000); ctx.fillRect(x, axis, 1, 5); ctx.fillText(fmtT(s * 1000, false), x + 3, h - 1); }
+  // opponent interval band
+  ctx.fillStyle = "rgba(255,92,105,.28)"; ctx.beginPath();
+  tl.forEach((s, i) => { const x = X(s.t_ms), y = Y(s.elixir.opp[1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  for (let i = tl.length - 1; i >= 0; i--) ctx.lineTo(X(tl[i].t_ms), Y(tl[i].elixir.opp[0]));
+  ctx.closePath(); ctx.fill();
+  // my elixir
+  ctx.strokeStyle = C.elixir; ctx.lineWidth = 2; ctx.beginPath();
+  tl.forEach((s, i) => { const x = X(s.t_ms), y = Y(s.elixir.me); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.stroke();
+  // events
+  for (const e of m.events || []) {
+    const x = X(e.t_ms || 0);
+    if (e.kind === "my_play") { ctx.fillStyle = C.blue; ctx.fillRect(x - 1, 0, 2, 10); }
+    else if (e.kind === "opp_spawn_play") { ctx.fillStyle = C.red; ctx.fillRect(x - 1, bot + 3, 2, 10); }
+    else if (e.kind === "tower_destroyed") {
+      ctx.fillStyle = C.gold; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x + 6, top + 7); ctx.lineTo(x, top + 14); ctx.lineTo(x - 6, top + 7); ctx.closePath(); ctx.fill();
+    }
+  }
+  const px = X(S.replay.t);
+  ctx.fillStyle = C.ink; ctx.fillRect(px - 1, 0, 2, axis);
+  $("#tRead").textContent = `${fmtT(S.replay.t)} of ${fmtT(end, false)}`;
+  $("#idxRead").textContent = `state ${S.replay.idx + 1} of ${tl.length}`;
+}
+function tapeSeek(ev) {
+  const m = S.replay.match; if (!m) return;
+  const rect = $("#tape").getBoundingClientRect(), tl = m.timeline;
+  const end = Math.max(tl[tl.length - 1].t_ms, ((m.summary && m.summary.duration_s) || 0) * 1000, 1);
+  const t = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width)) * end;
+  stop(); seekT(t);
+}
+
+// ---------- view plumbing ----------
+let drawQueued = false;
+function scheduleDraw() {
+  if (drawQueued) return;
+  drawQueued = true;
+  requestAnimationFrame(() => {
+    drawQueued = false;
+    if (S.view !== "map") drawPhone();
+    if (S.view !== "phone") drawMap();
+    renderPanels();
+    if (S.mode === "replay") drawTape();
+  });
+}
+function setView(v, pin = true) {
+  S.view = v;
+  if (pin) { store.set("view", v); store.set("viewPinned", true); }
+  document.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === v)));
+  $("#phonePane").hidden = v === "map"; $("#mapPane").hidden = v === "phone";
+  scheduleDraw();
+}
+function setMode(mode) {
+  S.mode = mode;
+  document.body.classList.toggle("replay", mode === "replay");
+  document.querySelectorAll("[data-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+  $("#openDrawer").hidden = mode !== "replay";
+  if (mode === "replay") {
+    if (!S.replay.list.length) loadList();
+    if (!S.replay.match) openDrawer();
+    $("#headline").innerHTML = `<span>${esc(S.info.title)}</span>`;
+  } else {
+    stop();
+  }
+  scheduleDraw();
+}
+function openDrawer() { $("#drawer").classList.add("open"); $("#scrim").classList.add("open"); $("#search").focus(); }
+function closeDrawer() {
+  $("#drawer").classList.remove("open"); $("#scrim").classList.remove("open");
+  if (document.activeElement && document.activeElement.closest("#drawer")) document.activeElement.blur();
+}
+
+function buildToggles() {
+  const saved = store.get("overlays", {});
+  $("#toggles").innerHTML = OVERLAYS.map(([k, label, def]) => {
+    S.overlay[k] = saved[k] ?? def;
+    return `<label><input type="checkbox" data-ov="${k}" ${S.overlay[k] ? "checked" : ""}>${label}</label>`;
+  }).join("");
+  $("#toggles").addEventListener("change", (e) => {
+    const k = e.target.dataset.ov; if (!k) return;
+    S.overlay[k] = e.target.checked; store.set("overlays", S.overlay); scheduleDraw();
+  });
+}
+
+async function init() {
+  for (const [k, v] of Object.entries({ blue: "--blue", red: "--red", gold: "--gold", elixir: "--elixir", ink: "--ink", ink2: "--ink-2", ink3: "--ink-3", grass: "--grass", grass2: "--grass-2", river: "--river", bridge: "--bridge" })) C[k] = css(v);
+  buildToggles();
+  document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+  document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  $("#openDrawer").onclick = openDrawer; $("#drawerBtn").onclick = openDrawer; $("#closeDrawer").onclick = closeDrawer; $("#scrim").onclick = closeDrawer;
+  $("#search").addEventListener("input", renderList);
+  $("#mlist").addEventListener("click", (e) => { const b = e.target.closest(".mrow"); if (b) openMatch(b.dataset.id); });
+  $("#play").onclick = () => (S.replay.playing ? stop() : play());
+  $("#speed").onchange = (e) => { S.replay.speed = Number(e.target.value); };
+  $("#prev").onclick = () => step(-1); $("#next").onclick = () => step(1);
+  $("#prevAct").onclick = () => stepAction(-1); $("#nextAct").onclick = () => stepAction(1);
+  let dragging = false;
+  $("#tape").addEventListener("pointerdown", (e) => { dragging = true; $("#tape").setPointerCapture(e.pointerId); tapeSeek(e); });
+  $("#tape").addEventListener("pointermove", (e) => dragging && tapeSeek(e));
+  $("#tape").addEventListener("pointerup", () => { dragging = false; });
+  window.addEventListener("resize", scheduleDraw);
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeDrawer();
+    if (S.mode !== "replay" || e.target.closest("input, select")) return;
+    if (e.key === " ") { e.preventDefault(); S.replay.playing ? stop() : play(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); e.shiftKey ? stepAction(1) : step(1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); e.shiftKey ? stepAction(-1) : step(-1); }
+    else if (e.key === "Home") seekIdx(0);
+    else if (e.key === "End" && S.replay.match) seekIdx(S.replay.match.timeline.length - 1);
+  });
+
+  S.info = await (await fetch("/api/info")).json();
+  document.title = S.info.title;
+  if (S.info.live && S.info.replay) $("#modeTabs").hidden = false;
+  setView(store.get("view", "both"), false);
+  if (S.info.live) await startLive();
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const initial = hash.get("match") || S.info.initial_match;
+  if (S.info.live && !initial) setMode("live");
+  else {
+    setMode("replay");
+    if (initial) { await loadList(); openMatch(initial); }
+  }
+}
+init().catch((e) => { renderHeadlineStatus("Couldn't reach the harness: " + e.message, "bad"); });
+</script>
+</body>
+</html>

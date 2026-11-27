@@ -25,7 +25,8 @@ class BrainLoop:
                  mapper: ActionMapper, executor: Executor, *, intents: IntentBus | None = None,
                  logger: DecisionLogger | None = None, active: Callable[[Any], bool] | None = None,
                  frame_log_every: int = 1, decision_log_every: int = 5,
-                 on_timing: Callable[[dict], None] | None = None) -> None:
+                 on_timing: Callable[[dict], None] | None = None,
+                 on_step: Callable[[Any, Any, Any, dict], None] | None = None) -> None:
         self.slot = slot
         self.perception = perception
         self.policy = policy
@@ -37,6 +38,8 @@ class BrainLoop:
         self.frame_log_every = frame_log_every
         self.decision_log_every = decision_log_every  # also always logged when an action is chosen
         self.on_timing = on_timing
+        # Telemetry tap (e.g. the Studio UI): receives references only, must return in O(1).
+        self.on_step = on_step
         self.stats = LatencyStats()
         self._running = False
         self._thread: threading.Thread | None = None
@@ -70,6 +73,11 @@ class BrainLoop:
                 acted = getattr(decision, "chosen", None) is not None
                 if acted or self.frames % self.decision_log_every == 0:
                     self.logger.log("decisions", {"seq": self.frames, **decision.to_record(), "lat": durations})
+        if self.on_step is not None:
+            try:
+                self.on_step(frame, obs, decision, durations)
+            except Exception:  # an observer must never stop the bot
+                log.exception("on_step observer failed")
         return decision
 
     def _loop(self) -> None:
