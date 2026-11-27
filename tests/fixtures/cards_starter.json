@@ -84,7 +84,10 @@
       "range_tiles": 5.0,
       "hitpoints": 119,
       "targets_air": true,
-      "units": 2
+      "units": 2,
+      "unit_classes": [
+        "archer"
+      ]
     }
   }
 }

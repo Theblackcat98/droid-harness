@@ -26,7 +26,7 @@ from .domains.clash_royale.cards import CardDB
 from .domains.clash_royale.menus import BATTLE_SCREENS, DEFAULT_FLOWS, MenuNavigator
 from .domains.clash_royale.perception.cards import CardMatcher
 from .domains.clash_royale.perception.classes import missing_unit_classes
-from .domains.clash_royale.perception.detector import OnnxDetector
+from .domains.clash_royale.perception.detector import load_detector
 from .domains.clash_royale.perception.digits import DigitReader
 from .domains.clash_royale.perception.grid import Layout, Roi, TileMapper
 from .domains.clash_royale.perception.pipeline import CRPerception
@@ -121,7 +121,7 @@ class BotRunner:
         if cfg.detector:
             # Names come from the ONNX metadata; --classes is a cross-check that refuses to
             # load on mismatch (a shifted list silently decodes every box as the wrong card).
-            detector = OnnxDetector(cfg.detector, cfg.classes, conf=cfg.det_conf, iou=cfg.det_iou)
+            detector = load_detector(cfg.detector, cfg.classes, conf=cfg.det_conf, iou=cfg.det_iou)
             detector.warmup()
             log.info("detector on %s, input %s, %s head, %d classes", detector.provider, detector.imgsz,
                      detector.mode, len(detector.class_names))

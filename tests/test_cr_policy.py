@@ -99,6 +99,33 @@ def test_tier0_leak_guard_needs_duration(arena, cards, strategy):
     assert d.chosen.rule_id == "t0.leak_guard" and d.chosen.card == "skeletons"
 
 
+def test_tier0_leak_guard_prefers_troops_and_aims_spells_at_enemy_tower(arena, cards, strategy):
+    _, p, _ = strategy
+    p.tier0.leak_card_preference = ["fireball", "skeletons"]
+    pol = CRPolicy(cards, arena, p)
+    pol.tier0.check(state(t_ms=40_000, my_elixir=10.0, opp_elixir=(9, 9)), p)
+    d = pol.decide(state(t_ms=40_900, my_elixir=10.0, opp_elixir=(9, 9)))
+    assert d.chosen.rule_id == "t0.leak_guard" and d.chosen.card == "skeletons"
+    # When only spells are affordable, aim at weakest enemy tower, never behind our own King Tower.
+    pol2 = CRPolicy(cards, arena, p)
+    pol2.tier0.check(state(t_ms=40_000, my_elixir=10.0, hand=["fireball", None, None, None],
+                           towers=dict(TOWERS, opp_left=900)), p)
+    d2 = pol2.decide(state(t_ms=40_900, my_elixir=10.0, hand=["fireball", None, None, None],
+                           towers=dict(TOWERS, opp_left=900)))
+    assert d2.chosen.rule_id == "t0.leak_guard" and d2.chosen.card == "fireball"
+    assert d2.chosen.tile == arena.towers["opp_left"]
+
+
+def test_generic_other_threat_has_fallback_speed_for_eta_and_lead(arena, cards, strategy):
+    _, p, _ = strategy
+    pl = Placement(arena, cards, p.placement, exec_latency_s=0.05)
+    u = Unit(1, "other_ground", "opp", (3.5, 22.0), vel=(0.0, 0.0))
+    th = state(units=[u]).threats(arena, cards)[0]
+    assert th.eta_to_tower_s < 20.0
+    lead = pl.lead_target(cards["knight"], u, state(units=[u]), 60_000)
+    assert lead[1] < 22.0
+
+
 def test_posture_classification(arena, cards, strategy):
     _, p, _ = strategy
     pol = CRPolicy(cards, arena, p)

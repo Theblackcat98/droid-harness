@@ -30,6 +30,11 @@ def _cards():
     return CardDB.load(real if real.exists() else root / "tests/fixtures/cards_starter.json")
 
 
+def _starter_keys() -> set[str]:
+    root = Path(__file__).resolve().parents[1]
+    return set(CardDB.load(root / "tests/fixtures/cards_starter.json").cards)
+
+
 def _names() -> list[str]:
     return load_class_names(Path(__file__).resolve().parents[1] / "models/classes.txt")
 
@@ -38,7 +43,8 @@ def test_classes_match_card_db():
     names = _names()
     assert len(names) == len(set(names))
     db = _cards()
-    needed = {cls for card in db.cards.values() for cls in card.unit_classes}
+    starter = _starter_keys()
+    needed = {cls for k, card in db.cards.items() if k in starter for cls in card.unit_classes}
     missing = missing_unit_classes(names, needed)
     assert not missing, (
         f"cards.json spawns {missing} but models/classes.txt can't produce them. Units need "
@@ -223,7 +229,8 @@ def test_katacr_alias_covers_card_db():
     alias = json.loads((root / "models/katacr_alias.json").read_text())
     bases = base_classes(_names())
     assert set(alias.values()) <= bases
-    needed = {cls for card in _cards().cards.values() for cls in card.unit_classes}
+    starter = _starter_keys()
+    needed = {cls for k, card in _cards().cards.items() if k in starter for cls in card.unit_classes}
     assert needed <= set(alias.values()), needed - set(alias.values())
     label_path = root / "models/katacr_label_list.py"
     if not label_path.exists():

@@ -63,7 +63,8 @@ class CRSession:
                  policy: CRPolicy, mapper: CRActionMapper, recorder=None,
                  meta_factory: Callable[[], MatchMeta], on_match_end: Callable[[dict], None] | None = None,
                  screen_every: int = 3, result_stable_frames: int = 3,
-                 result_settle_s: float = 1.2) -> None:
+                 result_settle_s: float = 1.2, unknown_battle_timeout_s: float = 25.0,
+                 left_battle_timeout_s: float = 5.0) -> None:
         self.screens, self.menus = screens, menus
         self.perception, self.policy, self.mapper = perception, policy, mapper
         self.recorder = recorder
@@ -72,6 +73,8 @@ class CRSession:
         self.screen_every = screen_every
         self.result_stable_frames = result_stable_frames
         self.result_settle_s = result_settle_s
+        self.unknown_battle_timeout_s = unknown_battle_timeout_s
+        self.left_battle_timeout_s = left_battle_timeout_s
         self.screen = "UNKNOWN"
         self.screen_since = time.monotonic()
         self.match: MatchMeta | None = None
@@ -81,6 +84,7 @@ class CRSession:
         self._candidate = "UNKNOWN"
         self._candidate_n = 0
         self._post_result = False
+        self._unknown_since: float | None = None
         # Result settling: the crown-reveal animation passes through intermediate
         # counts, so a result only ends the match after the full
         # (outcome, opp_crowns, my_crowns) triple repeats.
@@ -94,12 +98,13 @@ class CRSession:
         if self._n % self.screen_every == 0 or self.screen not in BATTLE_SCREENS:
             name, _ = self.screens.classify(frame.img)
             # The top-only generic signature cannot tell a battle frame from a result
-            # banner (the opponent name/HP are in the same place).  In or after a match,
-            # always verify the result banners/crowns in the middle of the screen.
-            if (self.screen in RESULT_SCREENS or self.match is not None) and (
-                    name in BATTLE_SCREENS or name in RESULT_SCREENS):
+            # banner (the opponent name/HP are in the same place), and on ladder the
+            # result screen hashes UNKNOWN (different player name, no elixir bar).
+            # In or after a match, always verify the result banners/crowns directly.
+            if self.screen in RESULT_SCREENS or self.match is not None:
                 actual, opp_c, my_c = read_result_detail(frame.img)
                 if actual is not None:
+                    self._unknown_since = None
                     key = (actual, opp_c, my_c)
                     now = time.monotonic()
                     if key != self._pending_key:
@@ -117,22 +122,42 @@ class CRSession:
                         name = self.screen  # still settling: don't leave the battle yet
                 else:
                     self._pending_key, self._pending_n = None, 0
-                    if self.match is not None:
+                    if self.match is not None and name in RESULT_SCREENS:
                         # Mid-match the classifier's RESULT label is untrusted on its
                         # own (the top HUD dhash confuses win/loss banners and fires
                         # during the victory animation). Stay in battle until the
                         # banners/crowns verify and settle.
                         name = self.screen
-                    elif self.screen in RESULT_SCREENS:
+                    elif self.screen in RESULT_SCREENS and (name in BATTLE_SCREENS or name in RESULT_SCREENS):
                         name = self.screen  # victory animation / still-post-match: never re-enter battle
+            elif name == "UNKNOWN":
+                actual, _, _ = read_result_detail(frame.img)
+                if actual is not None:
+                    name = f"RESULT_{actual.upper()}"
             if self._post_result and name in BATTLE_SCREENS:
                 name = self.screen  # wait for HOME/MENU/TRAINING_CONFIRM before a new match
             if name in {"HOME", "MENU", "TRAINING_CONFIRM"}:
                 self._post_result = False
-            # Inside a battle, transient overlays (emotes, effects) shouldn't end the match.
-            # Note: result stability is already enforced by the settling triple above
-            # (stable frames + settle time), so the generic debounce stays at 1 here.
-            if not (self.screen in BATTLE_SCREENS and name == "UNKNOWN"):
+                if self.screen not in BATTLE_SCREENS:
+                    self._unknown_since = None
+            # Inside a battle, transient overlays or intro flashes shouldn't leave the battle
+            # (or orphan the match directory): stay in battle whenever elixir is visible or
+            # until the non-battle screen persists past timeout.
+            if self.screen in BATTLE_SCREENS and name not in BATTLE_SCREENS and name not in RESULT_SCREENS:
+                if self.screens.battle_evidence(frame.img) >= self.screens.battle_min_frac:
+                    self._unknown_since = None
+                else:
+                    now = time.monotonic()
+                    self._unknown_since = self._unknown_since or now
+                    timeout = self.unknown_battle_timeout_s if name == "UNKNOWN" else self.left_battle_timeout_s
+                    if now - self._unknown_since >= timeout:
+                        reason = "battle_lost_screen" if name == "UNKNOWN" else f"left_battle:{name}"
+                        self.abort_match(reason)
+                        self._set_screen(name, frame)
+                        self._unknown_since = None
+            else:
+                if name in BATTLE_SCREENS:
+                    self._unknown_since = None
                 if name == self._candidate:
                     self._candidate_n += 1
                 else:
@@ -143,6 +168,8 @@ class CRSession:
         if self.screen in BATTLE_SCREENS:
             state = self.perception.process(frame)
             self.last_state = state
+            if any(state.hand_fresh):
+                self._unknown_since = None
             return Observation(self.screen, frame, state)
         return Observation(self.screen, frame)
 
@@ -154,6 +181,8 @@ class CRSession:
             self._start_match(frame)
         elif name in RESULT_SCREENS and self.match is not None:
             self._end_match(RESULT_SCREENS[name], status="completed")
+        elif prev in BATTLE_SCREENS and name not in BATTLE_SCREENS and name not in RESULT_SCREENS and self.match is not None:
+            self.abort_match(f"left_battle:{name}")
 
     def screen_age_s(self) -> tuple[str, float]:
         return self.screen, time.monotonic() - self.screen_since
@@ -167,6 +196,7 @@ class CRSession:
         self.match_latency = LatencyStats()
         self._pending_key, self._pending_n = None, 0
         self._result_crowns = None
+        self._unknown_since = None
         if self.recorder is not None:
             self.recorder.start_match(self.match.match_id, self.match.__dict__)
 

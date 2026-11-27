@@ -85,6 +85,32 @@ def test_spawn_grouper_merges_multi_unit_cards(cards):
     assert len(plays) == 1 and plays[0].card == "skeletons"
     plays += g.add(SpawnEvent(9, "skeleton", "opp", (5, 20), 1000 + 2000))
     assert len(plays) == 2
+    # Generic catch-all units group together without polluting deck_seen
+    assert cards.unit_value("other_ground") == 2.0 and cards.unit_value("other_air") == 2.0
+    g_plays = []
+    for i in range(3):
+        g_plays += g.add(SpawnEvent(20 + i, "other_ground", "opp", (4 + 0.2 * i, 22), 5000 + 50 * i))
+    assert len(g_plays) == 1 and g_plays[0].card == "other_ground"
+
+
+def test_pipeline_generic_spawn_updates_opp_elixir_without_deck_pollution(scene, cards, arena):
+    from droid_harness.domains.clash_royale.perception.detector import Detection
+
+    class GenericDet:
+        def __init__(self):
+            self.n = 0
+
+        def __call__(self, img):
+            self.n += 1
+            h, w = img.shape[:2]
+            return [Detection("other_ground_opp", 0.9, (w * 0.2, h * 0.3, w * 0.25, h * 0.4))]
+
+    perc = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=cards, arena=arena,
+                        matcher=build_matcher_from_scene(scene), detector=GenericDet())
+    s = perc.process(frame(scene.render(), 1, 0))
+    s = perc.process(frame(scene.render(), 2, 100_000))
+    assert s.opp_deck_seen == []  # never adds fake "other_ground" card to cycle tracker
+    assert s.opp_elixir[0] < s.opp_elixir[1] and s.opp_elixir[1] < 4.0  # deducted (2.0, 5.0) interval
 
 
 def test_screen_classifier(scene):
@@ -176,3 +202,94 @@ def test_phone_a_result_reader():
     outcome, opp, my = read_result_detail(cv2.imread(str(root / "RESULT_LOSS__0.png")))
     assert outcome == "loss" and opp > my
     assert read_result_detail(cv2.imread(str(root / "IN_BATTLE__0.png")))[0] is None
+
+
+def test_empty_slot_early_spend_and_no_double_subtract(scene, cards, arena):
+    """When a card is played on a real client, the slot goes empty (~1.5s) while HUD elixir
+    drops by cost, then the new card slides in. Perception must deduct once immediately and
+    never double-subtract when the refill appears (or if HUD already snapped)."""
+    plays = []
+    perc = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=cards, arena=arena,
+                        matcher=build_matcher_from_scene(scene), digits=DigitReader.from_font(scale=0.5, thickness=1),
+                        detector=SceneDetector(scene), on_my_play=lambda c, t: plays.append((c, t)))
+    scene.elixir = 6.0
+    s0 = perc.process(frame(scene.render(), 1, 0))
+    played = s0.hand[1]
+    cost = cards.cost(played)
+
+    # Phase 1: slot 1 goes empty/unreadable (solid dark fill) while HUD drops by cost.
+    scene.play_card(1, (9, 10))  # drops scene.elixir by cost AND replaces scene.hand[1]
+    empty_img = scene.render()
+    x0, y0, x1, y1 = scene.layout.hand[1].to_px(empty_img.shape)
+    empty_img[y0:y1, x0:x1] = (20, 20, 20)
+    s1 = perc.process(frame(empty_img, 2, 200_000))
+    assert plays == [(played, 200)]
+    assert s1.hand_fresh[1] is False
+    assert s1.my_elixir == pytest.approx(6.0 - cost + 200 / 2800, abs=0.25)
+    assert "hand_unreadable" not in s1.warnings
+    assert "elixir_discrepancy" not in s1.warnings
+
+    # Stay empty for >1s, then refill: must NOT double-subtract when the new card slides in.
+    s2 = perc.process(frame(empty_img, 3, 1_500_000))
+    assert "hand_unreadable" not in s2.warnings
+    refill_img = scene.render()
+    s3 = perc.process(frame(refill_img, 4, 1_600_000))
+    assert len(plays) == 1
+    assert s3.hand_fresh[1] is True and s3.hand[1] == scene.hand[1]
+    assert s3.my_elixir == pytest.approx(scene.elixir + 1600 / 2800 - 0.0, abs=0.35)
+
+    # Case 2: if ElixirModel already snapped to HUD before refill is seen, _my_play does not
+    # subtract a second time when old != cur is finally observed.
+    plays2 = []
+    perc2 = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=cards, arena=arena,
+                         matcher=build_matcher_from_scene(scene), on_my_play=lambda c, t: plays2.append(c))
+    perc2.process(frame(scene.render(), 1, 0))
+    old_card = perc2.hand[0]
+    old_cost = cards.cost(old_card)
+    before = perc2.elixir.value
+    perc2.elixir.value = max(0.0, before - old_cost)  # simulate prior snap to HUD
+    perc2._my_play(old_card, 0, 500, hud=perc2.elixir.value)
+    assert perc2.elixir.value == pytest.approx(max(0.0, before - old_cost), abs=1e-6)
+    assert plays2 == [old_card]
+
+
+def test_intro_zero_elixir_and_tower_skin_suppression(scene, cards, arena):
+    """Regressions from live ladder losses (128b426f043d / f4662249910c):
+    1. Intro frame_i == 0 with hud == 0.0 must NOT zero opp_elixir; syncing to 7.0 at t=0.5s
+       must not trigger elixir_discrepancy.
+    2. Low-conf generic other_ground_opp with no HP bar on an alive tower footprint is ignored,
+       while high-conf or specific-class units near a tower are kept.
+    """
+    from droid_harness.domains.clash_royale.perception.detector import Detection
+
+    class TowerHallucDet:
+        def __call__(self, img):
+            # Project opponent left princess tower (3.5, 25.5) and a knight near it to crop px
+            x0, y0, _, _ = scene.layout.arena.to_px(img.shape)
+            tx, ty = scene.tiles.tile_to_px((4.2, 24.5), img.shape)
+            kx, ky = scene.tiles.tile_to_px((5.0, 24.5), img.shape)
+            return [
+                # Low-conf generic tower skin decoration (no HP bar -> suppressed)
+                Detection("other_ground_opp", 0.42, (tx - x0 - 10, ty - y0 - 15, tx - x0 + 10, ty - y0 + 15)),
+                # High-conf real generic unit near tower (kept)
+                Detection("other_ground_opp", 0.75, (tx - x0 - 10, ty - y0 - 15, tx - x0 + 10, ty - y0 + 15)),
+                # Specific class near tower (kept even at moderate conf)
+                Detection("knight_opp", 0.48, (kx - x0 - 10, ky - y0 - 15, kx - x0 + 10, ky - y0 + 15)),
+            ]
+
+    scene.elixir = 0.0
+    perc0 = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=cards, arena=arena,
+                         matcher=build_matcher_from_scene(scene))
+    s0 = perc0.process(frame(scene.render(), 1, 0))
+    assert s0.opp_elixir[0] >= 5.0
+    scene.elixir = 7.0
+    s1 = perc0.process(frame(scene.render(), 2, 500_000))
+    assert s1.opp_elixir[0] >= 7.0 and s1.my_elixir == pytest.approx(7.0, abs=0.2)
+    assert "elixir_discrepancy" not in s1.warnings
+
+    perc = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=cards, arena=arena,
+                        matcher=build_matcher_from_scene(scene), detector=TowerHallucDet())
+    perc.process(frame(scene.render(), 1, 0))
+    s2 = perc.process(frame(scene.render(), 2, 100_000))
+    # Low-conf tower hallucination suppressed; 1 high-conf other_ground + 1 knight kept -> 2 units
+    assert sorted(u.kind for u in s2.units) == ["knight", "other_ground"]

@@ -159,11 +159,12 @@ def cmd_dataset(a) -> None:
 
 
 def cmd_eval_detector(a) -> None:
-    from .domains.clash_royale.perception.detector import OnnxDetector
+    from .domains.clash_royale.perception.detector import load_detector
     from .learn.evaluate import evaluate, threat_gate
 
-    det = OnnxDetector(a.model, a.classes, conf=a.conf, iou=a.iou, providers=["CPUExecutionProvider"]
-                       if a.cpu else None)
+    det = load_detector(a.model, a.classes, conf=a.conf, iou=a.iou,
+                        providers=["CPUExecutionProvider"] if a.cpu else None,
+                        device="cpu" if a.cpu else None)
     report = evaluate(det, a.data, a.split, a.match_iou, a.limit or None)
     ok, failing = threat_gate(report, a.min_threat_recall, a.min_support)
     report["gate"] = {"pass": ok, "failing": failing, "min_threat_recall": a.min_threat_recall}
@@ -180,12 +181,12 @@ def cmd_eval_detector(a) -> None:
 
 def cmd_frames(a) -> None:
     from .domains.clash_royale.perception.classes import load_class_names
-    from .domains.clash_royale.perception.detector import OnnxDetector
+    from .domains.clash_royale.perception.detector import load_detector
     from .domains.clash_royale.perception.grid import Layout
     from .learn.datasets import export_frames
 
     names = load_class_names(a.classes)
-    det = OnnxDetector(a.detector, names) if a.detector else None
+    det = load_detector(a.detector, names) if a.detector else None
     dirs = sorted(d for d in Path(a.data).iterdir() if (d / "stream.h264").exists())
     data, counts = export_frames(dirs, a.out, Layout.load(a.layout), names, every_ms=a.every_ms,
                                  val_frac=a.val_frac, detector=det)
@@ -346,7 +347,7 @@ def cmd_replay(a) -> None:
     from .domains.clash_royale.arena import Arena
     from .domains.clash_royale.cards import CardDB
     from .domains.clash_royale.perception.cards import CardMatcher
-    from .domains.clash_royale.perception.detector import OnnxDetector
+    from .domains.clash_royale.perception.detector import load_detector
     from .domains.clash_royale.perception.grid import Layout, TileMapper
     from .domains.clash_royale.perception.pipeline import CRPerception
     from .domains.clash_royale.perception.towers import TowerStateReader
@@ -355,7 +356,7 @@ def cmd_replay(a) -> None:
     cards = CardDB.load(a.cards)
     detector = None
     if a.detector:
-        detector = OnnxDetector(a.detector, a.classes, conf=a.det_conf, iou=a.det_iou)
+        detector = load_detector(a.detector, a.classes, conf=a.det_conf, iou=a.det_iou)
         detector.warmup(2)
 
     def make():

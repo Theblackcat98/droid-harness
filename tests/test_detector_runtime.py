@@ -16,7 +16,9 @@ from droid_harness.domains.clash_royale.perception.detector import (
     AsyncDetector,
     Detection,
     OnnxDetector,
+    TorchDetector,
     letterbox,
+    load_detector,
     names_from_metadata,
     output_mode,
 )
@@ -285,3 +287,47 @@ def test_tower_state_reader_confirms_rubble(starter, arena):
     perc._read_towers(img, [])
     perc._read_towers(img, [])
     assert perc.towers == {"opp_left": 0}
+
+
+def test_torch_detector_and_load_detector(tmp_path, monkeypatch):
+    import droid_harness.domains.clash_royale.perception.detector as det_mod
+
+    class _Boxes:
+        xyxy = np.array([[10.0, 20.0, 30.0, 50.0]], dtype=np.float32)
+        conf = np.array([0.85], dtype=np.float32)
+        cls = np.array([1], dtype=np.float32)
+
+        def __len__(self):
+            return 1
+
+    class _Res:
+        boxes = _Boxes()
+
+    class _FakeYolo:
+        def __init__(self, names):
+            self.names = names
+            self.calls = []
+
+        def predict(self, img, **kw):
+            self.calls.append((img.shape, kw))
+            return [_Res()]
+
+    fake = _FakeYolo({0: "knight_me", 1: "knight_opp"})
+    monkeypatch.setattr(det_mod, "_load_yolo", lambda _p: fake)
+
+    pt = tmp_path / "m.pt"
+    det = load_detector(pt, ["knight_me", "knight_opp"], imgsz=(640, 384), device="cpu")
+    assert isinstance(det, TorchDetector)
+    assert det.provider == "PyTorch(cpu)" and det.half is False
+    out = det(np.zeros((100, 60, 3), np.uint8))
+    assert out == [Detection("knight_opp", pytest.approx(0.85), (10.0, 20.0, 30.0, 50.0))]
+    det.warmup(1)
+    assert len(fake.calls) == 2
+
+    with pytest.raises(ValueError, match="disagrees"):
+        load_detector(pt, ["knight_opp", "knight_me"], device="cpu")
+
+    # .onnx dispatches to OnnxDetector
+    e2e = np.array([[[2, 4, 12, 24, 0.9, 0]]])
+    onnx_path = _onnx(tmp_path / "d.onnx", e2e, names=["knight_me"])
+    assert isinstance(load_detector(onnx_path, providers=["CPUExecutionProvider"]), OnnxDetector)

@@ -117,12 +117,18 @@ def segment(tl: MatchTimeline, arena: Arena, cards: CardDB, *, quiet_ms: int = 2
     return out
 
 
+def _opp_cost(card: str, cards: CardDB) -> float:
+    if card in cards:
+        return float(cards.cost(card))
+    return 3.5 if card in ("other_ground", "other_air") else 0.0
+
+
 def _score(e: Engagement, tl: MatchTimeline, arena: Arena, cards: CardDB, lam: float) -> None:
     start, end = _at(tl.points, e.t_start - 1), _at(tl.points, e.t_end)
     e.plays = [pl for pl in tl.plays if pl.tile is not None and _lane(arena, pl.tile[0]) == e.lane
                and e.t_start <= pl.t_ms <= e.t_end]
     e.spent_me = sum(cards.cost(pl.card) for pl in e.plays if pl.side == "me" and pl.card in cards)
-    e.spent_opp = sum(cards.cost(pl.card) for pl in e.plays if pl.side == "opp" and pl.card in cards)
+    e.spent_opp = sum(_opp_cost(pl.card, cards) for pl in e.plays if pl.side == "opp")
     e.board_me_start = board_value(start, "me", e.lane, arena, cards)
     e.board_me_end = board_value(end, "me", e.lane, arena, cards)
     e.board_opp_start = board_value(start, "opp", e.lane, arena, cards)

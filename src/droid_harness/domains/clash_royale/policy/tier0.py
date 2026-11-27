@@ -76,15 +76,24 @@ class Tier0:
         if s.t_ms - self._leak_since_ms < p.tier0.leak_ms:
             return None
         hand = s.affordable_hand(self.cards)
-        pref = [(slot, k) for k in p.tier0.leak_card_preference for slot, kk in hand if kk == k]
+        troops = [(slot, k) for slot, k in hand if not self.cards[k].is_spell]
+        pref = [(slot, k) for k in p.tier0.leak_card_preference for slot, kk in troops if kk == k]
         if pref:
             slot, key = pref[0]
         else:
-            others = [(self.cards.cost(k), slot, k) for slot, k in hand
-                      if not self.cards[k].is_spell and k not in p.win_conditions]
-            if not others:
-                return None
-            _, slot, key = min(others)
+            others = [(self.cards.cost(k), slot, k) for slot, k in troops if k not in p.win_conditions]
+            if others:
+                _, slot, key = min(others)
+            else:
+                spells = [(self.cards.cost(k), slot, k) for slot, k in hand if self.cards[k].is_spell]
+                if not spells:
+                    return None
+                _, slot, key = min(spells)
+        if self.cards[key].is_spell:
+            alive = {k: hp for k, hp in s.towers.items() if k.startswith("opp_") and hp > 0}
+            tower = min(alive, key=alive.get) if alive else "opp_right"
+            return Candidate("t0.leak_guard", key, slot, self.arena.towers[tower], 8.0,
+                             reason=f"elixir {s.my_elixir:.1f} (spell on {tower})")
         lanes = {"left": 0, "right": 0}
         for u in s.enemy_units():
             lanes[self.arena.lane_of(u.tile[0])] += 1

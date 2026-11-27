@@ -35,7 +35,7 @@ class ScreenClassifier:
     battle_label: str = "IN_BATTLE"
     battle_hsv_lo: tuple[int, int, int] = (140, 60, 80)
     battle_hsv_hi: tuple[int, int, int] = (175, 255, 255)
-    battle_min_frac: float = 0.05
+    battle_min_frac: float = 0.12
 
     def signature(self, img: np.ndarray) -> list[int]:
         return [dhash(r.crop(img)) for r in self.regions]
@@ -115,10 +115,13 @@ def read_result_detail(img: np.ndarray) -> tuple[str | None, int, int]:
     final result should require the full triple to repeat before trusting it, since
     the crown-reveal animation passes through intermediate counts.
     """
-    top_pink = _colour_fraction(img, 0.08, 0.24, 0.92, 0.36, (160, 80, 80), (180, 255, 255))
-    top_red = _colour_fraction(img, 0.08, 0.24, 0.92, 0.36, (0, 120, 80), (10, 255, 255))
-    bottom_blue = _colour_fraction(img, 0.08, 0.44, 0.92, 0.56, (95, 80, 60), (130, 255, 255))
-    if max(top_pink, top_red) < 0.30 or bottom_blue < 0.20:
+    tp_l = _colour_fraction(img, 0.08, 0.24, 0.45, 0.36, (160, 80, 80), (180, 255, 255))
+    tp_r = _colour_fraction(img, 0.55, 0.24, 0.92, 0.36, (160, 80, 80), (180, 255, 255))
+    tr_l = _colour_fraction(img, 0.08, 0.24, 0.45, 0.36, (0, 120, 80), (10, 255, 255))
+    tr_r = _colour_fraction(img, 0.55, 0.24, 0.92, 0.36, (0, 120, 80), (10, 255, 255))
+    bb_l = _colour_fraction(img, 0.08, 0.44, 0.45, 0.56, (95, 80, 60), (130, 255, 255))
+    bb_r = _colour_fraction(img, 0.55, 0.44, 0.92, 0.56, (95, 80, 60), (130, 255, 255))
+    if max(tp_l, tr_l) < 0.20 or max(tp_r, tr_r) < 0.20 or bb_l < 0.15 or bb_r < 0.15:
         return None, 0, 0
     top = min(3, _large_gold_components(img, *_CROWN_TOP))
     bottom = min(3, _large_gold_components(img, *_CROWN_BOTTOM))

@@ -14,6 +14,7 @@ running every Nth frame (or on its own thread) still gives the policy current po
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from collections.abc import Callable
 
@@ -26,7 +27,7 @@ from ..elixir import ElixirModel, phase_at
 from ..opponent_model import OpponentModel
 from ..state import GameState, Unit
 from .cards import CardMatcher
-from .classes import flying_of, is_effect, is_tower, split_side
+from .classes import flying_of, is_effect, is_generic, is_tower, split_side
 from .detector import AsyncDetector, Detector
 from .digits import DigitReader, binarize, segment
 from .grid import Layout, TileMapper
@@ -76,6 +77,8 @@ class CRPerception:
         self.grouper = SpawnGrouper(self.cards.card_for_class)
         self.hand: list[str | None] = [None] * 4
         self.hand_fresh: list[bool] = []
+        self._slot_spent: list[bool] = [False] * len(self.layout.hand)
+        self._slot_spent_ms: list[int] = [0] * len(self.layout.hand)
         self.next_card: str | None = None
         self.towers: dict[str, int] = {}
         self._tower_read_ms = -10**9
@@ -105,10 +108,15 @@ class CRPerception:
         warns: list[str] = []
 
         hud = read_elixir(img, self.layout.elixir_bar, self.layout.elixir_hsv_lo, self.layout.elixir_hsv_hi)
-        if self.frame_i == 0 and hud is not None:
+        if self.frame_i == 0 and hud is not None and hud >= 1.0:
             self.elixir.reset(hud, t_s)
             self.opp.elixir.low = self.opp.elixir.high = hud
-        crops = self._read_hand(img, t_ms, warns)  # detects our plays (spend) before fusing the HUD
+        elif t_s <= 3.0 and hud is not None and not self.events and hud > self.elixir.value + 1.0:
+            self.elixir.reset(hud, t_s)
+            self.opp.elixir.low = max(self.opp.elixir.low, hud)
+            self.opp.elixir.high = max(self.opp.elixir.high, hud)
+        self.elixir.advance(t_s)
+        crops = self._read_hand(img, t_ms, warns, hud=hud)  # detects our plays (spend) before fusing the HUD
         self.elixir.observe(hud, t_s)
         self._check_affordability(crops, warns)
         if self.elixir.discrepancy_s >= 1.0:
@@ -152,17 +160,19 @@ class CRPerception:
         return state
 
     # --- pieces ---------------------------------------------------------------
-    def _read_hand(self, img: np.ndarray, t_ms: int, warns: list[str]) -> list:
+    def _read_hand(self, img: np.ndarray, t_ms: int, warns: list[str], *,
+                   hud: float | None = None) -> list:
         # Unreadable slots keep their last known card so a play is still detected when the
         # next read succeeds, but they're marked stale and the policy won't act on them.
         new = list(self.hand)
         self.hand_fresh = [False] * len(self.layout.hand)
         crops = []
+        unreadable: list[int] = []
         for i, roi in enumerate(self.layout.hand):
             crop = roi.crop(img)
             r = self.matcher.match(crop)
             if not r.accepted:
-                warns.append("hand_unreadable")
+                unreadable.append(i)
                 continue
             new[i] = r.card
             self.hand_fresh[i] = True
@@ -171,8 +181,37 @@ class CRPerception:
         if nr.accepted:
             self.next_card = nr.card
         for i, (old, cur) in enumerate(zip(self.hand, new, strict=False)):
+            if not self.hand_fresh[i]:
+                continue
             if old is not None and cur is not None and old != cur:
-                self._my_play(old, i, t_ms)
+                if not self._slot_spent[i]:
+                    self._my_play(old, i, t_ms, hud=hud)
+                self._slot_spent[i] = False
+            elif old == cur:
+                self._slot_spent[i] = False
+        # Early spend detection while the played card's slot is empty (~1.5s before refill).
+        while hud is not None:
+            best: tuple[float, int, str] | None = None
+            for i in unreadable:
+                if self._slot_spent[i]:
+                    continue
+                old = self.hand[i]
+                if old is None or old not in self.cards:
+                    continue
+                cost = self.cards.cost(old)
+                if self.elixir.value - hud >= max(0.8, cost - 1.0):
+                    err = abs(max(0.0, self.elixir.value - cost) - hud)
+                    if err <= 1.0 and (best is None or err < best[0]):
+                        best = (err, i, old)
+            if best is None:
+                break
+            _, slot_i, old_card = best
+            self._my_play(old_card, slot_i, t_ms, hud=hud)
+            self._slot_spent[slot_i] = True
+            self._slot_spent_ms[slot_i] = t_ms
+        for i in unreadable:
+            if not (self._slot_spent[i] and t_ms - self._slot_spent_ms[i] <= 2500):
+                warns.append("hand_unreadable")
         self.hand = new
         return crops
 
@@ -185,9 +224,11 @@ class CRPerception:
             if (greyed and self.elixir.value >= cost + 0.6) or (not greyed and self.elixir.value < cost - 0.6):
                 warns.append("affordability_mismatch")
 
-    def _my_play(self, card: str, slot: int, t_ms: int) -> None:
+    def _my_play(self, card: str, slot: int, t_ms: int, *, hud: float | None = None) -> None:
         if card in self.cards:
-            self.elixir.spend(self.cards.cost(card))
+            cost = self.cards.cost(card)
+            if hud is None or abs(max(0.0, self.elixir.value - cost) - hud) < abs(self.elixir.value - hud):
+                self.elixir.spend(cost)
             if self.cards[card].is_spell:
                 self._my_spells = [(k, t) for k, t in self._my_spells if t_ms - t <= self.my_spell_window_ms]
                 self._my_spells.append((card, t_ms))
@@ -246,6 +287,15 @@ class CRPerception:
             else:
                 bar_side, hp = ownership_and_hp(img, (bx1, by1, bx2, by2))
                 side = cls_side or bar_side  # a side-aware class beats the HP-bar color
+                if is_generic(base) and d.conf < 0.65 and side is not None:
+                    cx_tile = self.tiles.px_to_tile((fx, (by1 + by2) / 2), img.shape)
+                    if any(
+                        TOWER_SIDE.get(tk) == side
+                        and self.towers.get(tk, 1) > 0
+                        and math.hypot(cx_tile[0] - tpos[0], cx_tile[1] - tpos[1]) <= 1.9
+                        for tk, tpos in self.arena.towers.items()
+                    ):
+                        continue
             key = f"{base}|{cls_side}" if cls_side else base  # never associate my knight with theirs
             dets.append(TileDetection(base, d.conf, tile, side, hp, key=key))
         tracks, spawns = self.tracker.update(dets, t_ms)
@@ -304,7 +354,10 @@ class CRPerception:
         if self.on_event:
             self.on_event(rec)
         if play.side == "opp":
-            self.opp.on_play(play.card, self.cards.cost(play.card), play.t_ms / 1000)
+            if play.card in self.cards:
+                self.opp.on_play(play.card, self.cards.cost(play.card), play.t_ms / 1000)
+            elif is_generic(play.card):
+                self.opp.on_play(None, (2.0, 5.0), play.t_ms / 1000)
 
     def _read_towers(self, img: np.ndarray, warns: list[str]) -> None:
         if self.tower_states is not None:

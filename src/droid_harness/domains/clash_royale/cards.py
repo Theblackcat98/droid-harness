@@ -98,4 +98,6 @@ class CardDB:
 
     def unit_value(self, detector_class: str) -> float:
         c = self.card_for_class(detector_class)
-        return c.unit_value if c else 0.0
+        if c is not None:
+            return c.unit_value
+        return 2.0 if detector_class in ("other_ground", "other_air") else 0.0

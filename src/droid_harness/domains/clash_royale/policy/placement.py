@@ -48,7 +48,9 @@ class Placement:
         if unit.speed > 0.1:
             return unit.speed
         c = self.cards.card_for_class(unit.kind)
-        return c.speed_tiles_s if c else 0.0
+        if c is not None:
+            return c.speed_tiles_s
+        return 1.0 if unit.kind in ("other_ground", "other_air") else 0.0
 
     # --- defensive placement --------------------------------------------------
     def defensive(self, card: Card, threat: Threat, s: GameState, t_exec_ms: int) -> tuple[Point, Point]:

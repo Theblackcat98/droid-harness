@@ -2,7 +2,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
-.venv/
+.venv
+runs/
+yolo26n.pt
 data/
 vendor/
 models/*
@@ -14,12 +16,19 @@ models/*
 # per-phone and locally built config
 configs/device_profiles/*.yaml
 !configs/device_profiles/*.example.yaml
+!configs/device_profiles/phone-a.yaml
 configs/domains/clash_royale/cards.json
-configs/domains/clash_royale/tiles/
-configs/domains/clash_royale/templates/
-configs/domains/clash_royale/screens/
+configs/domains/clash_royale/tiles/*
+!configs/domains/clash_royale/tiles/phone-a.yaml
+configs/domains/clash_royale/templates/*
+!configs/domains/clash_royale/templates/phone-a/
+configs/domains/clash_royale/screens/*
+!configs/domains/clash_royale/screens/phone-a/
 configs/domains/clash_royale/digits/
-configs/domains/clash_royale/towers/
+configs/domains/clash_royale/towers/*
+!configs/domains/clash_royale/towers/phone-a/
 configs/domains/clash_royale/rois/phone-*.yaml
+!configs/domains/clash_royale/rois/phone-a.yaml
 configs/domains/clash_royale/landmarks/phone-*.yaml
 configs/domains/clash_royale/arena/phone-*.yaml
+!configs/domains/clash_royale/arena/phone-a.yaml

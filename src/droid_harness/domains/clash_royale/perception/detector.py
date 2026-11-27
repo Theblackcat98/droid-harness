@@ -72,6 +72,14 @@ def letterbox(img: np.ndarray, size: int | tuple[int, int]) -> tuple[np.ndarray,
     return canvas, r, (left, top)
 
 
+def _normalize_names(val: Any) -> list[str] | None:
+    if isinstance(val, dict):
+        return [str(val[k]) for k in sorted(val, key=int)]
+    if isinstance(val, (list, tuple)):
+        return [str(v) for v in val]
+    return None
+
+
 def names_from_metadata(meta: dict[str, str]) -> list[str] | None:
     """Ultralytics stores ``names`` as ``str({0: 'a', 1: 'b'})`` in ONNX custom metadata."""
     raw = meta.get("names")
@@ -81,11 +89,32 @@ def names_from_metadata(meta: dict[str, str]) -> list[str] | None:
         val = ast.literal_eval(raw)
     except (ValueError, SyntaxError):
         return None
-    if isinstance(val, dict):
-        return [str(val[k]) for k in sorted(val, key=int)]
-    if isinstance(val, (list, tuple)):
-        return [str(v) for v in val]
-    return None
+    return _normalize_names(val)
+
+
+def resolve_class_names(class_names: list[str] | str | Path | None, embedded: list[str] | None,
+                        model_path: str | Path, *, source_label: str = "ONNX 'names' metadata") -> list[str]:
+    """Resolve detector class list and refuse mismatches against embedded model names."""
+    given: list[str] | None
+    if class_names is None:
+        given = None
+    elif isinstance(class_names, (str, Path)):
+        given = load_class_names(class_names)
+    else:
+        given = [str(c) for c in class_names]
+    if embedded is not None and given is not None and embedded != given:
+        diff = next((i for i, (a, b) in enumerate(zip(embedded, given, strict=False)) if a != b),
+                    min(len(embedded), len(given)))
+        raise ValueError(
+            f"{model_path}: class list disagrees with the model's embedded names at index {diff} "
+            f"({len(given)} given vs {len(embedded)} embedded). Refusing to load: every box would "
+            f"decode as the wrong class.")
+    names = embedded if embedded is not None else given
+    if not names:
+        raise ValueError(f"{model_path}: no class names (no {source_label} and no classes file)")
+    if embedded is None:
+        log.warning("detector: %s has no embedded class names; trusting the classes file unchecked", model_path)
+    return names
 
 
 def output_mode(shape: list[Any] | tuple[Any, ...], nc: int, end2end: bool | None = None) -> str | None:
@@ -144,28 +173,7 @@ class OnnxDetector:
     # --- loading ----------------------------------------------------------------
     @staticmethod
     def _resolve_names(class_names, meta: dict[str, str], model_path) -> list[str]:
-        given: list[str] | None
-        if class_names is None:
-            given = None
-        elif isinstance(class_names, (str, Path)):
-            given = load_class_names(class_names)
-        else:
-            given = [str(c) for c in class_names]
-        embedded = names_from_metadata(meta)
-        if embedded is not None and given is not None and embedded != given:
-            diff = next((i for i, (a, b) in enumerate(zip(embedded, given, strict=False)) if a != b),
-                        min(len(embedded), len(given)))
-            raise ValueError(
-                f"{model_path}: class list disagrees with the model's embedded names at index {diff} "
-                f"({len(given)} given vs {len(embedded)} embedded). Refusing to load: every box would "
-                f"decode as the wrong class.")
-        names = embedded if embedded is not None else given
-        if not names:
-            raise ValueError(f"{model_path}: no class names (no ONNX 'names' metadata and no classes file)")
-        if embedded is None:
-            log.warning("detector: %s has no embedded class names; trusting the classes file unchecked",
-                        model_path)
-        return names
+        return resolve_class_names(class_names, names_from_metadata(meta), model_path)
 
     def _check_nc_for_mode(self, shape) -> None:
         dims = [d for d in shape if isinstance(d, int)]
@@ -237,6 +245,77 @@ class OnnxDetector:
         if idx.size == 0:
             return empty
         return boxes[idx], scores[idx], classes[idx]
+
+
+def _load_yolo(model_path: str):
+    from ultralytics import YOLO
+
+    return YOLO(model_path)
+
+
+def _to_numpy(arr: Any) -> np.ndarray:
+    if hasattr(arr, "detach"):
+        arr = arr.detach()
+    if hasattr(arr, "cpu"):
+        arr = arr.cpu()
+    return np.asarray(arr)
+
+
+class TorchDetector:
+    """Ultralytics ``.pt`` detector running directly via PyTorch (ROCm/CUDA or CPU)."""
+
+    def __init__(self, model_path: str | Path, class_names: list[str] | str | Path | None = None, *,
+                 imgsz: int | tuple[int, int] = (640, 384), conf: float = 0.35, iou: float = 0.5,
+                 agnostic_nms: bool = False, device: str | None = None, half: bool = True) -> None:
+        import torch
+
+        self.model = _load_yolo(str(model_path))
+        self.device = ("0" if torch.cuda.is_available() else "cpu") if device is None else str(device)
+        self.half = bool(half and self.device.lower() != "cpu")
+        self.imgsz = _hw(imgsz)
+        self.conf, self.iou, self.agnostic_nms = conf, iou, agnostic_nms
+        embedded = _normalize_names(getattr(self.model, "names", None))
+        self.class_names = resolve_class_names(class_names, embedded, model_path,
+                                               source_label="PyTorch 'names' metadata")
+        self.provider = f"PyTorch({self.device})"
+        self.mode = "e2e"
+
+    def warmup(self, n: int = 3) -> None:
+        h, w = self.imgsz
+        dummy = np.zeros((h, w, 3), np.uint8)
+        for _ in range(n):
+            self(dummy)
+
+    def __call__(self, img: np.ndarray) -> list[Detection]:
+        res = self.model.predict(
+            img, imgsz=list(self.imgsz), conf=self.conf, iou=self.iou,
+            agnostic_nms=self.agnostic_nms, device=self.device, verbose=False,
+        )[0]
+        boxes = getattr(res, "boxes", None)
+        if boxes is None or len(boxes) == 0:
+            return []
+        xyxy = _to_numpy(boxes.xyxy)
+        confs = _to_numpy(boxes.conf)
+        clss = _to_numpy(boxes.cls).astype(int)
+        dets = []
+        for b, s, c in zip(xyxy, confs, clss, strict=True):
+            name = self.class_names[c] if 0 <= c < len(self.class_names) else str(c)
+            dets.append(Detection(name, float(s), (float(b[0]), float(b[1]), float(b[2]), float(b[3]))))
+        return dets
+
+
+def load_detector(model_path: str | Path, class_names: list[str] | str | Path | None = None, *,
+                  imgsz: int | tuple[int, int] | None = None, conf: float = 0.35, iou: float = 0.5,
+                  agnostic_nms: bool = False, providers: list[str] | None = None,
+                  device: str | None = None) -> OnnxDetector | TorchDetector:
+    """Load an ONNX (``.onnx``) or PyTorch Ultralytics (``.pt``) detector."""
+    if Path(model_path).suffix.lower() == ".pt":
+        return TorchDetector(
+            model_path, class_names, imgsz=(640, 384) if imgsz is None else imgsz,
+            conf=conf, iou=iou, agnostic_nms=agnostic_nms, device=device,
+        )
+    return OnnxDetector(model_path, class_names, imgsz=imgsz, conf=conf, iou=iou,
+                        agnostic_nms=agnostic_nms, providers=providers)
 
 
 class AsyncDetector:

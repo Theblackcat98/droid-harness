@@ -1,28 +1,30 @@
-# Calibrated for phone-a: OnePlus N10 (BE2028), 1080x2400, Clash Royale Nov 2026 UI.
+# Calibrated for phone-a: OnePlus N10 (BE2028), 1080x2400 (scrcpy 464x1024), Clash Royale Nov 2026 UI.
 # All regions are fractions of the captured frame; works at any max_size.
 hand:
-- [0.218, 0.855, 0.398, 0.958]
-- [0.402, 0.855, 0.582, 0.958]
-- [0.586, 0.855, 0.766, 0.958]
-- [0.770, 0.855, 0.950, 0.958]
-next_card: [0.035, 0.935, 0.155, 1.000]
-elixir_bar: [0.200, 0.962, 0.980, 0.988]
-clock: [0.830, 0.015, 0.995, 0.070]
+- [0.2241, 0.8643, 0.4009, 0.9619]
+- [0.4116, 0.8643, 0.5884, 0.9619]
+- [0.5991, 0.8643, 0.7759, 0.9619]
+- [0.7888, 0.8643, 0.9655, 0.9619]
+next_card: [0.0539, 0.9473, 0.1336, 0.9912]
+elixir_bar: [0.2737, 0.9727, 0.9634, 0.9893]
+clock: [0.8490, 0.0615, 0.9740, 0.0840]
 towers:
-  opp_left: [0.140, 0.180, 0.265, 0.200]
-  opp_right: [0.715, 0.180, 0.860, 0.200]
-  opp_king: [0.430, 0.092, 0.600, 0.112]
-  me_left: [0.140, 0.592, 0.265, 0.612]
-  me_right: [0.715, 0.592, 0.860, 0.612]
-  me_king: [0.430, 0.722, 0.600, 0.742]
-arena: [0.0, 0.105, 1.0, 0.825]
+  opp_left: [0.140, 0.180, 0.265, 0.205]
+  opp_right: [0.715, 0.180, 0.860, 0.205]
+  opp_king: [0.430, 0.092, 0.600, 0.115]
+  me_left: [0.140, 0.592, 0.265, 0.618]
+  me_right: [0.715, 0.592, 0.860, 0.618]
+  me_king: [0.430, 0.722, 0.600, 0.752]
+arena: [0.025, 0.086, 0.974, 0.776]
 buttons:
   menu: [0.870, 0.105, 0.960, 0.140]
   training_camp: [0.390, 0.280, 0.810, 0.320]
   confirm: [0.560, 0.550, 0.810, 0.590]
   ok: [0.370, 0.815, 0.630, 0.880]
-  battle: [0.340, 0.785, 0.690, 0.880]
+  battle: [0.340, 0.775, 0.670, 0.855]
   close: [0.850, 0.100, 0.950, 0.150]
+  dismiss: [0.080, 0.450, 0.250, 0.550]
+  trophy_ok: [0.380, 0.948, 0.620, 0.992]
 # Top 18% is the stable HUD (clock/opponent/name). The bottom half changes with the
 # hand, so including it made the screen classifier miss real IN_BATTLE frames.
 screen_regions:

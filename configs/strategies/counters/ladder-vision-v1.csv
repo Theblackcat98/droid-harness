@@ -70,3 +70,15 @@ fireball,spear_goblin,0.7
 fireball,witch,0.7
 fireball,baby_dragon,0.5
 fireball,barbarian,0.5
+mini_pekka,other_ground,0.6
+knight,other_ground,0.5
+musketeer,other_ground,0.5
+minions,other_ground,0.5
+archers,other_ground,0.4
+fireball,other_ground,0.4
+arrows,other_ground,0.3
+musketeer,other_air,0.7
+minions,other_air,0.5
+archers,other_air,0.4
+arrows,other_air,0.4
+fireball,other_air,0.4

@@ -41,11 +41,13 @@ DEFAULT_FLOWS: dict[str, dict[str, list[str]]] = {
         # the queue or open a screen the flow can't leave.
         "LOADING": [],
         "MATCHMAKING": [],
+        "MENU": ["dismiss"],
+        "TROPHY_ROAD": ["trophy_ok"],
         "RESULT_WIN": ["ok"],
         "RESULT_LOSS": ["ok"],
         "RESULT_DRAW": ["ok"],
         "POPUP": ["close"],
-        "UNKNOWN": ["close"],
+        "UNKNOWN": ["dismiss", "ok", "trophy_ok", "close"],
     },
 }
 BATTLE_SCREENS = {"IN_BATTLE"}
@@ -57,15 +59,29 @@ class MenuNavigator:
     buttons: dict[str, Roi]
     flow: dict[str, list[str]] = field(default_factory=lambda: dict(DEFAULT_FLOWS["training_camp"]))
     cooldown_s: float = 1.2  # don't hammer a button while the screen transitions
+    unknown_settle_s: float = 3.0  # let RESULT->HOME fades finish before tapping UNKNOWN
     _last_tap: float = 0.0
+    _last_screen: str | None = None
+    _screen_since: float = 0.0
+    _unknown_idx: int = 0
 
     def events_for(self, screen: str, frame_shape, now_ns: int) -> list[TouchEvent]:
+        now = time.monotonic()
+        if screen != self._last_screen:
+            self._last_screen, self._screen_since, self._unknown_idx = screen, now, 0
         names = self.flow.get(screen, [])
-        if not names or time.monotonic() - self._last_tap < self.cooldown_s:
+        if not names or now - self._last_tap < self.cooldown_s:
             return []
-        name = names[0]
-        if name not in self.buttons:
+        if screen == "UNKNOWN" and self.cooldown_s > 0 and now - self._screen_since < self.unknown_settle_s:
             return []
-        self._last_tap = time.monotonic()
+        candidates = [b for b in names if b in self.buttons]
+        if not candidates:
+            return []
+        if screen == "UNKNOWN":
+            name = candidates[self._unknown_idx % len(candidates)]
+            self._unknown_idx += 1
+        else:
+            name = candidates[0]
+        self._last_tap = now
         x, y = self.buttons[name].center_px(frame_shape)
         return gestures.tap(x, y, now_ns, hold_ms=40, action_id=f"menu:{screen}:{name}", tag="menu")

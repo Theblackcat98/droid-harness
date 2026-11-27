@@ -108,7 +108,8 @@ class GameState:
             if dist > max_tiles_to_tower:
                 continue
             card = cards.card_for_class(u.kind)
-            speed = max(u.speed, card.speed_tiles_s if card else 0.0, speed_floor)
+            base_speed = card.speed_tiles_s if card else (1.0 if u.kind in ("other_ground", "other_air") else 0.0)
+            speed = max(u.speed, base_speed, speed_floor)
             out.append(Threat(u, lane, tower, pos, dist, dist / speed))
         return sorted(out, key=lambda t: t.eta_to_tower_s)
 

@@ -20,6 +20,13 @@ Still open for ladder: a trained detector (until then only `training-camp-blind-
 
 **GPU handoff (veritas, nick@192.168.1.199):** venv `~/venvs/droid-det` ready (torch 2.7.1+rocm6.3, `cuda_available: True`, ultralytics, onnx; repo at `~/src/droid-harness`). KataCR fetch running: `tools/fetch_katacr.py --out data/katacr --part2` (log `/home/nick/droid-det-fetch.log`, ~1.3 GB and growing). GPU idle (0%), 400 GB free. Remaining there, in order — see **GPU Runbook** below.
 
+**Update 2026-11-26 (veritas M3 + ladder-vision-v3 verified 9W–1L):**
+- **Calibration committed (`phone-a`):** `configs/device_profiles/phone-a.yaml` (`741be240`, `exec_latency_ms: 40`), `rois/phone-a.yaml` (added `dismiss` and `trophy_ok`), rebuilt 18-template deck set in `templates/phone-a/` (removed stale zoomed `archers__0` and redundant duplicates), 10 `alive`/`rubble` tower templates in `towers/phone-a/`, plus `MATCHMAKING__0.png` and `TROPHY_ROAD__0/1.png` (Bone Pit Arena-lock modal) in `screens/phone-a/`. `tiles/phone-a.yaml` and `arena/phone-a.yaml` verified pixel-aligned.
+- **M3 detector trained & benchmarked:** YOLO26-n trained on `veritas` (RX 7900 XT, PyTorch-ROCm, stopped at epoch 40; `best.pt` at epoch 36 reached `mAP50=0.797` / `mAP50-95=0.514`, epoch 40 `mAP50=0.793` / `mAP50-95=0.507`; local gitignored weights `models/yolo26n-cr.pt` and static `640×384` `models/yolo26n-cr.onnx`). 100× idle-GPU arena-crop benchmark (`440×707`): `OnnxDetector` CPU `26.78 ms p50 / 53.40 ms p95` vs new `TorchDetector` PyTorch-ROCm `7.90 ms p50 / 9.83 ms p95` (bit-identical detections).
+- **Perception, session, menu & strategy fixes:** `CardMatcher` `local_znorm` + bottom-center/border `default_mask`; `TorchDetector` backend in `detector.py`/`app.py`/`cli.py`; early-spend detection, match-start (`frame_i == 0`, `t <= 3.0s`) elixir sync, and low-conf generic tower-skin FP suppression in `pipeline.py`; `read_result_detail()` left+right banner requirement + `battle_min_frac=0.12` in `screens.py`; `battle_evidence` battle-lock & timeout invariants (`unknown_battle_timeout_s=25.0`, `left_battle_timeout_s=5.0`) in `session.py`; `MENU` (`dismiss`) & `TROPHY_ROAD` (`trophy_ok`) navigation + `unknown_settle_s=3.0` in `menus.py`; generic `other_ground`/`other_air` handling & non-spell `leak_guard`; new `ladder-vision-v2` and `ladder-vision-v3` strategies + updated counter tables.
+- **Live `--mode ladder` results (`phone-a`, `theblackcat99`):** `ladder-smoke2` **1W–0L** (`3-1`), `ladder-iter-1` **5W–0L** (`v2` + CPU ONNX, 3 orphans before session fixes), `ladder-verify-pre-fix` **4W–2L–1D**, `ladder-cleanup` **1W–0L**, and final clean verification batch `ladder-verify` (`ladder-vision-v3` + epoch-40 `TorchDetector` PyTorch-ROCm + all fixes): **9W–1L–0D (90.0%, 95% CI [0.596, 0.982])** across 10 completed matches (`1-0`, `0-3`, `3-2`, `3-1`, `1-0`, `3-0`, `3-1`, `2-1`, `3-0`, `3-0`), `0` aborts, `0` orphaned dirs, `loop_p50_ms` `2.48–2.77 ms`, `loop_p99_ms` `4.01–4.36 ms`, `elixir_discrepancy` `0–1`/match (paused during Match 11; completed match records saved in `data/matches/`).
+- **Tests & lint:** `pytest` **179 passed, 1 skipped**; `ruff check src/ tests/` clean.
+
 ### Priority order (updated 2026-11-26 evening — ladder is the target now, Training Camp is the farm)
 
 1. **[you]** Resume/verify ladder-vision: `droid-harness run ... --mode ladder --strategy configs/strategies/ladder-vision-v1.yaml --matches 1`. Confirm `archers` appears in hand reads (the rebuilt template), `blind_push` does NOT fire (v1 has no blind rule — if it does, the strategy loader is resolving the wrong parent), and the match runs full length (the 66 s 1–1 draw needs an explanation: check `stream.h264` + phone state).
@@ -63,6 +70,7 @@ Each milestone ends with **Done when** — don't start the next one until it's t
 - [ ] **[you]** Run `droid-harness stream --profile configs/device_profiles/phone-a.yaml --seconds 30 --save-frame data/frame_home.png`. Expect frames while the screen moves and none while it's static; both are normal.
 - [ ] **[you]** Run `scrcpy --list-encoders` and set `video_encoder` to the hardware H.264 encoder. A/B with and without `codec_options`.
 - [ ] **[you]** Loopback test: `droid-harness loopback --profile ... --x <quiet spot> --y <quiet spot> --samples 200`. Record p50/p99 and set `exec_latency_ms` to the p50.
+      *Attempted on `741be240`: OxygenOS hides synthetic `show_touches` dots (timed out 50/50); kept `exec_latency_ms: 40` in `phone-a.yaml`.*
 - [ ] **[you]** Check display-off: set `turn_display_off: true`, stream a Training Camp battle, and confirm frames keep coming and the game keeps animating with the panel dark. If they don't, set it to false and note the phone model.
 - [ ] **[you]** Resolution sweep: `max_size` 720 / 1024 / 1280. Record loopback p50 and decode time for each. Pick the final size after M3's detector check.
 - [x] **[code]** Add a `--duration` soak mode to `stream` that runs 30 min and reports reconnects, so you can confirm static menus don't trigger false reconnects.
@@ -83,22 +91,24 @@ Calibration, per phone, from saved frames:
 - [ ] **[you]** Templates: run `droid-harness template ... --state affordable|greyed|selected` for all 8 deck cards in every state, plus the next-card slot.
       *All 8 deck cards + next-card templates exist in `templates/phone-a` (affordable and several greyed). Selected-state templates are still missing; the card matcher is exact (1.00 NCC) on all saved hand/next frames.*
 - [ ] **[you]** Screens: run `droid-harness screen ... --name <SCREEN>` for every screen above (2–3 frames each).
-      *Registered `HOME` (2), `MENU`, `TRAINING_CONFIRM`, `IN_BATTLE` (3), `RESULT_WIN` (2), `RESULT_LOSS`; missing LOADING/DRAW/POPUP references.*
+      *Registered `HOME` (2), `MENU`, `TRAINING_CONFIRM`, `IN_BATTLE` (3), `LOADING`, `MATCHMAKING`, `TROPHY_ROAD` (2), `RESULT_WIN` (3), `RESULT_LOSS` (2); missing DRAW/POPUP references.*
 - [ ] **[you]** Digits: crop `0.png`…`9.png` from tower-HP text into `configs/domains/clash_royale/digits/phone-a/`.
 
 Code gaps to close in this milestone:
 
 - [x] **[code]** **Menu flow for the real UI.** Update `DEFAULT_FLOWS["training_camp"]` in `domains/clash_royale/menus.py` to the button names you calibrated. The June 2025 update moved Training Camp into the menu, so verify the path. Add popup handling (one `close` per popup type).
       *Verified path: HOME → `menu` (hamburger, top-right) → `training_camp` (MENU) → `confirm` (TRAINING_CONFIRM dialog) → battle. The existing `DEFAULT_FLOWS` names already match the layout; `POPUP → close` exists and `close` is in the layout. The only popup seen so far (Next Reward) was non-modal.*
-- [ ] **[code]** **Destroyed towers.** `perception/pipeline.py::_read_towers` never sets a tower to 0; unreadable digits just keep the last value. Add destroyed-tower detection (template of the rubble/crown state per tower ROI, or detector classes). Crowns, `pocket_open` and the king/princess targeting all depend on it.
+- [x] **[code]** **Destroyed towers.** `perception/pipeline.py::_read_towers` never sets a tower to 0; unreadable digits just keep the last value. Add destroyed-tower detection (template of the rubble/crown state per tower ROI, or detector classes). Crowns, `pocket_open` and the king/princess targeting all depend on it.
       *Code done: `perception/towers.py::TowerStateReader` template-matches each tower ROI against per-phone `alive`/`rubble` references and marks a tower destroyed after 2 rubble reads in a row (permanent for the match; digits can't revive it). `run --towers DIR` wires it in. A `tower_rubble` detection (older models) also marks the nearest tower. Crowns, `pocket_open` and king targeting follow from `towers[name] == 0`.*
-- [ ] **[you]** Capture tower templates: `droid-harness tower-template --frame <battle frame> --layout rois/phone-a.yaml --tower all --state alive --out configs/domains/clash_royale/towers/phone-a`, then `--tower opp_left --state rubble` (etc.) from frames after a tower falls.
+- [x] **[you]** Capture tower templates: `droid-harness tower-template --frame <battle frame> --layout rois/phone-a.yaml --tower all --state alive --out configs/domains/clash_royale/towers/phone-a`, then `--tower opp_left --state rubble` (etc.) from frames after a tower falls.
+      *Done: 10 `alive`/`rubble` templates captured and committed in `configs/domains/clash_royale/towers/phone-a/`.*
 - [x] **[code]** **Match clock.** The layout has a `clock` ROI but the pipeline never reads it. Read it at 1 Hz to align match t=0 with the game (screen detection lags a few frames, and the intro countdown shifts it). Flag drift over 1 s as a perception warning. Double elixir at 2:00 depends on this.
       *Done: `pipeline.py` reads the `clock` ROI at most 1 Hz, parses `M:SS`, exposes `match_t_s` + `clock_drift_s` on the state, warns `clock_drift` past 1 s. Tested on synthetic frames.*
 - [x] **[code]** **Arena geometry.** `app.py::BotRunner` uses `Arena()` defaults. Add `--arena configs/domains/clash_royale/arena/phone-a.yaml` (load with `Arena.load`) and calibrate river, bridges and tower tiles from the same landmarks as the homography.
       *Added `--arena` to `droid-harness run` and `RunConfig`; `configs/domains/clash_royale/arena/phone-a.yaml` was fitted from the same six landmarks as `tiles/phone-a.yaml` (river y 15.0–16.5, bridges x 3.6/14.4).*
 - [ ] **[code]** **Golden frames.** Commit 200+ labeled real frames (hand, elixir, towers, screen ID) under `tests/golden/phone-a/` (gitignored if large; keep an index). Add a test that fails if HUD accuracy drops below 99.5%.
-- [ ] **[code]** Elixir start: the first HUD read seeds both models; confirm on real frames that the first `IN_BATTLE` frame shows the starting bar and not the intro.
+- [x] **[code]** Elixir start: the first HUD read seeds both models; confirm on real frames that the first `IN_BATTLE` frame shows the starting bar and not the intro.
+      *Fixed in `pipeline.py`: skips `frame_i == 0` reset when `hud < 1.0` and syncs both `elixir` & `opp_elixir` upward during `t <= 3.0s` before the first event (`0–1` `elixir_discrepancy` per match across `ladder-verify`).*
 
 Run it:
 
@@ -142,12 +152,12 @@ The detector is the biggest missing piece: no model is trained yet, and this hos
       *Now 14 classes: 6 starter-deck units × 2 sides + 2 spell effects (no towers, no `minions`: Minions spawn three `minion` units; make sure your local `cards.json` says `unit_classes: [minion]`). The KataCR alias map is `models/katacr_alias.json`, its keys verified against upstream `models/katacr_label_list.py` (MIT).*
 - [x] **[code]** **Synthetic generator** `src/droid_harness/learn/synth.py`: paste sprite cut-outs on empty-arena backgrounds (random position, scale, overlap, HP bars, effects), write YOLO labels. Seed it from KataCR's generative dataset approach.
       *`droid-harness synth`: inference geometry, tile-scaled side-aware KataCR sprites, back-to-front by foot y, real KataCR HP-bar sprites on units only, occlusion/clip-aware labels, Ultralytics layout + `data.yaml` + `label_counts.yaml`. Needs backgrounds: KataCR's empty arenas plus your own crops (only 1 mined so far).*
-- [ ] **[data]** Pull KataCR's open detection dataset; check the license and which classes it covers (snapshot from May 2024, so newer cards are missing). Map its class names onto yours.
-      *IN PROGRESS on veritas (2026-11-26): `tools/fetch_katacr.py --out data/katacr --part2` running under `~/venvs/droid-det/bin/python`, log `/home/nick/droid-det-fetch.log`. MIT confirmed; nothing usable yet — `data/katacr/` is filling. See GPU Runbook for what follows.*
+- [x] **[data]** Pull KataCR's open detection dataset; check the license and which classes it covers (snapshot from May 2024, so newer cards are missing). Map its class names onto yours.
+      *Done on `veritas` (2026-11-26): MIT confirmed; converted `data/katacr` via `convert-katacr` (`data/katacr-real`) and merged with synth data on 28 real backgrounds into `data/train.yaml`.*
 - [ ] **[data]** Record 30–50 of your own battles (the recorder already saves `stream.h264`). Extract frames, auto-label them with the first model, fix the labels in CVAT/Label Studio, and repeat.
 - [x] **[code]** `src/droid_harness/learn/train_detector.py`: Ultralytics YOLO26-n training on PyTorch-ROCm, exported to ONNX with a static shape. Also export `classes.txt`.
-- [ ] **[you]** Install the ONNX Runtime MIGraphX EP (AMD's ROCm docs). Benchmark `OnnxDetector` on MIGraphX vs CPU vs PyTorch-ROCm at your input size, and keep the fastest. Check `detector.provider` in the logs.
-      *This host's venv is CPU-only — install PyTorch-ROCm and the MIGraphX EP first (the MIGraphX EP is not in stock pip wheels; expect a custom ORT build or container).*
+- [x] **[you]** Install the ONNX Runtime MIGraphX EP (AMD's ROCm docs). Benchmark `OnnxDetector` on MIGraphX vs CPU vs PyTorch-ROCm at your input size, and keep the fastest. Check `detector.provider` in the logs.
+      *Benchmarked 100× on idle RX 7900 XT (`440×707` arena crop → `640×384`): `OnnxDetector` CPU `26.78 ms p50 / 53.40 ms p95` vs new `TorchDetector` PyTorch-ROCm `7.90 ms p50 / 9.83 ms p95` (bit-identical detections; MIGraphX EP not needed since `TorchDetector` meets `≤ 10 ms p95`).*
 - [x] **[code]** Crop to the arena: pass only `layout.arena` to the detector and offset the boxes back. This cuts latency and removes false hits on the HUD.
       *Implemented in `perception/pipeline.py::_detect` and proven by `tests/test_detector_m3.py::test_arena_crop_and_flying_offset` (crop coordinates offset back to full-image pixels before ownership sampling and tile mapping).*
 - [ ] **[code]** Flying units: the box bottom isn't the ground point for air units. Add a per-class foot offset (from the card DB `flying` flag, tuned on frames).
@@ -164,7 +174,8 @@ The detector is the biggest missing piece: no model is trained yet, and this hos
 
 ## M4 — Play real games (plan P3)
 
-- [ ] **[you]** Build the real card DB with `python tools/build_card_db.py ~/src/cr-api-data`. Check the cost and deploy time of every deck and threat card against the current game, and fix stale entries by hand (the source dates from 2023).
+- [x] **[you]** Build the real card DB with `python tools/build_card_db.py ~/src/cr-api-data`. Check the cost and deploy time of every deck and threat card against the current game, and fix stale entries by hand (the source dates from 2023).
+      *Built 118-card `configs/domains/clash_royale/cards.json` and patched `arrows` (`damage: 144, radius_tiles: 3.5, ct_damage_pct: 20.8`). Remaining non-deck threat stats still to audit over time.*
 - [ ] **[you]** Fill `tier0.spell_tower_damage` in the strategy file from **your** card levels (in-game card info).
 - [ ] **[code]** Verify motion units: compare tracker velocities with the DB `speed_tiles_s` (the builder assumes speed/60 = tiles/s). Check spell travel times against recorded video and adjust `projectile_speed_tiles_s`.
 - [ ] **[code]** Tune actuation on the device: tap hold/gap in `CRActionMapper` (currently 20/20 ms), tap-tap vs drag, and when pre-selection helps. Watch *Pointer location* and the execution failures in triage.

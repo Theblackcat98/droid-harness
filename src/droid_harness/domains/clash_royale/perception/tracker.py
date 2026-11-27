@@ -163,13 +163,21 @@ class SpawnGrouper:
     def add(self, ev: SpawnEvent) -> list[PlayEvent]:
         card = self.card_for_class(ev.cls)
         if card is None:
+            if ev.cls in ("other_ground", "other_air"):
+                for g in self._open:
+                    if (g["key"] == ev.cls and g["side"] == ev.side and ev.t_ms - g["t_ms"] <= self.window_ms
+                            and math.dist(g["tile"], ev.tile) <= self.radius and g["units"] < 4):
+                        g["units"] += 1
+                        return []
+                self._open.append({"key": ev.cls, "side": ev.side, "tile": ev.tile, "t_ms": ev.t_ms, "units": 1})
+                return [PlayEvent(ev.side, ev.cls, ev.tile, ev.t_ms, 1)]
             return []  # e.g. death spawns, effects not tied to a play
         for g in self._open:
-            if (g["card"].key == card.key and g["side"] == ev.side and ev.t_ms - g["t_ms"] <= self.window_ms
+            if (g["key"] == card.key and g["side"] == ev.side and ev.t_ms - g["t_ms"] <= self.window_ms
                     and math.dist(g["tile"], ev.tile) <= self.radius and g["units"] < card.units):
                 g["units"] += 1
                 return []
-        self._open.append({"card": card, "side": ev.side, "tile": ev.tile, "t_ms": ev.t_ms, "units": 1})
+        self._open.append({"key": card.key, "side": ev.side, "tile": ev.tile, "t_ms": ev.t_ms, "units": 1})
         return [PlayEvent(ev.side, card.key, ev.tile, ev.t_ms, card.units)]  # emit on first unit (lowest latency)
 
     def expire(self, t_ms: int) -> None:

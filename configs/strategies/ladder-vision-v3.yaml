@@ -1,0 +1,57 @@
+# Ladder beatdown v3 (with detector + tower-skin & opening-elixir fixes):
+# - Inherits v2 Giant beatdown, raises spell_value_threshold to 4.2 and drops single-unit
+#   spell counters on generic other_ground so Lv1 Arrows aren't wasted on tanks/knights.
+# - Encourages reliable Giant back-builds (7.5 elixir, score 0.65) and tank-ahead pushes
+#   rather than stalling 5 minutes into tiebreakers.
+strategy: ladder-vision-v3
+parent: ladder-vision-v2
+deck: [knight, archers, minions, arrows, fireball, giant, musketeer, mini_pekka]
+win_conditions: [giant]
+params:
+  act_threshold: 0.08
+  elixir_weight: 0.4
+  defend_trigger_tiles: 13
+  defend_horizon_s: 8.5
+  min_elixir_to_attack: 5.5
+  press_opp_elixir_max: 4.0
+  spell_value_threshold: 4.2
+  spell_cycle_max_casts: 3
+  opening_ms: 15000
+  min_action_gap_ms: 350
+  counter_push_bonus: 0.6
+  counterpush_min_value: 2.5
+  counterpush_tank_ahead: true
+  counterpush_tank_bonus: 0.35
+  giant_back_build: true
+  giant_safe_build_elixir: 7.5
+  giant_back_build_score: 0.65
+  attack_blocked_by_threat_eta_s: 6.0
+tier0:
+  lethal_margin_hp: 20
+  spell_tower_damage:
+    fireball: 75
+    arrows: 30
+  leak_threshold: 8.8
+  leak_ms: 800
+  leak_card_preference: [knight, archers, minions, musketeer, mini_pekka]
+  emergency_eta_s: 1.8
+  emergency_hp_frac: 0.35
+weights:
+  defend.lane_threat: 1.0
+  defend.air_threat: 1.0
+  offense.win_condition_when_opp_low: 1.0
+  offense.counter_push: 0.85
+  offense.giant_back_build: 1.0
+  spell.value: 0.85
+  spell.tower_chip: 0.6
+  opening.safe_first_play: 1.0
+  cycle.cheap_cycle: 1.0
+posture_multipliers:
+  OPENING:     {offense: 0.5, cycle: 1.2}
+  DEFEND_LEAD: {offense: 0.5, defend: 1.3}
+  PRESS:       {offense: 1.4}
+  SPELL_CYCLE: {spell: 2.0, offense: 0.6}
+counters: counters/ladder-vision-v3.csv
+learned_ranker: null
+intent_advisor: false
+advisor_may_set: [DEFEND_LEAD, PRESS, SPELL_CYCLE]
