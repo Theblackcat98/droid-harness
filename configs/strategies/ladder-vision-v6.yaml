@@ -1,0 +1,74 @@
+# Ladder beatdown v6: pro starter Giant beatdown refined from Batch 1 (v4, 9W-1L)
+# and Batch 2 (v5, 5W-5L) findings using existing StrategySpec params.
+# - Restores v4's safe opening & defense_reserve (2.5 elixir) and sets
+#   giant_safe_build_elixir: 8.6 so back-Giant always leaves >= 3.6 elixir (> reserve)
+#   and never dumps a naked Giant at t=1.1-1.4s into 7.5+ opponent elixir.
+# - Keeps v5's tightened hard-counter wc_counters list and mid-game giant_build_block_tiles
+#   (9.5) with moderate counter/reserve multipliers so Giant deploys cleanly once safe.
+strategy: ladder-vision-v6
+parent: ladder-vision-v4
+deck: [knight, archers, minions, arrows, fireball, giant, musketeer, mini_pekka]
+win_conditions: [giant]
+params:
+  act_threshold: 0.08
+  elixir_weight: 0.4
+  defend_trigger_tiles: 12.0
+  defend_horizon_s: 8.5
+  min_elixir_to_attack: 5.5
+  press_opp_elixir_max: 4.0
+  max_opp_elixir_to_bridge: 5.8
+  min_elixir_advantage_to_bridge: 2.0
+  spell_value_threshold: 3.5
+  spell_cycle_max_casts: 3
+  opening_ms: 15000
+  min_action_gap_ms: 350
+  counter_push_bonus: 0.6
+  counterpush_min_value: 2.2
+  counterpush_tank_ahead: true
+  counterpush_tank_bonus: 0.35
+  giant_back_build: true
+  giant_safe_build_elixir: 8.6
+  giant_back_build_score: 0.65
+  giant_build_block_tiles: 9.5
+  attack_blocked_by_threat_eta_s: 6.0
+  counter_gate: true
+  wc_counters: [mini_pekka, goblin_cage, tombstone, cannon, minion_horde, skeleton_army, barbarians, prince, pekka, inferno_tower, hunter]
+  counter_in_hand_mult: 0.55
+  counter_out_mult: 1.45
+  counter_unaffordable_punish_mult: 1.30
+  cycle_punish_partial_deck: true
+  back_build_counter_in_hand_mult: 0.85
+  defense_reserve: 2.5
+  reserve_penalty: 0.50
+  spell_aware: true
+  kill_aware_spells: true
+  save_counters_for_in_hand_threats: true
+tier0:
+  lethal_margin_hp: 20
+  spell_tower_damage:
+    fireball: 75
+    arrows: 30
+  leak_threshold: 8.8
+  leak_ms: 800
+  leak_card_preference: [knight, archers, minions, musketeer, mini_pekka]
+  emergency_eta_s: 1.8
+  emergency_hp_frac: 0.35
+weights:
+  defend.lane_threat: 1.0
+  defend.air_threat: 1.0
+  offense.win_condition_when_opp_low: 1.0
+  offense.counter_push: 0.85
+  offense.giant_back_build: 1.0
+  spell.value: 0.85
+  spell.tower_chip: 0.6
+  opening.safe_first_play: 1.0
+  cycle.cheap_cycle: 1.0
+posture_multipliers:
+  OPENING:     {offense: 0.5, cycle: 1.2}
+  DEFEND_LEAD: {offense: 0.5, defend: 1.3}
+  PRESS:       {offense: 1.4}
+  SPELL_CYCLE: {spell: 2.0, offense: 0.6}
+counters: counters/ladder-vision-v6.csv
+learned_ranker: null
+intent_advisor: false
+advisor_may_set: [DEFEND_LEAD, PRESS, SPELL_CYCLE]
