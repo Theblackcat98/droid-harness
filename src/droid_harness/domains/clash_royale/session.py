@@ -55,6 +55,8 @@ class MatchMeta:
     arm: str | None = None
     opponent_id: str | None = None
     pair_id: str | None = None  # experiment block this match belongs to (runner pairs arms)
+    account_levels: dict | None = None  # configs/accounts/<account>.yaml at match start (levels_id inside)
+    strategy_name: str | None = None
     start_pts_us: int | None = None  # device timestamp of the first battle frame (match t = 0)
     started_unix: float = field(default_factory=time.time)
 
@@ -254,15 +256,24 @@ class CRSession:
         else:
             my_crowns = s.crowns[0] if s else None
             opp_crowns = s.crowns[1] if s else None
-        tower_hp_diff = 0
+        # Only a like-for-like sum means anything: if any tower on either side was never read, the
+        # difference is unknown (it used to sum what happened to be read, which flipped its sign
+        # in losses where the opponent's labels were missed).
+        tower_hp_diff = None
         if s and s.towers:
-            my_hp = sum(v for k, v in s.towers.items() if k.startswith("me_"))
-            opp_hp = sum(v for k, v in s.towers.items() if k.startswith("opp_"))
-            tower_hp_diff = int(my_hp - opp_hp)
+            names = [f"{side}_{pos}" for side in ("me", "opp") for pos in ("left", "right", "king")]
+            if all(n in s.towers for n in names):
+                tower_hp_diff = int(sum(s.towers[n] for n in names[:3]) - sum(s.towers[n] for n in names[3:]))
         summary = {
             **self.match.__dict__, "status": status, "result": result,
             "my_crowns": my_crowns, "opp_crowns": opp_crowns,
             "tower_hp_diff": tower_hp_diff,
+            "my_king_level_seen": getattr(s, "my_king_level", None) if s else None,
+            "opp_king_level_seen": getattr(s, "opp_king_level", None) if s else None,
+            "tower_hp_reads": dict(getattr(self.perception, "tower_read_counts", {}) or {}),
+            "tower_read_cycles": getattr(self.perception, "_tower_reads", 0),
+            "hp_offsets": {k: [round(v[0], 4), round(v[1], 4)]
+                           for k, v in (getattr(self.perception, "hp_offsets", {}) or {}).items()},
             "duration_s": (s.t_ms / 1000) if s else None,
             "overtime": bool(s and s.phase.startswith("ot")),
             "elixir_leaked": round(self.perception.elixir.leaked, 2),

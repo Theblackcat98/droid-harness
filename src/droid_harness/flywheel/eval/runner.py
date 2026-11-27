@@ -15,6 +15,11 @@ Tests (``ExperimentConfig.test``):
 * ``h2h`` (two-phone self-play, candidate plays the champion): every game is a direct
   comparison, so it's a Bernoulli SPRT on the candidate's score vs 50%. Refuses games
   that aren't head-to-head.
+* ``dense`` (todo R8): same randomized pairs, but the outcome is the continuous paired
+  difference of ``dense_match_score`` (result, crowns, tower-HP difference when known, speed),
+  so W-W and L-L pairs count too. An always-valid mixture SPRT (mSPRT) on the mean
+  difference stops as soon as it is clearly positive (accept) or negative (reject); the
+  mixture scale ``dense_tau`` is the difference you care about. Needs ``min_dense_pairs``.
 * ``fixed``: candidate vs a fixed rate ``p0``. Only for absolute questions ("does the
   blind strategy beat the trainer more than half the time?"). It ignores the champion,
   so it must never be used for promotion.
@@ -47,7 +52,9 @@ def dense_match_score(summary: dict) -> float:
     base = 3.0 if res == "win" else (1.5 if res == "draw" else 0.0)
     my_c = float(summary.get("my_crowns") or 0.0)
     opp_c = float(summary.get("opp_crowns") or 0.0)
-    hp_diff = float(summary.get("tower_hp_diff") or 0.0)
+    # Unknown HP difference (a tower never read) contributes nothing rather than a biased guess.
+    hp_diff = summary.get("tower_hp_diff")
+    hp_diff = float(hp_diff) if isinstance(hp_diff, (int, float)) else 0.0
     dur = float(summary.get("duration_s") or 180.0)
     speed_bonus = max(0.0, (180.0 - dur) / 600.0) if res == "win" else 0.0
     return base + 0.5 * (my_c - opp_c) + max(-0.8, min(0.8, hp_diff / 3000.0)) + speed_bonus
@@ -72,10 +79,13 @@ class ExperimentConfig:
     seed: int = 0
     max_slot_retries: int = 3  # replays of one aborted slot before its pair is dropped
     futility_min_pairs: int = 0  # >0 enables Stage-A dense-margin futility stop when UCB95 < 0
+    account_levels_id: str = ""  # set -> a match played at other card levels voids the test
+    dense_tau: float = 0.5  # dense test: mixture scale (a paired margin difference worth detecting)
+    min_dense_pairs: int = 6  # dense test: pairs before the variance estimate is trusted
 
     def __post_init__(self) -> None:
         self.test = LEGACY_TESTS.get(self.test, self.test)
-        if self.test not in ("pairs", "h2h", "fixed"):
+        if self.test not in ("pairs", "dense", "h2h", "fixed"):
             raise ValueError(f"unknown test {self.test!r}")
 
 
@@ -119,6 +129,11 @@ class ExperimentRunner:
         if self.void_reason is None and summary.get("game_version") != self.cfg.game_version:
             self.void_reason = (
                 f"game version changed: {summary.get('game_version')} != {self.cfg.game_version}")
+        seen_levels = (summary.get("account_levels") or {}).get("levels_id")
+        if (self.void_reason is None and self.cfg.account_levels_id and seen_levels
+                and seen_levels != self.cfg.account_levels_id):
+            self.void_reason = (f"account levels changed mid-experiment ({seen_levels} != "
+                                f"{self.cfg.account_levels_id}): an upgrade changes both arms' strength")
         if (self.void_reason is None and self.cfg.test == "h2h"
                 and summary.get("opponent_kind") not in HEAD_TO_HEAD_KINDS):
             self.void_reason = (f"h2h needs head-to-head games, got opponent_kind="
@@ -179,8 +194,32 @@ class ExperimentRunner:
         return {"pairs": n, "mean": round(mean, 4), "se": round(se, 4),
                 "lcb95": round(mean - 1.96 * se, 4), "ucb95": round(mean + 1.96 * se, 4)}
 
+    def msprt(self) -> tuple[float, float, int]:
+        """(log Λ, mean paired difference, pairs) for the dense mixture SPRT.
+
+        Λ_n = sqrt(σ²/(σ²+nτ²)) · exp(n²τ²x̄² / (2σ²(σ²+nτ²))) with H0: mean difference = 0, a
+        N(0, τ²) mixture over the alternative and the plug-in variance; reject H0 when
+        Λ ≥ 1/α (Johari et al., always-valid inference).
+        """
+        ds = self.dense_pair_stats()
+        n, mean = int(ds["pairs"]), float(ds["mean"])
+        if n < max(2, self.cfg.min_dense_pairs):
+            return 0.0, mean, n
+        var = max(1e-6, (ds["se"] ** 2) * n)
+        tau2 = self.cfg.dense_tau ** 2
+        log_l = 0.5 * math.log(var / (var + n * tau2)) + (n * n * tau2 * mean * mean) / (2 * var * (var + n * tau2))
+        return log_l, mean, n
+
     def evaluate(self) -> SprtResult:
         cfg = self.cfg
+        if cfg.test == "dense":
+            better, worse, _ = self.pair_counts()
+            log_l, mean, _ = self.msprt()
+            bound = math.log(1 / cfg.alpha)
+            signed = log_l if mean >= 0 else -log_l
+            if log_l >= bound:
+                return SprtResult("accept_H1" if mean > 0 else "accept_H0", signed, -bound, bound, better, worse)
+            return SprtResult("continue", signed, -bound, bound, better, worse)
         if cfg.test == "pairs":
             better, worse, _ = self.pair_counts()
             res = sprt(better, worse, 0.5, cfg.p1, cfg.alpha, cfg.beta)
@@ -250,7 +289,7 @@ class ExperimentRunner:
             parts.append(self.void_reason)
         if self.futility_reason:
             parts.append(self.futility_reason)
-        if self.cfg.test == "pairs":
+        if self.cfg.test in ("pairs", "dense"):
             b, w, t = self.pair_counts()
             ds = self.dense_pair_stats()
             parts.append(f"pairs: candidate better {b}, champion better {w}, tied {t}, "

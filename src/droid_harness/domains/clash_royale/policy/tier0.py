@@ -10,13 +10,17 @@ from ..arena import Arena
 from ..cards import CardDB
 from ..state import GameState
 from .candidate import Candidate
+from .counter_prior import effectiveness
+from .levels import Levels
 from .placement import Placement
 from .strategy import Params
 
 
 class Tier0:
-    def __init__(self, cards: CardDB, arena: Arena, placement: Placement) -> None:
+    def __init__(self, cards: CardDB, arena: Arena, placement: Placement, levels: Levels | None = None) -> None:
         self.cards, self.arena, self.placement = cards, arena, placement
+        self.levels = levels or Levels()
+        self._king_level: int | None = None
         self.reset()
 
     def reset(self) -> None:
@@ -26,6 +30,7 @@ class Tier0:
     def check(self, s: GameState, p: Params) -> Candidate | None:
         for k, hp in s.towers.items():
             self._tower_max[k] = max(self._tower_max.get(k, 0), hp)
+        self._king_level = getattr(s, "my_king_level", None) or self._king_level
         return self.lethal_spell(s, p) or self.emergency_defend(s, p) or self.leak_guard(s, p)
 
     # --- invariants -----------------------------------------------------------
@@ -33,7 +38,8 @@ class Tier0:
         if card_key in p.tier0.spell_tower_damage:
             return p.tier0.spell_tower_damage[card_key]
         c = self.cards[card_key]
-        return int(c.damage * c.ct_damage_pct / 100)
+        mult = self.levels.mine(card_key, self._king_level) if p.level_aware else 1.0
+        return int(c.damage * mult * c.ct_damage_pct / 100)
 
     def lethal_spell(self, s: GameState, p: Params) -> Candidate | None:
         best = None
@@ -58,7 +64,8 @@ class Tier0:
             if not hp_max or hp / hp_max > p.tier0.emergency_hp_frac:
                 continue
             options = [(self.cards.cost(k), slot, k) for slot, k in s.affordable_hand(self.cards)
-                       if p.counters.get((k, th.kind), 0.0) > 0 and self.cards[k].can_hit(th.unit.flying)]
+                       if effectiveness(p, k, th.kind, self.cards, flying=th.unit.flying) > 0
+                       and self.cards[k].can_hit(th.unit.flying)]
             if not options:
                 continue
             _, slot, key = min(options)

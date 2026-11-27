@@ -194,7 +194,7 @@ def _failure_clusters(match_dirs: list[Path], analyzed: list[tuple[MatchTimeline
 
 def build_digest(data_root: str | Path, cards: CardDB, arena: Arena, *,
                  ledger_path: str | Path = "ledger/experiments.jsonl",
-                 max_loss_stories: int = 8) -> dict[str, Any]:
+                 max_loss_stories: int = 8, value_model: Any | None = None) -> dict[str, Any]:
     root = Path(data_root)
     dirs = [root] if (root / "summary.json").exists() else sorted(
         d for d in root.iterdir() if d.is_dir() and (d / "summary.json").exists()
@@ -226,8 +226,30 @@ def build_digest(data_root: str | Path, cards: CardDB, arena: Arena, *,
         for e in sorted(led.all(), key=lambda x: x.experiment_id)[-15:]
     ]
 
+    swings_by_match = []
+    if value_model is not None:  # where each loss turned, by the win-probability model
+        from ..learn.value_model import swings
+
+        for d in dirs:
+            try:
+                s = json.loads((d / "summary.json").read_text())
+            except (OSError, ValueError):
+                continue
+            if s.get("result") != "loss":
+                continue
+            recs = _jsonl(d / "decisions.jsonl")
+            states = [r["state"] for r in recs if isinstance(r.get("state"), dict)]
+            chosen = [(int(r.get("t_ms") or 0), r.get("chosen_card"), r.get("chosen_rule")) for r in recs if r.get("chosen_card")]
+            if not states:
+                continue
+            for sw in swings(states, value_model.predict_many(states), top=2):
+                near = [f"{t / 1000:.1f}s {c} ({rule})" for t, c, rule in chosen if sw["from_t_ms"] - 2000 <= t <= sw["t_ms"]]
+                swings_by_match.append({"match": d.name, **sw, "my_plays": near[:4]})
+        swings_by_match.sort(key=lambda r: -r["drop"])
+
     return {
         "data_root": str(root),
+        "win_prob_swings": swings_by_match[:12],
         "completed_matches": len(summaries),
         "total_dirs": len(dirs),
         "opp_8card_lock_rate": round(deck8_locked / max(1, len(summaries)), 3),
@@ -288,6 +310,12 @@ def render_agent_markdown(digest: dict[str, Any]) -> str:
         lines.append(f"- **`{cname}` ({info['count']}):** {', '.join(info['examples']) if info['examples'] else 'none'}")
     cu = fc["card_utilization"]
     lines.append(f"- **Card utilization:** total_plays={cu['total_plays']}, leak_guard_share=`{cu['leak_guard_share']:.1%}`, plays=`{cu['plays_by_card']}`")
+
+    if digest.get("win_prob_swings"):
+        lines += ["", "### Biggest win-probability drops in losses (value model)", ""]
+        for sw in digest["win_prob_swings"]:
+            lines.append(f"- `{sw['match']}` {sw['from_t_ms'] / 1000:.0f}s→{sw['t_ms'] / 1000:.0f}s: "
+                         f"−{sw['drop']:.0%} (to {sw['p']:.0%}); my plays: {', '.join(sw['my_plays']) or 'none'}")
 
     lines += ["", "## 5. Richest `STRATEGY` Loss Stories", ""]
     if digest["loss_stories"]:

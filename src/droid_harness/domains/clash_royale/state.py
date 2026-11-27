@@ -67,6 +67,9 @@ class GameState:
     posture: str = "BALANCED"
     last_action_ms: int = -10_000
     warnings: list[str] = field(default_factory=list)
+    # King Levels read from Princess Tower max HP (None until a full-HP tower is read)
+    my_king_level: int | None = None
+    opp_king_level: int | None = None
 
     # --- convenience ------------------------------------------------------
     def enemy_units(self) -> list[Unit]:
@@ -159,6 +162,7 @@ class GameState:
             "towers": self.towers, "crowns": self.crowns, "opp_last_four": self.opp_last_four,
             "opp_deck_seen": self.opp_deck_seen, "pocket_open": self.pocket_open,
             "posture": self.posture, "last_action_ms": self.last_action_ms, "warnings": self.warnings,
+            "my_king_level": self.my_king_level, "opp_king_level": self.opp_king_level,
         }
 
     @classmethod
@@ -171,4 +175,5 @@ class GameState:
                    crowns=tuple(d.get("crowns", (0, 0))), opp_last_four=list(d.get("opp_last_four", [])),
                    opp_deck_seen=list(d.get("opp_deck_seen", [])), pocket_open=dict(d.get("pocket_open", {})),
                    posture=d.get("posture", "BALANCED"), last_action_ms=d.get("last_action_ms", -10_000),
-                   warnings=list(d.get("warnings", [])))
+                   warnings=list(d.get("warnings", [])),
+                   my_king_level=d.get("my_king_level"), opp_king_level=d.get("opp_king_level"))

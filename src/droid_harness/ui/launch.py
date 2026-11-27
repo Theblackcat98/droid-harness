@@ -51,8 +51,16 @@ def attach_experiment(bot, runner) -> None:
 def start_replay_studio(roots: list[Path], *, host: str = "127.0.0.1", port: int = 8765,
                         cards: Path | None = None, strategies: Path = Path("configs/strategies"),
                         ledger: Path = Path("ledger/experiments.jsonl"), initial_match: str | None = None,
-                        title: str = "droid-harness Studio: replay") -> StudioServer:
-    library = MatchLibrary(roots, strategies=StrategyIndex(strategies), costs=CostBook.load(cards))
+                        title: str = "droid-harness Studio: replay", value: Path | None = None) -> StudioServer:
+    vm = None
+    if value is not None and Path(value).exists():
+        from ..learn.value_model import ValueModel
+
+        try:
+            vm = ValueModel.load(value)
+        except ValueError as e:
+            log.warning("ignoring %s: %s", value, e)
+    library = MatchLibrary(roots, strategies=StrategyIndex(strategies), costs=CostBook.load(cards), value_model=vm)
     studio = Studio(title=title, library=library, ledger=ledger, initial_match=initial_match)
     return StudioServer(studio, host, port).start()
 

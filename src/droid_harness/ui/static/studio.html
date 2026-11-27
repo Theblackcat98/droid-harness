@@ -219,7 +219,7 @@ body.replay footer { display: block; }
   <div class="side" id="side">
     <section class="panel"><div class="clockrow">
       <div class="clock" id="clock">0:00</div><span class="badge" id="phase">x1</span><span class="badge" id="posture">Balanced</span>
-      <span class="small" id="screen"></span>
+      <span class="small" id="screen"></span><span class="badge" id="winprob" hidden></span>
       <div class="crowns" id="crowns" title="Crowns: yours and theirs"><span class="me">0</span> <span class="small">to</span> <span class="opp">0</span></div>
     </div></section>
     <section class="panel"><h3>Elixir <span class="aside"><span id="leak"></span> The opponent's bar is an estimated range.</span></h3>
@@ -250,6 +250,7 @@ body.replay footer { display: block; }
     <span><i style="background:var(--blue)"></i>Your plays</span>
     <span><i style="background:var(--red)"></i>Their plays</span>
     <span><i style="background:var(--gold)"></i>Tower destroyed</span>
+    <span id="wpLegend" hidden><i style="background:var(--ink);height:2px"></i>Win chance (value model)</span>
   </div>
   <div class="transport">
     <button class="btn primary" id="play">Play</button>
@@ -511,6 +512,8 @@ function renderPanels() {
   const posture = (s.decision && s.decision.posture) || s.posture || "";
   $("#posture").textContent = posture ? posture.toLowerCase().replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()) : "";
   $("#screen").textContent = s.mode === "live" && s.screen && s.screen !== "IN_BATTLE" ? `Screen: ${s.screen.toLowerCase().replace(/_/g, " ")}` : "";
+  $("#winprob").hidden = s.win_prob == null;
+  if (s.win_prob != null) $("#winprob").textContent = `Win chance ${Math.round(s.win_prob * 100)}%`;
   $("#crowns").innerHTML = `<span class="me">${(s.crowns || [0, 0])[0]}</span> <span class="small">to</span> <span class="opp">${(s.crowns || [0, 0])[1]}</span>`;
 
   const me = s.elixir ? s.elixir.me : 0, opp = s.elixir ? s.elixir.opp : [0, 0];
@@ -533,8 +536,9 @@ function renderPanels() {
   $("#towers").innerHTML = html;
   const mine = ["me_left", "me_right", "me_king"].reduce((a, k2) => a + (T[k2] || 0), 0);
   const theirs = ["opp_left", "opp_right", "opp_king"].reduce((a, k2) => a + (T[k2] || 0), 0);
-  const unread = ["opp_left", "opp_right", "opp_king"].filter((k2) => T[k2] == null).length;
-  $("#hpdiff").textContent = unread === 3 ? "Opponent tower HP not read" : `HP difference ${mine - theirs > 0 ? "+" : ""}${mine - theirs}`;
+  const unread = ["me_left", "me_right", "me_king", "opp_left", "opp_right", "opp_king"].filter((k2) => T[k2] == null).length;
+  $("#hpdiff").textContent = unread ? `${unread} tower${unread > 1 ? "s" : ""} not read, so no HP difference`
+    : `HP difference ${mine - theirs > 0 ? "+" : ""}${mine - theirs}`;
 
   html = "";
   for (const c of s.hand || []) {
@@ -733,6 +737,7 @@ async function openMatch(id) {
   if (sm.opp_deck_seen && sm.opp_deck_seen.length) meta.push(`their deck <b>${esc(sm.opp_deck_seen.map(cardName).join(", "))}</b>`);
   meta.push(`<b>${m.timeline.length}</b> logged states, <b>${S.replay.actIdx.length}</b> plays chosen`);
   $("#mMeta").innerHTML = meta.join("; ");
+  $("#wpLegend").hidden = !(m.timeline[0] && m.timeline[0].win_prob != null);
   if (!m.has_video && S.view !== "map") setView("map", false);
   else if (m.has_video && S.view === "map" && !store.get("viewPinned", false)) setView("both", false);
   renderList();
@@ -831,6 +836,12 @@ function drawTape() {
   ctx.strokeStyle = C.elixir; ctx.lineWidth = 2; ctx.beginPath();
   tl.forEach((s, i) => { const x = X(s.t_ms), y = Y(s.elixir.me); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
   ctx.stroke();
+  // win probability (value model), on the same 0..10 scale as 0..100 %
+  if (tl[0].win_prob != null) {
+    ctx.strokeStyle = "rgba(238,240,250,.85)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.beginPath();
+    tl.forEach((s, i) => { const x = X(s.t_ms), y = Y((s.win_prob ?? 0.5) * 10); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.stroke(); ctx.setLineDash([]);
+  }
   // events
   for (const e of m.events || []) {
     const x = X(e.t_ms || 0);

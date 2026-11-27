@@ -28,7 +28,7 @@ class DeviceProfile(BaseModel):
     rois: str | None = None
 
     @model_validator(mode="after")
-    def _serial_env_override(self) -> "DeviceProfile":
+    def _serial_env_override(self) -> DeviceProfile:
         """Let the rig's ADB serial move without editing the tracked profile.
 
         The phone drops off USB between sessions and is picked up over

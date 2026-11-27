@@ -16,30 +16,33 @@ Tags: **[you]** needs your hands, phone or account · **[code]** pure code work 
 - **Results:** `ladder-vision-v4` went 9W–1L near 0 trophies. At ≈476 trophies, EXP-0001 (v4 vs v6, paired, 16 matches) went champion 2–6, candidate 2–5 (+1 abort): discordant pairs 2–2, LLR −0.05, **inconclusive**. The v6 opening guard demonstrably works (v4 back-built Giant at 1.1–1.9 s in six matches, v6 never did); eight pairs are too few to measure win rate.
 - **Why the win rate fell (review, 2026-11-27):** your Princess Towers read 1512 HP (**King Level 2**); every opponent whose towers were read had 1750–1890 (**King Level 4–5**). A 2–3 level gap is roughly a 20–30 % stat deficit on every card, and the policy doesn't model levels at all.
 - **Measurement problems found in the review:** opponent tower HP is read in only some frames (10 of the 16 EXP-0001 matches, never in the older `data/matches/` batch), so `tower_hp_diff` has the wrong sign in several losses (a 0–3 loss scored +337, a 0–1 loss +2620) and `tower_hp_increase` fires hundreds of times per match. That difference feeds engagement value, triage, Speed-1 scoring and the Stage-A futility margin.
-- **New:** the Studio (live view `play --ui` / `watch`, replay inspector `inspect`, no-phone demo `sim --ui`); docs consolidated into `README.md` + this file.
-- **Tests:** 220 passed, 2 skipped (torch and local calibration); `ruff` clean.
+- **Built 2026-11-27 (plan steps 1–6, see the run log):** trustworthy tower HP, account levels and level-aware policy (v7), a counter prior, Practice/friendly flows, the dense mSPRT, targeted Speed 1, the detector's next class list and unseen-card eval, template harvesting, a value model, and the `autopilot` with a systemd unit and a weekly coding-agent job. Everything new in `policy/` is opt-in and default off; it changed every strategy ID (v4 `61f2df2e1ec1`, v6 `434fb3d8d263`, v7 `f42458bd6f37`) but not a single logged decision of v4 or v6.
+- **Not yet run on the phone.** None of the new code has played a match. The first real run is the next step.
+- **Tests:** 244 passed, 1 skipped (torch); `ruff` clean.
 
 ## Priority queue
 
-1. **[code] Make tower HP trustworthy before tuning anything.** Find out why opponent tower digits fail (red text, outline, the ROI, or the King tower bar appearing only when activated) using `droid-harness inspect` on EXP-0001 with *HUD regions* on; add an opponent-side digits test; then trust `tower_hp_diff`, engagement value and the dense margin again. Until then, treat Speed-1 output and Stage-A futility as unreliable.
-2. **[you] Close the level gap.** Spend gold on cards that survive into Hog EQ (Musketeer, Knight, Fireball; see README §7) and push King Level. Record your King Level and deck levels after every upgrade session (see proposal R2), because an upgrade changes the bot's strength without changing any strategy ID.
-3. **[you/live] Decide the testbed for the next A/B.** Either continue EXP-0001 as a bounded Stage-B block (`droid-harness experiment --champion v4 --candidate v6 --mode ladder --ui`), or (recommended, R4) run tactical comparisons where opponents are fixed: Training Camp or a Practice-mode gauntlet, with ladder kept for validation.
-4. **[data/you] Detector for the climb.** Export real frames from the ladder batches (`droid-harness frames`), fix weak classes (`archer_opp`, `knight_opp`), add the Arena 2–5 cards you'll meet and will play (Skeletons `_me`, Cannon `_me`, Hog Rider, Valkyrie, Bomber, …), and spell effects beyond Arrows/Fireball (R6). Fine-tune 15–20 epochs on `veritas`, gate with `eval-detector`.
-5. **[code/agent] 3-speed loop** (original plan, with the review's amendments R3–R5): Speed 1 `tune-offline` → Speed 2 `experiment` → Speed 3 `digest` when plateaued; M8 v2 residual ranker once 50–100 post-digits ladder matches are banked (`label_from_video --version 2 --min-credit -0.5` → `train_ranker` → SPRT-gate `ranker_mode: residual`).
-6. **[done] Studio GUI.** `--ui` on `play`/`run`/`experiment`/`sim`, `watch` (observe-only), `inspect` (replay), `--native` window via the `[gui]` extra. See README §4.
+1. **[you] Fill in your levels.** Update [`configs/accounts/theblackcat99.yaml`](configs/accounts/theblackcat99.yaml): every deck card's level (only Archers is recorded) and `king_level` after each upgrade session. `doctor` then checks the strategies' spell damage against them.
+2. **[you] Close the level gap.** Spend gold on cards that survive into Hog EQ (Musketeer, Knight, Fireball; README §7) and push King Level. Opponents at ~476 trophies were King Level 4–5 against your 2.
+3. **[you/live] Validate tower HP on real video.** On `veritas`, where the original match folders kept their `stream.h264` (the repo copies don't): `droid-harness hp-audit --data data/matches-exp-v4-v6 --crops data/hp-crops`, then play 3–5 matches and check `tower_hp_reads` in `summary.json` covers all six towers. Only then trust `tower_hp_diff` and the dense test.
+4. **[you/live] First autopilot cycle, watched.** `droid-harness autopilot --testbed training_camp --test dense --cycles 1 --ui`. Check the report in `reports/latest.md`, then install the service (`tools/systemd/droid-autopilot.service`), set an ntfy topic in it, and run with `--cycles 0`.
+5. **[you] Calibrate Practice Mode** (battle-log Practice buttons, `PRACTICE_CONFIRM` screen; `doctor --mode practice` lists them) so the autopilot can test on fixed real decks instead of the Trainer.
+6. **[you/live] v7 vs v4.** Once levels are filled in: `droid-harness experiment --champion v4 --candidate v7 --mode training_camp --test dense --ui`, then confirm on the ladder.
+7. **[data/you] Next detector.** Train with `models/classes-next.txt` + `katacr_alias-next.json` + `katacr_generic-next.json` on `veritas` (README §10); gate with `eval-detector` and compare `eval-unseen` before/after.
+8. **[you] Review the weekly agent's PRs** (Saturdays). Merge only what you'd defend; the autopilot then tests it.
 
-## Proposed from the 2026-11-27 review (not agreed yet)
+## Review proposals R1–R8 (from 2026-11-27; status)
 
-Each is a separate, testable change. Anything under `policy/` changes every strategy ID, so batch those into one versioned release and start a new experiment after it.
+Each is a separate, testable change. Anything under `policy/` changes every strategy ID, so those shipped as one versioned release.
 
-- **R1 [code] Opponent tower HP.** Priority 1 above, plus: compute `tower_hp_diff` only from towers read on both sides, and drop the HP term from the dense pair margin when either side is missing.
-- **R2 [code] Account levels as data.** `configs/accounts/<account>.yaml` with King Level and card levels, written to every match's `meta.json`; experiments refuse to span a level change (like `game_version`). Derive `tier0.spell_tower_damage` from levels instead of hand-editing it per strategy.
-- **R3 [code, policy] Level-aware numbers.** Scale card HP/damage from the level-1 card DB (~+10 % per level) for kill-aware spells and counters; infer the opponent's King Level from their Princess Tower max HP (`infer_king_max_hp` already maps it) and expose `level_gap` to postures (respect threats more when under-leveled).
-- **R4 [you/code] Lower-variance testbed.** Training Camp and a Practice-mode gauntlet (same opponent deck for both arms) for tactical A/Bs; two-phone self-play (M7, `--test h2h`) when a second phone exists. Ladder only to confirm.
-- **R5 [code] Speed 1 as a targeted filter.** Turn each digest failure cluster into a predicate over logged states (e.g. "back Giant before 15 s while they hold ≥ 6.5"); a candidate must remove those decisions and change little else (replay-diff budget). Drop the current value-weighted objective, which rewards changing decisions inside losing engagements without estimating whether the new decision is better.
-- **R6 [data/code] Unseen cards.** Pre-train classes for every card on the Arena 1–9 path from KataCR sprites instead of per unlock; add common spell effects (Zap, The Log, Poison, Earthquake, Rocket, Goblin Barrel) so opponent elixir and cycle stay right; measure catch-all behaviour with a leave-one-card-out eval; estimate an unknown spawn's cost from unit count and size instead of a flat 2–5.
-- **R7 [code, policy] Counters that generalize.** A default effectiveness prior from card attributes (air/ground, splash vs swarm, building-targeters into buildings, DPS vs HP) when no CSV row exists; the CSV overrides it. Today a missing row means the card never defends, so blueprints 2–5 in README §7 (`counters: null`) would not defend at all.
-- **R8 [code] One hypothesis per experiment.** v6 changed ~20 parameters and four rules at once; even a clean win wouldn't say which part helped. Split future candidates, use non-regression bounds for safety fixes, and use a continuous paired outcome (crowns + a reliable HP difference) once R1 lands.
+- **R1 [code] Opponent tower HP. Done in code; live check open.** Per-tower label search with locked offsets, backoff and misread correction; `tower_hp_diff` only when all six towers were read; the dense margin skips an unknown HP term; `hp-audit` CLI. Open: run `hp-audit` on real video (priority 3).
+- **R2 [code] Account levels as data. Done.** `configs/accounts/<account>.yaml`; `account_levels` in every `meta.json`; experiments void on a level change; `doctor` checks levels against `tier0.spell_tower_damage`. Open: fill in the levels (priority 1).
+- **R3 [code, policy] Level-aware numbers. Done (opt-in).** `level_aware` scales HP/damage for kill-aware spells and Tier 0; King Levels inferred from Princess HP on both sides; `level_gap_respect` leans to defense when under-leveled. In `ladder-vision-v7`. Open: test it (priority 6).
+- **R4 [you/code] Lower-variance testbed. Code done; calibration open.** `practice` flow (both arms of a pair face the same battle-log entry), `friendly_host`/`friendly_guest` flows, per-device flow overrides, `doctor --mode`. Open: calibrate the buttons (priority 5); a second phone for self-play.
+- **R5 [code] Speed 1 as a targeted filter. Done.** `tune-targeted` with five pattern predicates, 1–2 knobs, a removal floor and a collateral budget; the autopilot uses it.
+- **R6 [data/code] Unseen cards. Partly done.** `classes-next.txt` (86 classes incl. five spell effects), `check-classes`, `eval-unseen`. Skipped on purpose: estimating an unknown spawn's cost from unit count and size, because the play event carries no size signal and naming the cards is the real fix. Open: train the next detector (priority 7); a leave-one-card-out model for `eval-unseen`.
+- **R7 [code, policy] Counters that generalize. Done (opt-in).** `counter_prior` gives missing CSV pairs an effectiveness from card attributes; a CSV row always wins. Blueprints in README §7 now say to turn it on.
+- **R8 [code] One hypothesis per experiment. Done in process.** Targeted candidates change 1–2 knobs; the weekly agent adds one rule per PR; `--test dense` uses a continuous paired outcome.
 
 ---
 
@@ -256,6 +259,21 @@ Detector foundations (`models/classes.txt`, `models/katacr_alias.json`, `models/
 
 ---
 
+## Autopilot and value model (code done 2026-11-27)
+
+- [x] **[code]** `droid-harness autopilot`: farm → diagnose (value model, digest) → propose (`tune-targeted`) → test (paired experiment on a testbed) → promote (`CHAMPION` pointer) → report (`reports/`), `--cycles 0` until `data/autopilot/STOP`, `--ui`.
+- [x] **[code]** Notifications (`--notify-url`, ntfy-style POST) and publishing (`--publish-git`: reports, ledger, `CHAMPION`, `auto/` to the `autopilot/reports` branch through a separate worktree).
+- [x] **[code]** `tools/systemd/droid-autopilot.service` (waits for the phone, runs `doctor`, restarts on failure).
+- [x] **[code]** Weekly coding-agent scheduled task (Saturdays 14:17 Pacific): reads the published reports, adds one opt-in rule with a test and a new strategy YAML, opens a PR, never merges; skips weeks with no new report or an open PR.
+- [x] **[code]** Value model (`train-value`, `learn/value_model.py`): validation AUC 0.69 on 56 committed matches; Studio win-chance line; digest swing moments.
+- [ ] **[you]** First watched cycle, then the service (priority 4).
+- [ ] **[code]** Use the value model as a dense outcome (win-probability gained per pair) once it's validated on 200+ matches; feed its features to the M8 ranker.
+- [ ] **[code]** Rotate the Practice gauntlet beyond the first four battle-log entries and record each entry's deck.
+
+**Done when:** the autopilot has run unattended for a week, promoted or rejected at least one candidate on its own, and the weekly job has opened a PR from its reports.
+
+---
+
 ## Definition of done: "fully running harness in a real bot game"
 
 - [ ] The bot plays Training Camp matches unattended for hours with automatic recovery (reconnect, popups, app restart).
@@ -270,7 +288,7 @@ Detector foundations (`models/classes.txt`, `models/katacr_alias.json`, `models/
 
 ## After that (stretch)
 
-- **M7 — Practice gauntlet + self-play.** Add a Practice Mode flow (battle log → opponent → Training) and a friendly-battle invite/accept flow (`menus.py`; the `friendly` flow is a stub). Run two `BotRunner`s with distinct ports, swapping strategy ↔ (phone, account) per `flywheel/eval/selfplay.py`. Check `seat_effect` for device bias.
+- **M7 — Practice gauntlet + self-play.** The `practice`, `friendly_host` and `friendly_guest` flows exist (2026-11-27) but their buttons and screens are uncalibrated. Calibrate them, then run two `BotRunner`s with distinct ports, swapping strategy ↔ (phone, account) per `flywheel/eval/selfplay.py`. Check `seat_effect` for device bias.
 - **M8 — Learned policy (plan P6).** CORE DONE 2026-11-26: `learn/label_from_video.py` (card-left-hand + matching spawn → weighted state/action rows from recorded matches), `learn/train_ranker.py` (numpy-MLP behavior cloning, static ONNX export `(32,55)->(32,1)`), live loader in `app.py` (`CRPolicy(ranker=...)` rescores candidates). STILL OPEN: first real training on warehouse decisions (needs 50+ wins of data — the farm), SPRT-gate each step (BC → filtered BC → offline RL), feature-schema in the strategy hash, logged ranker scores with fallback.
 - **M9 — L2 advisor (optional).** CORE DONE 2026-11-26: `core/runtime/advisor.py` (separate process, OpenAI-compatible API via `--api-base/--model`, posture-only JSON schema, TTL=2×cadence, never blocks), `advise --dry-run` (offline replay of a recorded match). STILL OPEN: point it at a live key (deepseek/zai), measure loop p99 with it on, keep it only if it wins an SPRT, then distill it.
 - **M10 — General Android (plan P7).** Test DroidRun Portal on your phones (`domains/android_os/a11y.py`, with uiautomator fallback). Add a GUI-model fallback with the Set-of-Mark overlay. Measure step latency and cache-hit rate on an everyday task suite.
@@ -286,6 +304,21 @@ Detector foundations (`models/classes.txt`, `models/katacr_alias.json`, `models/
 ---
 
 # Run log (newest first)
+
+## 2026-11-27 — Plan steps 1–6: trustworthy numbers, levels, testbed, autopilot, cards, value model
+
+All code, no phone runs yet. Verified on the committed match data (56 matches) and in tests.
+
+- **Tower HP (R1).** On the committed full-resolution battle frames the opponent labels sat ~16 px above their fixed regions. Each tower's label is now found by a vertical then horizontal search (~14 ms the first time, down from ~60 ms for the first version), locked per tower and kept across matches, with twin Princess towers sharing the vertical offset and a 2 s → 20 s backoff on misses. Three agreeing higher reads correct an earlier misread (`tower_hp_corrected`). `tower_hp_diff` is now `None` unless all six towers were read; `dense_match_score`, Optuna and analysis handle `None`. `hp-audit` reports coverage on recorded video.
+- **Levels (R2, R3).** `configs/accounts/theblackcat99.yaml` (King Level 2 measured; Archers 3; others unrecorded). `account_levels` in `meta.json`; experiments void on a level change. `policy/levels.py`: start levels, `1.1^(level − start)`, King Level from Princess HP. `level_aware` and `level_gap_respect` in kill-aware spells, Tier 0 and utility totals. New `ladder-vision-v7` = v6 + `level_aware: true`, `level_gap_respect: 0.08`.
+- **Counter prior (R7).** `policy/counter_prior.py`, opt-in `counter_prior`; CSV rows always win.
+- **Policy release check.** The release changed every strategy ID: v4 `639c09fe0c3a` → `61f2df2e1ec1`, v6 `ab2d9564c216` → `434fb3d8d263`. Both make identical decisions to before on all 28,744 logged states. Old IDs → names in `configs/strategies/legacy_ids.yaml`; `CHAMPION` points at v4.
+- **Testbed (R4).** `practice`, `friendly_host`, `friendly_guest` flows; per-device `flows:` overrides; `doctor --mode`. `--test dense` (mSPRT on the paired dense margin, `--dense-tau`, `min_dense_pairs`).
+- **Speed 1 (R5).** `tune-targeted`. On all committed data, v4's pattern hits: `over_defend_bleed` 34, `opening_throw` 9, `bad_counter_timing` 2, `wincon_starved` 1, `spell_inefficiency` 0. The best 1–2 knob fix for `over_defend_bleed` (`defend_trigger_tiles` 13 → 9.25, plus `ignore_chip_max_threat_value`) removes 25 of 34 hits with 0.17 % collateral, in 12 s on CPU. Not tested live: whether defending later is better is what the paired test measures.
+- **Cards (R6).** `models/classes-next.txt` (86 classes), `-next` alias/generic maps, `check-classes`, `eval-unseen`; template harvesting (`--harvest-templates`, `promote-templates`). Skipped: the unknown-spawn cost heuristic (no size signal in the play event; naming cards is the real fix).
+- **Value model.** `train-value`: 39 train / 17 validation matches, validation AUC 0.69, under-confident at the low end. Studio win-chance badge and tape line; `digest --value` lists swing moments.
+- **Autopilot.** `flywheel/autopilot.py`, `flywheel/eval/live.py` (`run_paired`, shared with `experiment`), `droid-harness autopilot`, `tools/systemd/droid-autopilot.service`, the weekly agent scheduled task. Tests run a full cycle with a fake phone (farm, value model, proposal, promotion, report), the rejected path, the STOP file, notification and publishing into a temp repo.
+- Tests 244 passed, 1 skipped; `ruff` clean.
 
 ## 2026-11-27 — Studio GUI, docs consolidation, strategy review
 

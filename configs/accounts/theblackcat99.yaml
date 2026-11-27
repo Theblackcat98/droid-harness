@@ -1,0 +1,16 @@
+# Account levels for theblackcat99 (README §7 "Account levels"; todo R2).
+# Update after every upgrade session. Every match records these in meta.json, and a paired
+# experiment is voided if they change mid-run (an upgrade changes the bot's strength without
+# changing any strategy ID). Levels use the game's unified 1-15 scale.
+account: theblackcat99
+king_level: 2          # measured 2026-11-27: your Princess Towers read 1512 HP
+updated: 2026-11-27
+cards:                 # null = not recorded yet (falls back to king_level in level-aware math)
+  knight: null
+  archers: 3           # upgraded Lv2 -> Lv3 on 2026-11-26
+  minions: null
+  arrows: null
+  fireball: null
+  giant: null
+  musketeer: null
+  mini_pekka: null

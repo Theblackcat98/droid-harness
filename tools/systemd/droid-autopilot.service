@@ -1,0 +1,40 @@
+# Runs the autopilot loop on the bot machine (veritas) as a user service.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp tools/systemd/droid-autopilot.service ~/.config/systemd/user/
+#   # edit WorkingDirectory and the ntfy topic below, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now droid-autopilot
+#   loginctl enable-linger "$USER"        # keep running after you log out
+#   journalctl --user -u droid-autopilot -f
+#
+# Stop gracefully after the current cycle:  touch data/autopilot/STOP
+# Stop now:                                 systemctl --user stop droid-autopilot
+
+[Unit]
+Description=droid-harness autopilot (farm -> diagnose -> propose -> test -> promote -> report)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/droid-harness
+Environment=PYTHONUNBUFFERED=1
+# The phone must be on adb before the loop starts; fail fast (and retry) if it isn't.
+ExecStartPre=/usr/bin/env adb wait-for-device
+ExecStartPre=%h/droid-harness/.venv/bin/droid-harness doctor --device phone-a --mode training_camp
+ExecStart=%h/droid-harness/.venv/bin/droid-harness autopilot \
+    --device phone-a \
+    --testbed training_camp --test dense \
+    --cycles 0 --rest-s 120 \
+    --notify-url https://ntfy.sh/CHANGE-ME-droid-autopilot \
+    --publish-git \
+    --ui --ui-host 0.0.0.0
+# --ui-host 0.0.0.0 makes the Studio reachable from your LAN (http://veritas:8765); drop it for localhost only.
+Restart=on-failure
+RestartSec=5min
+# A cycle can run for hours; give it time to write its report on stop.
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

@@ -53,7 +53,10 @@ def _record(t_ms=15913, *, acted=True) -> dict:
             "lat": {"decode": 0.38, "perceive": 1.82, "decide": 0.16, "total": 2.4}}
 
 
-def _write_match(root: Path, name: str, *, result="win", sid="ab2d9564c216", n=5) -> Path:
+V6_ID = load_strategy(V6)[2]  # strategy IDs hash the policy source, so compute it
+
+
+def _write_match(root: Path, name: str, *, result="win", sid=V6_ID, n=5) -> Path:
     d = root / name
     d.mkdir(parents=True)
     (d / "meta.json").write_text(json.dumps({"match_id": name, "device": "phone-a", "strategy_id": sid,

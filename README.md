@@ -38,10 +38,12 @@ Measured on `phone-a` (OnePlus N10, `741be240`), account `theblackcat99`. The la
 | Transport and loop | `scrcpy-server-v2.4` over USB + PyAV H.264 decode; battle loop `2.5–4.8 ms` p50 / `4–12 ms` p99 with `--async-detect` |
 | Detector | 31-class YOLO26-n v2 ([`models/classes.txt`](models/classes.txt)): mAP50 0.728, mAP50-95 0.474; `TorchDetector` (PyTorch-ROCm) 4.1 ms p50 on the RX 7900 XT |
 | Opponent tracking | Card, cost and cycle tracker locks 8-card opponent decks (10/10 matches in recent batches) |
-| HUD | Tower-HP digits, countdown clock, King HP seeding; opponent tower HP is read in only part of the frames (see `todo.md`) |
-| Results | `ladder-vision-v4` 9W–1L near 0 trophies; at ~476 trophies EXP-0001 (v4 vs v6, 16 matches) went 2–6 vs 2–5, inconclusive |
-| Studio | Live view (`play --ui`, `watch`), replay inspector (`inspect`), no-phone demo (`sim --ui`) |
-| Tests | `pytest` 220 passed, 2 skipped without torch/local calibration; `ruff check src tests tools` clean |
+| HUD | Tower-HP digits with a per-tower label search, locked offsets and misread correction; countdown clock; both sides' King Level inferred from Princess Tower HP. `tower_hp_diff` is only written when all six towers were read |
+| Results | `ladder-vision-v4` 9W–1L near 0 trophies; at ~476 trophies EXP-0001 (v4 vs v6, 16 matches) went 2–6 vs 2–5, inconclusive. Opponents there were King Level 4–5 against your 2 |
+| Strategies | Champion `ladder-vision-v4` (`61f2df2e1ec1`); candidates v6 (`434fb3d8d263`) and level-aware v7 (`f42458bd6f37`). The 2026-11-27 policy release changed every ID; old IDs resolve through [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml) |
+| Automation | `autopilot` runs farm → diagnose → propose → test → promote → report unattended ([§5](#autopilot-unattended-loop)); a weekly coding-agent job turns its reports into one structural-rule pull request |
+| Studio | Live view (`play --ui`, `watch`), replay inspector (`inspect`) with a win-chance line, no-phone demo (`sim --ui`) |
+| Tests | `pytest` 244 passed, 1 skipped without torch; `ruff check src tests tools` clean |
 
 ---
 
@@ -86,7 +88,18 @@ Optional extras: `[detector]` (ONNX Runtime), `[tuning]` (Optuna), `[gui]` (pywe
   --title "v6 pro rules + tower HP digits" --hypothesis "Fewer opening throws; cycle-lock/chip/punish"
 ```
 
-`--device phone-a` is the default preset. It resolves `profile`, `rois`, `tiles`, `arena`, `templates`, `screens`, `towers`, `digits`, `cards.json`, `models/yolo26n-cr.pt`, `models/classes.txt` and turns on `--async-detect`. Short strategy names resolve too (`v6` → `configs/strategies/ladder-vision-v6.yaml`). `--mode training_camp` farms the Trainer instead of the ladder.
+`--device phone-a` is the default preset. It resolves `profile`, `rois`, `tiles`, `arena`, `templates`, `screens`, `towers`, `digits`, `cards.json`, `models/yolo26n-cr.pt`, `models/classes.txt` and turns on `--async-detect`. Short strategy names resolve too (`v6` → `configs/strategies/ladder-vision-v6.yaml`, `champion` → whatever [`configs/strategies/CHAMPION`](configs/strategies/CHAMPION) points at).
+
+**Modes** (`--mode`):
+
+| Mode | Opponent | Use |
+| --- | --- | --- |
+| `ladder` | Trophy Road matchmaking | Farming and confirming a result; opponents drift with trophies |
+| `training_camp` | The Trainer bot | Cheap, fixed opponent for tactical A/Bs |
+| `practice` | A bot with a real opponent's deck and levels, from your battle log | Fixed-deck gauntlet; in an experiment both arms of a pair face the same battle-log entry (the pair number picks the entry, rotating through the first four; recorded as `opponent_id: practice:slotN`) |
+| `friendly_host` / `friendly_guest` | Your second phone | Two-phone self-play (`--test h2h`, `selfplay-schedule`) |
+
+The `practice` and `friendly_*` flows use buttons and screens that aren't calibrated on `phone-a` yet; `doctor --mode practice` lists what's missing. A device can override any flow under `flows:` in its ROI file instead of editing code.
 
 Explicit paths still work for custom setups:
 
@@ -117,7 +130,8 @@ Explicit paths still work for custom setups:
 | `--det-conf` / `--det-iou` | Confidence threshold (0.35) and NMS IoU (0.5). |
 | `--matches N` | Completed matches to play unattended (menus, queue, result screen, popups). `Ctrl+C` stops cleanly. |
 | `--data <dir>` | Output. Each match writes `<dir>/<match_id>/` with `meta.json`, `summary.json`, `decisions.jsonl`, `frames.jsonl`, `stream.h264` + `stream.pts`. |
-| `--ui` | Serve the Studio while playing (also on `run`, `experiment`, `run-experiment`, `sim`). See [§4](#4-studio-live-view-and-replay-inspector). |
+| `--ui` | Serve the Studio while playing (also on `run`, `experiment`, `run-experiment`, `autopilot`, `sim`). See [§4](#4-studio-live-view-and-replay-inspector). |
+| `--harvest-templates <dir>` | Save hand crops the template matcher can't read (a newly unlocked card). Review them, then `promote-templates` ([§10](#new-cards-without-hand-capturing-templates)). |
 
 ### Stuck-screen recovery (automatic)
 
@@ -156,10 +170,11 @@ ssh -L 8765:localhost:8765 nick@192.168.1.199    # then open http://localhost:87
 - **Tactical map**: the same moment in tile space: towers with HP, units by side (air units hollow), candidates and the chosen play. It needs no video, so it's the default for recorded matches whose video was pruned.
 - **Right column**: clock, elixir phase and posture; your elixir and the opponent's estimated range; the hand with stale (unread) slots outlined; the decision table (every candidate's `score × weight × posture multiplier = total`, the act threshold as a line, the chosen row in gold, and each rule's reason); the opponent's 8-card cycle (what could be in hand, what's cycling back and how much elixir it takes to return); towers; the experiment strip (record per arm, pairs, dense margin, LLR between its bounds); latency per stage.
 - **Replay** adds the elixir tape along the bottom: your elixir, the opponent's range, your plays, their plays and fallen towers over the whole match, with a playhead you can drag. Space plays or pauses, arrow keys step through logged states, Shift+arrows jump between chosen plays.
+- **Win chance** (replay, when `models/value.json` exists): a badge with the value model's win probability at the playhead and a line on the tape, smoothed over 2 s. Sharp drops mark the moments worth scrubbing to. Train the model with `droid-harness train-value` ([§8](#8-analyze-matches)); `inspect --value <path>` uses another one.
 
-**What it costs the bot.** The brain thread hands the Studio references it already holds (frame, observation, decision, timings, detector boxes): one lock and one tuple assignment per frame. A separate publisher thread samples that at `--ui-fps`, builds the snapshot JSON and the JPEG, and serves them; building took 0.6–0.8 ms per snapshot in the simulator. Nothing in `policy/` changed, so strategy IDs are unchanged.
+**What it costs the bot.** The brain thread hands the Studio references it already holds (frame, observation, decision, timings, detector boxes): one lock and one tuple assignment per frame. A separate publisher thread samples that at `--ui-fps`, builds the snapshot JSON and the JPEG, and serves them; building took 0.6–0.8 ms per snapshot in the simulator. The Studio lives outside `policy/`, so it doesn't change strategy IDs.
 
-**Replay data.** `inspect` reads `decisions.jsonl` (logged every 5th frame and on every play), `summary.json` and `meta.json`. If `stream.h264` survived retention, it's decoded once in the background at 10 fps. Detector boxes aren't logged, so recorded video shows tracked units projected from their logged tiles. Strategy IDs from older policy code don't resolve to a file; the table then derives `× weight` from `total ÷ score`.
+**Replay data.** `inspect` reads `decisions.jsonl` (logged every 5th frame and on every play), `summary.json` and `meta.json`. If `stream.h264` survived retention, it's decoded once in the background at 10 fps. Detector boxes aren't logged, so recorded video shows tracked units projected from their logged tiles. Strategy IDs from older policy code resolve to a name through [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml); one that still doesn't resolve shows `× weight` derived from `total ÷ score`.
 
 Code: [`src/droid_harness/ui/`](src/droid_harness/ui/) (`telemetry.py` tap and publisher, `snapshot.py` shared schema, `library.py` recorded matches, `server.py` routes, `static/studio.html` the page).
 
@@ -167,46 +182,65 @@ Code: [`src/droid_harness/ui/`](src/droid_harness/ui/) (`telemetry.py` tap and p
 
 ## 5. Improvement loop
 
-Three speeds: seconds on CPU, hours on the phone, and a coding agent only when progress plateaus. No LLM runs inside the harness.
+Three speeds: seconds on CPU, hours on the phone, and a coding agent only for changes a parameter can't make. No LLM runs inside the harness. `autopilot` chains Speeds 1 and 2 unattended; the weekly agent job is Speed 3.
 
 ```bash
-# 0. Pre-flight before every session
+# 0. Pre-flight before every session (add --mode practice to check that flow's buttons)
 .venv/bin/droid-harness doctor --live
 
-# 1. Collect games with the champion
-.venv/bin/droid-harness play --strategy v4 --mode ladder --matches 30 --prune-win-video
+# The whole loop, unattended (see "Autopilot" below)
+.venv/bin/droid-harness autopilot --testbed training_camp --test dense --cycles 0 --ui
 
-# 2. Speed 2: paired live test of candidate vs champion. Randomized pairs cancel ladder drift;
+# Or step by step:
+# 1. Collect games with the champion
+.venv/bin/droid-harness play --strategy champion --mode ladder --matches 30 --prune-win-video
+
+# 2. Speed 1: offline, between phone runs (seconds, no phone, no LLM)
+.venv/bin/droid-harness tune-targeted --champion v4 --data data --scan          # pattern hits
+.venv/bin/droid-harness tune-targeted --champion v4 --data data \
+  --out configs/strategies/ladder-vision-v4-t1.yaml                             # 1-2 knob fix
+.venv/bin/droid-harness shadow --champion v4 --candidate configs/strategies/ladder-vision-v4-t1.yaml
+
+# 3. Speed 2: paired live test of candidate vs champion. Randomized pairs cancel opponent drift;
 #    clearly worse candidates stop early (dense-margin futility); the result goes to ledger/
-.venv/bin/droid-harness experiment --champion v4 --candidate v6 --mode ladder --prune-win-video \
-  --title "v6 pro rules" --hypothesis "fewer opening throws"
+.venv/bin/droid-harness experiment --champion v4 --candidate configs/strategies/ladder-vision-v4-t1.yaml \
+  --mode training_camp --test dense --title "narrower defend trigger" --hypothesis "less over-defending"
 .venv/bin/droid-harness ledger        # renders ledger/STRATEGY_LEDGER.md
 
-# 3. Speed 1: offline, between phone runs (seconds, no phone, no LLM)
-.venv/bin/droid-harness analyze --data data/matches
-.venv/bin/droid-harness tune-offline --champion v6 --trials 200 --out configs/strategies/ladder-vision-v7.yaml
-.venv/bin/droid-harness shadow --champion v6 --candidate v7
-.venv/bin/droid-harness replay-diff --champion v6 --candidate v7 --expected-pct 5
-# then repeat step 2 with --champion v6 --candidate v7
-
-# 4. Speed 3: when progress plateaus, hand a <30 KB digest to your coding agent
+# 4. Speed 3: a <30 KB digest for a coding agent (the weekly job reads the autopilot's copy)
 .venv/bin/droid-harness digest --data data/matches --out data/agent_digest.md
-# The agent adds ONE structural rule + unit test in a NEW strategy file (never edit a strategy that has played).
 
 # 5. Housekeeping
 .venv/bin/droid-harness retain --data data/matches   # prune win videos, keep loss keyframes
 ```
 
 Notes:
-- `tune-offline` enforces a replay-diff guardrail (`--min-diff-pct`, `--max-diff-pct`); if nothing passes, raise `--trials`, lower `--min-diff-pct`, or collect more matches.
-- Use a new `--balance-epoch` after a game update; experiments are void across updates.
+- Use a new `--balance-epoch` after a game update; experiments are void across updates. They're also void across an upgrade (the `account_levels` recorded on every match changed).
+- `tune-offline` (the older value-weighted search, 2–5 knobs) is still there, but it rewards changing decisions inside losing engagements without knowing whether the new decision is better. Prefer `tune-targeted`.
 
 ### The three speeds in detail
 
-1. **Speed 1, offline counterfactual search** (`tune-offline` + `shadow`; CPU seconds, no phone games, no LLM). Samples 100–500 parameter sets around the champion (2–5 knobs each, from `OFFLINE_SPACE` in [`offline_study.py`](src/droid_harness/flywheel/tuning/offline_study.py)), replays every logged state through the candidate policy, and scores each by how many decisions it changes inside losing engagements (`value < −0.5`) versus winning ones (`> 0.5`), with a 1–18 % change budget. Only the single best candidate goes on. It's a filter, not an estimate of win rate: see the review notes in `todo.md`.
-2. **Speed 2, persistent paired live gate** (`experiment`; phone hours, no LLM). One `BotRunner` (detector weights and scrcpy loaded once, `CRPolicy` hot-swapped per match) plays randomized two-game blocks. **Stage A** scores every pair by crowns + tower-HP difference + speed and stops a candidate early when the upper 95 % bound of the mean pair margin is below zero (`--futility-pairs 12`). **Stage B** runs the paired SPRT on discordant pairs to accept or reject, written to the [ledger](ledger/STRATEGY_LEDGER.md).
-3. **Speed 3, structural handoff** (`digest`; one agent turn when plateaued). A deterministic `< 30 KB` Markdown + JSON dossier for an external coding agent to add one structural rule with a unit test; numeric tuning then goes back to Speed 1.
+1. **Speed 1, targeted counterfactual search** (`tune-targeted`; CPU seconds, no phone, no LLM). Each digest failure pattern is a predicate over logged states ([`targeted.py`](src/droid_harness/flywheel/tuning/targeted.py)): `opening_throw` (a play in the first 15 s that leaves you under 3.2 elixir while they may hold ≥ 6.5), `bad_counter_timing` (win condition played while a hard counter they've shown is out of their last four plays, so in hand, and affordable), `over_defend_bleed` (defending a push worth under 3 elixir down to under 2 elixir), `wincon_starved` (≥ 8.5 elixir, a win condition ready in hand, an empty board, and something else played), `spell_inefficiency` (a spell whose own value estimate is negative). The search picks the champion's most frequent pattern (or `--pattern`), tries 1–2 knobs from that pattern's list, and keeps a candidate only when it removes at least `--min-removed` of the hits (default 50 %) while changing at most `--max-collateral` % (default 3 %) of the other decisions. One or two knobs keep each experiment one hypothesis (R8). It's a filter: whether the new decision is better is what Speed 2 measures.
+2. **Speed 2, persistent paired live gate** (`experiment`; phone hours, no LLM). One `BotRunner` (detector weights and scrcpy loaded once, `CRPolicy` hot-swapped per match) plays randomized two-game blocks. **Stage A** scores every pair by crowns + tower-HP difference + speed and stops a candidate early when the upper 95 % bound of the mean pair margin is below zero (`--futility-pairs`). **Stage B** decides: `--test pairs` runs the SPRT on discordant pairs (win/loss only), `--test dense` runs an always-valid test on the paired margin itself, which uses every pair rather than only the discordant ones, so it usually needs fewer games ([§12](#12-evaluation-and-statistics)). The result goes to the [ledger](ledger/STRATEGY_LEDGER.md).
+3. **Speed 3, structural rule** (a coding agent, weekly). The digest (failure clusters, loss stories, matchup matrix and, with a value model, the moments the win chance fell hardest) goes to an agent that adds **one** rule as an opt-in parameter with a unit test, in a new strategy file, as a pull request you review. The scheduled job does this from the autopilot's published reports; numeric tuning of the new rule then goes back to Speed 1.
 4. **Tie-breaker, M8 v2 residual ranker** (`learn/label_from_video.py --version 2` + `train_ranker.py`). Per-lane board value, threat ETA and opponent-cycle features (`droid-harness-ranker/2`), engagement-credit advantage-weighted / filtered BC, blended as a bounded residual (`ranker_mode: residual`, `rule_score + w·(p − 0.5)`) so safety and counter gates are never overwritten.
+
+### Autopilot (unattended loop)
+
+`droid-harness autopilot` ([`flywheel/autopilot.py`](src/droid_harness/flywheel/autopilot.py)) runs cycles of:
+
+1. **Farm** `--farm-matches` (20) with the current champion in `--farm-mode` (ladder), then prune clean-win video.
+2. **Diagnose.** Retrain the value model on everything farmed (once there are enough matches) and write the digest for this batch.
+3. **Propose.** `tune-targeted` on the champion's most frequent failure pattern; if nothing passes, the next one. The candidate is a new file, `configs/strategies/auto/<champion>-<pattern>-<stamp>.yaml`.
+4. **Test** it against the champion with a paired experiment on `--testbed` (`training_camp` or `practice` for fixed opponents; `ladder` to confirm), `--test pairs|dense`, capped at `--max-games` with Stage-A futility after `--futility-pairs`.
+5. **Promote** on acceptance: [`configs/strategies/CHAMPION`](configs/strategies/CHAMPION) moves to the candidate. Strategy files are never edited, and rejections stay in the ledger so the same idea isn't retried.
+6. **Report** to `reports/<stamp>/` (`report.md`, `report.json`, `digest.md`) and `reports/latest.md`. With `--notify-url` it POSTs a one-line summary (an [ntfy.sh](https://ntfy.sh) topic URL puts it on your phone). With `--publish-git` it commits the reports, the ledger, `CHAMPION` and `auto/` to the `autopilot/reports` branch through a separate worktree, so your checkout is never touched, and pushes it.
+
+`--cycles 0` runs until `data/autopilot/STOP` exists (`touch` it to stop after the current cycle). `--ui` serves the Studio for the whole run. The autopilot never writes code: new rules arrive as pull requests from the weekly job, and you merge them.
+
+**Run it as a service** on the bot machine with [`tools/systemd/droid-autopilot.service`](tools/systemd/droid-autopilot.service) (setup steps in the file): it waits for the phone, runs `doctor` first, restarts on failure after 5 minutes, and `loginctl enable-linger` keeps it running after you log out.
+
+**Weekly coding-agent job** (a scheduled task in Claude, Saturdays 14:17 Pacific). It reads `reports/latest.md` and `latest-digest.md` from `autopilot/reports` and does nothing when there's no report from the past 8 days or its previous PR is still open. Otherwise it picks one structural weakness the reports show and parameters didn't fix, implements it as an opt-in parameter (default off, so existing strategies don't change behaviour) with a unit test and a new strategy YAML copied from the champion, checks it with `pytest`, `ruff`, `replay-diff`, `shadow` and a pattern scan, and opens a PR against `main`. It never merges. Merging and letting the autopilot test it is your call.
 
 ### What the digest contains
 
@@ -221,8 +255,10 @@ Notes:
 
 ### Things only you can do
 
-- **Card levels.** Upgrade cards that survive into the Hog EQ deck (Musketeer, Knight, Fireball); keep Giant, Mini P.E.K.K.A, Archers, Minions and Arrows at minimum. Reach King Level 2 early. Update `tier0.spell_tower_damage` in a new strategy file when spell levels change.
-- **New cards after an arena unlock.** Capture `affordable` + `greyed` hand templates (`droid-harness template`; `doctor` flags missing ones), add counter rows, then fine-tune the detector ([§10](#10-detector-retrain-or-add-cards)).
+- **Card levels.** Upgrade cards that survive into the Hog EQ deck (Musketeer, Knight, Fireball); keep Giant, Mini P.E.K.K.A, Archers, Minions and Arrows at minimum. After every upgrade session, update [`configs/accounts/theblackcat99.yaml`](configs/accounts/theblackcat99.yaml) ([§6](#account-levels)). `doctor` tells you when a strategy's `tier0.spell_tower_damage` no longer matches your spell levels.
+- **New cards after an arena unlock.** Play a few matches with `--harvest-templates data/harvest`, then `promote-templates` (or capture by hand with `droid-harness template`; `doctor` flags missing ones), add counter rows or rely on the counter prior, then fine-tune the detector ([§10](#10-detector-retrain-or-add-cards)).
+- **Calibrate the Practice and friendly flows** (battle-log Practice buttons, social/friendly screens) before using them as a testbed: `doctor --mode practice` lists what's missing.
+- **Autopilot plumbing:** pick an ntfy topic, install the systemd unit, and decide when to merge the weekly agent's PRs.
 - **Hog Rider (Arena 5).** Switch to the Hog cycle blueprint in [§7](#7-strategy-playbook).
 - **M8 ranker** after ~50+ post-digits ladder matches: `python -m droid_harness.learn.label_from_video --version 2 --cards configs/domains/clash_royale/cards.json --min-credit -0.5`, then `train_ranker`, then test it with `experiment` like any candidate.
 - Ladder botting can get the account banned; that risk is yours.
@@ -231,7 +267,34 @@ Notes:
 
 ## 6. Strategies: files, rules, promotion
 
-**Immutability rule.** Never modify a strategy YAML or counter CSV once it has logged matches. Copy it to a new version (`ladder-vision-v6.yaml` → `ladder-vision-v7.yaml`), update `strategy:` and `parent:`, and point `counters:` at its own CSV. Every strategy gets a 12-character `strategy_id` hashing the YAML, its counter CSV, any ranker model, **and every file under [`policy/`](src/droid_harness/domains/clash_royale/policy/)**: editing policy code changes every strategy's ID, which voids running experiments.
+**Immutability rule.** Never modify a strategy YAML or counter CSV once it has logged matches. Copy it to a new version (`ladder-vision-v6.yaml` → `ladder-vision-v7.yaml`), update `strategy:` and `parent:`, and point `counters:` at its own CSV. Every strategy gets a 12-character `strategy_id` hashing the YAML, its counter CSV, any ranker model, **and every file under [`policy/`](src/droid_harness/domains/clash_royale/policy/)**: editing policy code changes every strategy's ID, which voids running experiments. New policy features therefore ship as **opt-in parameters, default off**, batched into one release, with a check that existing strategies make identical decisions on logged states.
+
+**Current strategies.**
+
+| File | ID | Notes |
+| --- | --- | --- |
+| [`ladder-vision-v4.yaml`](configs/strategies/ladder-vision-v4.yaml) | `61f2df2e1ec1` | Champion ([`CHAMPION`](configs/strategies/CHAMPION)) |
+| [`ladder-vision-v6.yaml`](configs/strategies/ladder-vision-v6.yaml) | `434fb3d8d263` | Pro-rules candidate (EXP-0001 inconclusive) |
+| [`ladder-vision-v7.yaml`](configs/strategies/ladder-vision-v7.yaml) | `f42458bd6f37` | v6 + `level_aware: true`, `level_gap_respect: 0.08` |
+
+The 2026-11-27 policy release (levels, counter prior) changed every ID: v4 was `639c09fe0c3a` and v6 `ab2d9564c216`. Both make the same decisions as before on all 28,744 logged states. [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml) maps old IDs to names so the Studio, ledger and digest still label old matches.
+
+**Champion pointer.** [`configs/strategies/CHAMPION`](configs/strategies/CHAMPION) holds the path of the current champion, relative to `configs/strategies/`. `--strategy champion` resolves it; the autopilot reads it and moves it when a candidate is accepted.
+
+### Account levels
+
+Card levels change the bot's strength without changing any strategy ID, so they're data: [`configs/accounts/<account>.yaml`](configs/accounts/theblackcat99.yaml) (the account comes from the device profile) holds `king_level` and each deck card's level on the game's unified 1–15 scale; `null` means not recorded yet. Every match records them in `meta.json` as `account_levels`, and an experiment is voided if they change partway.
+
+Perception reads each side's King Level from its Princess Tower max HP (1400 → 1, 1512 → 2, 1624 → 3, 1750 → 4, 1890 → 5, …), so every match also logs the level gap. `doctor` compares the file with what it measured and with each strategy's `tier0.spell_tower_damage`.
+
+With `params.level_aware: true` ([`policy/levels.py`](src/droid_harness/domains/clash_royale/policy/levels.py)):
+- card HP and damage scale by `1.1^(level − start level)` (start levels: common 1, rare 3, epic 6, legendary 9, champion 11). Your cards use the file, falling back to King Level; the opponent's use their inferred King Level;
+- kill-aware spells use scaled damage against scaled HP. Tier 0's lethal check derives a spell's tower damage from your levels when `tier0.spell_tower_damage` doesn't list that spell (a listed value still wins, so leave it out of new strategies and let the levels decide);
+- `level_gap_respect: r` multiplies defense by `1 + r·gap` and divides offense by it when you're under-leveled (`gap` = their King Level − yours).
+
+### Counter prior
+
+A missing row in a counters CSV used to mean "this card never defends against that threat". With `params.counter_prior: true` ([`policy/counter_prior.py`](src/droid_harness/domains/clash_royale/policy/counter_prior.py)), a missing pair gets a coarse effectiveness from card attributes instead (the card DB has HP, range, unit count, targets and cost, but no DPS or splash): buildings pull building-targeters, swarms and heavy single troops answer tanks, ranged troops answer most things a little, spells only answer what they kill (more for swarms), and catch-all `other_*` threats get a middling value. `Card.can_hit` still gates it, and `counter_prior_scale` scales it. A CSV row always wins, even `0`. This is what lets a new deck, or an opponent card you've never written a row for, get sensible defense on day one.
 
 ### Strategy file structure ([`policy/strategy.py`](src/droid_harness/domains/clash_royale/policy/strategy.py))
 
@@ -247,6 +310,7 @@ Notes:
 | Placement (`placement:`) | `building_pull`, `ranged_standoff_tiles`, `bridge_tiles`, `back_tiles` | Anchor tiles and standoff distance on the 18×32 grid. |
 | Weights and postures | `weights`, `posture_multipliers` | Per-rule multipliers and scaling for `OPENING`, `BALANCED`, `DEFEND_LEAD`, `PRESS`, `SPELL_CYCLE`. |
 | Counters CSV (`counters:`) | `card,threat,effectiveness` (0..1) | Defense matchup matrix, always subject to `Card.can_hit(flying)`. |
+| Levels and counters (2026-11-27) | `level_aware`, `level_gap_respect`, `counter_prior`, `counter_prior_scale` | Level-scaled numbers and the counter prior, below. All off by default. |
 | Ranker and advisor | `learned_ranker`, `ranker_mode`, `ranker_residual_weight`, `intent_advisor`, `advisor_may_set` | Optional M8 ranker and M9 advisor (off by default). |
 
 A candidate's final value is `score × weights[rule] × posture_multipliers[posture][family]`; the best one is played if it clears `act_threshold`. The Studio's decision table shows exactly this breakdown.
@@ -259,7 +323,8 @@ A candidate's final value is `score × weights[rule] × posture_multipliers[post
    droid-harness replay-diff --champion v4 --candidate v6 --data data/matches --expected-pct 5.0 --tolerance 4.0
    ```
 3. **Shadow scoring and offline search (optional):** `droid-harness shadow` (disagreements × engagement value), `tune-offline`, or Optuna (`flywheel/tuning/optuna_study.py`, `pip install -e ".[tuning]"`).
-4. **Paired SPRT:** `droid-harness experiment` (ladder defaults) or `run-experiment` (Training Camp defaults). Randomized blocks of two (`--test pairs`) cancel matchmaking drift; every result goes to [`ledger/experiments.jsonl`](ledger/experiments.jsonl) and [`ledger/STRATEGY_LEDGER.md`](ledger/STRATEGY_LEDGER.md). Never use `--test fixed` to promote; use `pairs`, or `h2h` for two-phone self-play (`selfplay-schedule`).
+4. **Paired live test:** `droid-harness experiment` (ladder defaults) or `run-experiment` (Training Camp defaults). Randomized blocks of two (`--test pairs` or `dense`) cancel matchmaking drift; every result goes to [`ledger/experiments.jsonl`](ledger/experiments.jsonl) and [`ledger/STRATEGY_LEDGER.md`](ledger/STRATEGY_LEDGER.md). Never use `--test fixed` to promote; use `pairs`/`dense`, or `h2h` for two-phone self-play (`selfplay-schedule`).
+5. **Promotion:** move [`CHAMPION`](configs/strategies/CHAMPION) to the accepted file (the autopilot does this itself).
 
 ---
 
@@ -323,7 +388,7 @@ Ladder climbing raises opponents' card levels, so **gold and wildcards go only i
 
 ### Blueprints
 
-Each uses only keys accepted by `StrategySpec`. **Blueprint 1** is checked in as [`ladder-vision-v6.yaml`](configs/strategies/ladder-vision-v6.yaml) (+ [`counters/ladder-vision-v6.csv`](configs/strategies/counters/ladder-vision-v6.csv)): it fixes v5's opening throws with `defense_reserve: 2.5` and `giant_safe_build_elixir: 8.6`, narrower hard-counter `wc_counters`, moderate multipliers (0.55 / 1.45) and the v6 extensions above. The others need templates, counter CSVs and detector classes for their cards before use, and `spell_tower_damage` set to your levels.
+Each uses only keys accepted by `StrategySpec`. **Blueprint 1** is checked in as [`ladder-vision-v6.yaml`](configs/strategies/ladder-vision-v6.yaml) (+ [`counters/ladder-vision-v6.csv`](configs/strategies/counters/ladder-vision-v6.csv)): it fixes v5's opening throws with `defense_reserve: 2.5` and `giant_safe_build_elixir: 8.6`, narrower hard-counter `wc_counters`, moderate multipliers (0.55 / 1.45) and the v6 extensions above. The others need templates and detector classes for their cards before use. They ship with `counters: null`, so **add `counter_prior: true` and `level_aware: true` to their `params:`** when you instantiate one: without the prior a card with no CSV row never defends, and with `level_aware` you can leave `tier0.spell_tower_damage` empty and let your account levels supply it ([§6](#account-levels)). Write CSV rows only where the prior is wrong.
 
 <details><summary>Blueprint 2: 2.6 Hog cycle (<code>pro-hog-cycle-blueprint</code>)</summary>
 
@@ -606,10 +671,21 @@ python notebooks/dashboard.py data/matches-batch
 
 # Scrub any match visually
 droid-harness inspect data/matches-batch
+
+# Win-probability model from finished matches (Studio win-chance line, digest swing moments)
+droid-harness train-value data --out models/value.json
+
+# Tower-HP label coverage on recorded video: fixed regions vs the label search, per tower
+droid-harness hp-audit --data data/matches-exp-v4-v6 --crops data/hp-crops
 ```
 
+**Value model** ([`learn/value_model.py`](src/droid_harness/learn/value_model.py)). Logistic regression (numpy, no extra dependencies) from a logged state to P(win), over 23 features: time and phase, your elixir and the opponent's range, all six tower HP fractions, crown difference, unit counts and HP on each half, the King Level gap, how much of their deck is known, and hand freshness. It's split by match, so the validation score is honest. On the 56 committed matches (39 train / 17 validation) it reaches validation AUC 0.69 and is under-confident at the low end, so read it as a ranking of moments, not a calibrated probability. It finds the 2–3 seconds where a match turned (`digest` lists them as swings) and is the first piece of the M8 learned ranker. Retrain whenever data grows; the autopilot does it every cycle.
+
+**Tower HP.** Opponent tower labels move with the arena art and the King Tower's bar appears only once it's activated, so fixed regions miss many reads. Each tower's label is now found by a small vertical and horizontal search around its region (~14 ms the first time), the offset is locked and reused across matches, and failed searches back off (2 s doubling to 20 s). A reading that drops and then three agreeing reads go back up is treated as a misread and corrected (`tower_hp_corrected` event). `summary.json` carries `tower_hp_reads` per tower and leaves `tower_hp_diff` empty unless all six towers were read, so no analysis gets a one-sided difference.
+
 Each match folder holds:
-- `summary.json`: `result`, `my_crowns`, `opp_crowns`, `tower_hp_diff`, `strategy_id`, `status`, `duration_s`, `elixir_leaked`, `loop_p50_ms`, `loop_p99_ms`, `perception_warnings`, `warning_counts`, `opp_deck_seen`, `events` (your plays, spawn plays, fallen towers).
+- `meta.json`: device, account, `strategy_id`, `strategy_name`, `game_version`, `balance_epoch`, experiment tags, and `account_levels` (your recorded King and card levels).
+- `summary.json`: `result`, `my_crowns`, `opp_crowns`, `tower_hp_diff` (empty unless all six towers were read), `tower_hp_reads`, `my_king_level_seen` / `opp_king_level_seen`, `strategy_id`, `status`, `duration_s`, `elixir_leaked`, `loop_p50_ms`, `loop_p99_ms`, `perception_warnings`, `warning_counts`, `opp_deck_seen`, `events` (your plays, spawn plays, fallen towers).
 - `decisions.jsonl`: every 5th frame and every play: `t_ms`, `posture`, `chosen_rule`, `chosen_card`, `tile`, `predicted_tile`, `score`, `candidates` (with totals), the `state` snapshot (elixir, opponent range, hand and freshness, units, towers, opponent cycle), and stage latency.
 - `frames.jsonl`, `stream.h264`, `stream.pts`: per-frame timings and the raw video with exact device timestamps.
 
@@ -701,6 +777,20 @@ When you unlock cards or promote a frequent enemy out of `other_ground_opp` / `o
      --data data/katacr-real/data.yaml --min-threat-recall 0.70 --min-support 20
    ```
    Invoke `learn.train_detector` directly: the CLI's `train-detector` parser intercepts `--data`. Copy `models/runs/yolo26n-cr-next/weights/best.pt` → `models/yolo26n-cr.pt` (back up the old `.pt`/`.onnx`) once `eval-detector` and `replay` pass.
+
+### Cards the detector has no name for
+
+The 31-class model names only the starter deck and the most common early threats; everything else falls into `other_ground_*` / `other_air_*`. Three tools prepare for the climb:
+
+- **The next class list.** [`models/classes-next.txt`](models/classes-next.txt) keeps the current 31 classes at their indices and adds 55: `_me` classes for the Hog EQ cards you'll play (Skeletons, Cannon, Hog Rider, Ice Golem, the spirits), `_opp` classes for the cards you'll meet on the Arena 1–9 path, and five spell effects (Zap, The Log, Poison, Earthquake, Rocket) so the opponent's elixir and cycle stay right when they cast them. [`katacr_alias-next.json`](models/katacr_alias-next.json) and [`katacr_generic-next.json`](models/katacr_generic-next.json) map KataCR sprites to it. Train the next detector with these three files in place of the current ones (same commands as above).
+- **`droid-harness check-classes [--classes models/classes-next.txt]`** lists detector classes with no card in `cards.json` (a spawn the opponent tracker can't cost).
+- **`droid-harness eval-unseen --model <model> --part2 data/katacr/_repo/images/part2`** measures what a model does with units it has no name for: how often they're caught by the right catch-all (ground/air, right side), mislabeled as a named card, or missed. Run it before and after a retrain.
+
+An unknown spawn is still costed at a flat estimate. Guessing its cost from unit count and box size was considered and skipped: the play event carries no size signal, and naming the cards is the real fix.
+
+### New cards without hand-capturing templates
+
+`--harvest-templates data/harvest` on `play`/`run`/`experiment` saves hand-slot crops the matcher can't read, labelled by the card that must be there: the "next" card refills the slot you just played from, so if slot *i* stays unreadable after the refill, it holds the card the next slot showed. It never changes what perception reports. After a look through the folder, `droid-harness promote-templates --from data/harvest` turns groups with at least `--min-crops` (3) crops that agree (`--min-agreement` 0.6) into `affordable`/`greyed` templates in the device bundle (`--dry-run` first).
 
 **GPU host (`veritas`, nick@192.168.1.199).** Venv `~/venvs/droid-det` (Python 3.13, `torch 2.7.1+rocm6.3` on the RX 7900 XT, `ultralytics`, `onnx`), symlinked as `.venv` in `~/src/droid-harness`. To fine-tune on new real frames: export with `frames … --detector models/yolo26n-cr.pt --out data/own`, fix the labels, merge with `dataset`, train ~15–20 epochs from `models/yolo26n-cr.pt`, gate with `eval-detector`, then run live with `--detector models/yolo26n-cr.pt --classes models/classes.txt --async-detect` (`TorchDetector` 7.9 ms p50 / 9.8 ms p95 for the 18-class model vs CPU ONNX 26.8 / 53.4 ms).
 
@@ -826,7 +916,8 @@ Per-device profile (`configs/device_profiles/<phone>.yaml`): serial, unique `loc
 - **Phases:** single elixir for 2 minutes, double in the third; overtime double then triple. About 1 elixir per 2.8 s in single, cap 10.
 - **Opponent elixir** = generation − costs of detected plays, as an interval. A full bar collapses it (10 is known); uncertainty comes from unknown costs and missed plays.
 - **Opponent cycle:** 8 cards, 4 in hand; a played card returns after four more plays. Once their deck is known, their hand = deck − last four.
-- **Card DB:** cost, type, targets, range, speed, deploy time, spell travel speed, crown-tower damage % (level 1 stats; level-dependent spell damage is set per strategy in `tier0.spell_tower_damage`).
+- **Card DB:** cost, type, targets, range, speed, deploy time, spell travel speed, crown-tower damage % (level 1 stats). Levels come from [`configs/accounts/`](configs/accounts/) for your cards and from the inferred King Level for theirs, applied only by strategies with `level_aware: true` ([§6](#account-levels)).
+- **King Levels:** `my_king_level` / `opp_king_level` in `GameState`, from each side's Princess Tower max HP.
 
 ### Decision layer
 
@@ -875,6 +966,12 @@ Per-device profile (`configs/device_profiles/<phone>.yaml`): serial, unique `loc
 
 In the paired test only **discordant pairs** count, so the games needed are this number divided by the share of discordant pairs (~40–50 % at a 25–50 % win rate): several hundred games for a +8-point edge. Filter candidates offline and test changes worth having.
 
+**Dense test** (`--test dense`). Each pair contributes the difference of `dense_match_score` (result, crowns, tower-HP difference when all six towers were read, speed), so win-win and loss-loss pairs count too. An always-valid mixture SPRT (mSPRT; Johari et al.) on the mean difference x̄ over n pairs, with plug-in variance σ² and mixture scale τ (`--dense-tau`, the margin difference you care about, default 0.5):
+
+  Λₙ = √(σ² / (σ² + nτ²)) · exp(n²τ²x̄² / (2σ²(σ² + nτ²)))
+
+It decides when Λₙ ≥ 1/α, in the direction of x̄, and can be checked after every pair without inflating the error rate. It measures margin, not win rate directly: a candidate that wins bigger and loses smaller is "better" even before it wins more often. Confirm an accepted dense result on the ladder with `pairs` when the decision matters.
+
 **SPRT** ([`sprt.py`](src/droid_harness/flywheel/eval/sprt.py)): `LLR = wins·ln(p1/p0) + losses·ln((1−p1)/(1−p0))`, accept at `ln((1−β)/α)`, reject at `ln(β/(1−α))`. Non-regression changes use bounds like [0.47, 0.50]. `pairs` (default) tests whether the candidate wins discordant pairs > 50 %; draws are the middle score; aborted slots are replayed. Stage A futility uses the dense pair margin.
 
 **Optuna** (`flywheel/tuning/optuna_study.py`): search over `params`, `tier0` and posture multipliers; one trial = a block of ~8 matches; objective = crown + tower-HP differential; ≤ 30 trials per study. The best trial is a candidate that still goes through the funnel.
@@ -910,20 +1007,26 @@ In the paired test only **discordant pairs** count, so the games needed are this
 ```
 configs/device_profiles/            per-phone profiles (phone-a.yaml tracked)
 configs/domains/clash_royale/       rois/, tiles/, arena/, templates/, screens/, towers/, digits/, cards.json (local)
-configs/strategies/                 strategy YAMLs + counters/*.csv (immutable once played)
+configs/strategies/                 strategy YAMLs + counters/*.csv (immutable once played), CHAMPION pointer,
+                                    legacy_ids.yaml, auto/ (autopilot candidates)
+configs/accounts/                   card and King levels per account
+reports/                            autopilot reports (gitignored; published to the autopilot/reports branch)
 src/droid_harness/core/             transport (scrcpy, decoder, frame slot), actuate, runtime (brain, liveness,
                                     watchdog, advisor), telemetry (recorder, latency, loopback, soak)
-src/droid_harness/domains/clash_royale/   perception/, policy/ (hashed into strategy IDs), state, opponent model,
-                                    session, menus, recovery, replay
+src/droid_harness/domains/clash_royale/   perception/ (incl. template harvesting), policy/ (hashed into strategy IDs),
+                                    state, opponent model, account levels, session, menus, recovery, replay, hp_audit
 src/droid_harness/domains/android_os/     a11y, settle, Set-of-Mark, skills cache
 src/droid_harness/flywheel/         engagements, triage, report, digest, retention, shadow, eval/ (runner, SPRT,
-                                    replay diff), tuning/, coach/, ledger, warehouse
-src/droid_harness/learn/            synth, KataCR conversion, datasets, detector/ranker training, labeling
+                                    mSPRT, replay diff, live paired runs), tuning/ (targeted, offline, Optuna),
+                                    autopilot, coach/, ledger, warehouse
+src/droid_harness/learn/            synth, KataCR conversion, datasets, detector/ranker training, labeling,
+                                    value model, unseen-card eval
 src/droid_harness/ui/               the Studio (live view + replay inspector)
 src/droid_harness/sim/              synthetic scene + fake scrcpy server (CI, `sim`)
 ledger/                             experiments.jsonl + STRATEGY_LEDGER.md
 notebooks/dashboard.py              plain-text / marimo dashboard
-tools/                              card DB builder, KataCR fetch, background extraction, bootstrap bot
+tools/                              card DB builder, KataCR fetch, background extraction, bootstrap bot,
+                                    systemd/ (autopilot service)
 data/                               recordings (gitignored; compact match files are committed selectively)
 ```
 
@@ -958,7 +1061,8 @@ Build notes since: the elixir cap *collapses* the opponent interval (a full bar 
 - **Deck changed in the game:** capture `affordable` and `greyed` templates into a clean directory, update `deck:` in a **new** strategy file, re-run `replay` / `pytest`. Stale templates show up as `hand_unreadable` warnings and dashed slots in the Studio.
 - **Disk:** raw video is ~60 MB/min (2–4 GB per 10 matches). Use `--prune-win-video` and `droid-harness retain`; keep `meta.json`, `summary.json`, `decisions.jsonl` (~1.5 MB/match).
 - **AMD GPU:** ONNX Runtime removed its ROCm EP upstream. Pass `--detector models/yolo26n-cr.pt` for PyTorch-ROCm; `.onnx` runs on MIGraphX if built, else CPU (~27 ms p50).
-- **Unattended runs:** use `tmux` or a systemd user service; keep the phone plugged in with sleep disabled; test `turn_display_off: true` and thermals before a long run; bump `--balance-epoch` after a game update.
+- **Unattended runs:** use the systemd user unit in [`tools/systemd/`](tools/systemd/droid-autopilot.service) (or `tmux`); keep the phone plugged in with sleep disabled; test `turn_display_off: true` and thermals before a long run; bump `--balance-epoch` after a game update. `touch data/autopilot/STOP` ends the autopilot after its current cycle.
+- **Autopilot didn't notify or publish:** both are best-effort and never stop a cycle; the outcome is in the local `reports/<stamp>/report.json` (`notified`, `published` with git's error) and in the service log. Publishing needs a push-capable remote on the bot machine (`git push` must work non-interactively).
 - **Studio:** binds to localhost; use an SSH tunnel rather than `--ui-host 0.0.0.0` on untrusted networks. A live page that says "Waiting for the first frame" on a menu is normal: static screens send no frames.
 
 ---
