@@ -27,7 +27,21 @@ class SpellValue:
                     pu = ctx.placement.lead_target(card, u, s, s.t_ms)
                     if math.dist(pu, center) <= card.radius_tiles:
                         hit.append(u.kind)
-                        value += ctx.cards.unit_value(u.kind) * u.hp_pct
+                        if p.kill_aware_spells:
+                            u_card = ctx.cards.card_for_class(u.kind)
+                            max_hp = u_card.hitpoints if (u_card and u_card.hitpoints > 0) else 500
+                            rem_hp = max(1.0, max_hp * u.hp_pct)
+                            dmg_frac = min(1.0, card.damage / rem_hp) if card.damage > 0 else 0.5
+                            lethal_mult = 1.25 if card.damage >= rem_hp else 0.75
+                            value += ctx.cards.unit_value(u.kind) * dmg_frac * lethal_mult
+                        else:
+                            value += ctx.cards.unit_value(u.kind) * u.hp_pct
+                if p.kill_aware_spells and any(
+                    k.startswith("opp_") and hp > 0
+                    and math.dist(ctx.arena.towers[k], center) <= card.radius_tiles
+                    for k, hp in s.towers.items()
+                ):
+                    value += 0.8 if card.cost >= 4 else 0.4
                 if best is None or value > best[0]:
                     best = (value, center, hit)
             value, center, hit = best

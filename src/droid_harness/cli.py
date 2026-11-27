@@ -125,7 +125,7 @@ def cmd_synth(a) -> None:
 
     names = load_class_names(a.classes)
     backgrounds = [img for d in a.backgrounds for img in synth.load_backgrounds(d)]
-    sprites, counts = synth.load_sprites(a.sprites, names)
+    sprites, counts = synth.load_sprites(a.sprites, names, synthesize_missing_sides=a.synthesize_missing_sides)
     print(json.dumps({"backgrounds": len(backgrounds), "sprites": dict(counts)}, indent=1))
     cfg = synth.SynthConfig(imgsz=tuple(a.imgsz), seed=a.seed)
     data = synth.generate_dataset(backgrounds, sprites, Path(a.out), a.n, names, cfg,
@@ -509,6 +509,8 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--imgsz", type=int, nargs=2, default=[640, 384], metavar=("H", "W"))
     s.add_argument("--val-frac", dest="val_frac", type=float, default=0.1)
     s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--synthesize-missing-sides", dest="synthesize_missing_sides", action="store_true",
+                   help="synthesize missing <unit>_me sprites from <unit>_opp when real _me sprites are scarce")
     s.set_defaults(fn=cmd_synth)
 
     s = sub.add_parser("convert-katacr", help="KataCR labeled real frames -> our classes (held-out val)")

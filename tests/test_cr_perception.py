@@ -293,3 +293,217 @@ def test_intro_zero_elixir_and_tower_skin_suppression(scene, cards, arena):
     s2 = perc.process(frame(scene.render(), 2, 100_000))
     # Low-conf tower hallucination suppressed; 1 high-conf other_ground + 1 knight kept -> 2 units
     assert sorted(u.kind for u in s2.units) == ["knight", "other_ground"]
+
+
+def test_card_db_canonical_by_class_and_goblin_brawler(cards):
+    from droid_harness.domains.clash_royale.cards import Card, CardDB
+
+    m = dict(cards.cards)
+    # Add swarm/gang colliding variants deliberately before cheap variants in insertion order
+    ext = CardDB({
+        "minion_horde": Card("minion_horde", "Minion Horde", 5, "troop", units=6, flying=True, targets_air=True,
+                             unit_classes=("minion",)),
+        "skeleton_army": Card("skeleton_army", "Skeleton Army", 3, "troop", units=15, unit_classes=("skeleton",)),
+        "goblin_gang": Card("goblin_gang", "Goblin Gang", 3, "troop", units=6,
+                            unit_classes=("goblin", "spear_goblin")),
+        "goblins": Card("goblins", "Goblins", 2, "troop", units=4, unit_classes=("goblin",)),
+        "spear_goblins": Card("spear_goblins", "Spear Goblins", 2, "troop", units=3, targets_air=True,
+                              unit_classes=("spear_goblin",)),
+        **m,
+    })
+    assert ext.card_for_class("minion").key == "minions"
+    assert ext.card_for_class("skeleton").key == "skeletons"
+    assert ext.card_for_class("goblin").key == "goblins"
+    assert ext.card_for_class("spear_goblin").key == "spear_goblins"
+    assert ext.card_for_class("goblin_brawler") is None
+    assert ext.unit_value("goblin_brawler") == 2.5
+
+
+def test_tracker_anti_flicker_and_time_missed():
+    tr = Tracker(min_hits=2, max_missed=6, max_missed_ms=500)
+    ev_total = []
+    # Two initial knight hits establish track
+    for t in (0, 17):
+        _, ev = tr.update([TileDetection("knight", 0.7, (4.0, 20.0), side="opp")], t)
+        ev_total += ev
+    assert len(ev_total) == 1
+    tid0 = next(iter(tr.tracks))
+    # 10 missed frames at 60 Hz (only 170ms < 500ms) -> track stays alive
+    for k in range(1, 11):
+        _, ev = tr.update([], 17 + k * 17)
+        ev_total += ev
+    assert tid0 in tr.tracks
+    # Flickers to other_ground for one frame, then back to knight within 0.8 tiles -> same ID, 0 new spawns
+    _, ev = tr.update([TileDetection("other_ground", 0.5, (4.3, 19.6), side="opp")], 220)
+    ev_total += ev
+    tracks, ev = tr.update([TileDetection("knight", 0.75, (4.4, 19.4), side="opp")], 240)
+    ev_total += ev
+    assert len(ev_total) == 1 and len(tracks) == 1 and tracks[0].id == tid0 and tracks[0].cls == "knight"
+
+
+def test_spawn_grouper_swarm_upgrade_and_death_spawns(cards):
+    from droid_harness.domains.clash_royale.perception.tracker import SpawnEvent
+
+    g = SpawnGrouper(cards.card_for_class)
+    assert g.add(SpawnEvent(1, "goblin_brawler", "opp", (5.0, 22.0), 1000)) == []
+    plays = []
+    for i in range(6):
+        plays += g.add(SpawnEvent(10 + i, "minion", "opp", (14.0 + 0.2 * i, 22.0), 2000 + 30 * i))
+    assert [(p.card, p.upgraded_from) for p in plays] == [("minions", None), ("minion_horde", "minions")]
+
+
+def test_pipeline_legal_zone_building_spawns_and_cycle_dedup(scene, cards, arena):
+    from droid_harness.domains.clash_royale.cards import Card, CardDB
+    from droid_harness.domains.clash_royale.perception.detector import Detection
+
+    ext = CardDB({
+        **cards.cards,
+        "tombstone": Card("tombstone", "Tombstone", 3, "building", units=1, unit_classes=("tombstone",)),
+        "minion_horde": Card("minion_horde", "Minion Horde", 5, "troop", units=6, flying=True, targets_air=True,
+                             unit_classes=("minion",)),
+    })
+
+    class FakeDet:
+        def __init__(self):
+            self.items = []
+
+        def __call__(self, img):
+            return list(self.items)
+
+    det = FakeDet()
+    perc = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=ext, arena=arena,
+                        matcher=build_matcher_from_scene(scene), detector=det)
+    shape = scene.render().shape
+    x0, y0, _, _ = scene.layout.arena.to_px(shape)
+
+    def box_at(cls, tile):
+        px, py = scene.tiles.tile_to_px(tile, shape)
+        return Detection(cls, 0.9, (px - 8 - x0, py - 16 - y0, px + 8 - x0, py - y0))
+
+    img = np.zeros(shape, np.uint8)
+    # 1. Illegal enemy knight on OUR side (y=9.0): kept in units for defense, NEVER billed to opp_elixir
+    det.items = [box_at("knight_opp", (4.0, 9.0))]
+    perc._detect(img, 0)
+    perc._detect(img, 100)
+    assert [(u.kind, u.side) for u in perc.units] == [("knight", "opp")]
+    assert [e for e in perc.events if e["kind"] == "opp_spawn_play"] == []
+
+    # 2. Tombstone on their half (y=24.0) + skeleton free spawn nearby -> ONLY tombstone billed
+    det.items = [box_at("tombstone_opp", (9.0, 24.0))]
+    perc._detect(img, 5000)
+    perc._detect(img, 5100)
+    det.items = [box_at("tombstone_opp", (9.0, 24.0)), box_at("skeleton_opp", (9.0, 22.8))]
+    perc._detect(img, 6000)
+    perc._detect(img, 6100)
+    assert [e["card"] for e in perc.events if e["kind"] == "opp_spawn_play"] == ["tombstone"]
+
+    # 3. Same card re-spawning < 5s later (tracker flicker recovery) is deduplicated
+    det.items = [box_at("tombstone_opp", (9.0, 24.0)), box_at("musketeer_opp", (14.0, 25.0))]
+    perc._detect(img, 8000)
+    perc._detect(img, 8100)
+    det.items = [box_at("musketeer_opp", (14.0, 24.0))]  # different track jumps > 5 tiles 1.5s later
+    perc._detect(img, 9600)
+    perc._detect(img, 9700)
+    opp_cards = [e["card"] for e in perc.events if e["kind"] == "opp_spawn_play"]
+    assert opp_cards.count("musketeer") == 1
+
+
+def test_cycle_tracker_cards_until_back_and_upgrade(cards):
+    from droid_harness.domains.clash_royale.opponent_model import OpponentModel
+
+    om = OpponentModel()
+    om.elixir.low = om.elixir.high = 8.0
+    om.on_play("minions", 3, 1.0)
+    assert om.cycle.cards_until_back("minions") == 4
+    om.upgrade_play("minions", "minion_horde", 2, 1.4)
+    assert om.cycle.deck_seen == ["minion_horde"]
+    assert om.cycle.cards_until_back("minion_horde") == 4
+    assert om.elixir.high == pytest.approx(3.5, abs=0.01)
+    for c in ("knight", "archers", "arrows"):
+        om.on_play(c, 3, 2.0)
+    assert om.cycle.cards_until_back("minion_horde") == 1
+    om.on_play("fireball", 4, 3.0)
+    assert om.cycle.cards_until_back("minion_horde") == 0
+
+
+def test_spawn_evidence_invariants_tracker_and_pipeline(scene, cards, arena):
+    from droid_harness.domains.clash_royale.perception.detector import Detection
+
+    # 1. Low-conf 2-frame blip appears in confirmed units for instant defense, but doesn't fire SpawnEvent
+    #    until peak_conf >= 0.62 or hits >= 5 at conf >= 0.48.
+    tr = Tracker(min_hits=2)
+    tracks, ev = tr.update([TileDetection("knight", 0.42, (4.0, 20.0), side="opp")], 0)
+    assert ev == []
+    tracks, ev = tr.update([TileDetection("knight", 0.50, (4.0, 19.9), side="opp")], 50)
+    assert len(tracks) == 1 and ev == []  # unit tracked for defense without charging opp_elixir
+    for k in range(2, 5):
+        tracks, ev2 = tr.update([TileDetection("knight", 0.50, (4.0, 19.9 - 0.05 * k), side="opp")], 50 + k * 50)
+        ev += ev2
+    assert len(ev) == 1 and ev[0].hits == 5
+
+    # 2. Intro zero-HUD suppression + battle-start hud=7.0 sync + physical elixir & 8-card deck gates
+    class ScriptedDet:
+        def __init__(self):
+            self.items = []
+
+        def __call__(self, img):
+            return list(self.items)
+
+    det = ScriptedDet()
+    perc = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=cards, arena=arena,
+                        matcher=build_matcher_from_scene(scene), detector=det)
+    shape = scene.render().shape
+    x0, y0, _, _ = scene.layout.arena.to_px(shape)
+
+    def box_at(cls, tile, conf=0.70):
+        px, py = scene.tiles.tile_to_px(tile, shape)
+        return Detection(cls, conf, (px - 8 - x0, py - 16 - y0, px + 8 - x0, py - y0))
+
+    # Pre-battle intro (hud == 0.0): fake high-conf giant banner detection must NOT fire opp_spawn_play
+    scene.elixir = 0.0
+    det.items = [box_at("golem_opp", (14.5, 22.0), conf=0.90)]
+    perc.process(frame(scene.render(), 1, 0))
+    s_intro = perc.process(frame(scene.render(), 2, 400_000))
+    assert not [e for e in perc.events if e["kind"] == "opp_spawn_play"]
+    # Battle begins (hud == 7.0 at t=1.5s): opp_elixir syncs upward cleanly to 7.0
+    scene.elixir = 7.0
+    det.items = []
+    s_start = perc.process(frame(scene.render(), 3, 1_500_000))
+    assert s_start.opp_elixir[0] >= 7.0 and s_intro.opp_elixir[0] >= 5.0
+
+    # Physical elixir gate: drop opp_elixir to 0.5 and feed moderate-conf (0.68, 2 hits) 8-cost golem -> rejected
+    perc.opp.elixir.low = perc.opp.elixir.high = 0.5
+    det.items = [box_at("golem_opp", (14.5, 22.0), conf=0.68)]
+    perc._detect(np.zeros(shape, np.uint8), 5000)
+    perc._detect(np.zeros(shape, np.uint8), 5100)
+    assert not [e for e in perc.events if e["card"] == "golem"]
+
+    # 8-card deck lock: fill 8 cards in cycle, then feed moderate-conf 9th card -> rejected
+    perc.opp.elixir.low = perc.opp.elixir.high = 9.0
+    perc.opp.cycle.deck_seen = ["knight", "musketeer", "arrows", "fireball",
+                                "skeletons", "minions", "cannon", "baby_dragon"]
+    det.items = [box_at("balloon_opp", (14.5, 22.0), conf=0.68)]
+    perc._detect(np.zeros(shape, np.uint8), 10000)
+    perc._detect(np.zeros(shape, np.uint8), 10100)
+    assert not [e for e in perc.events if e["card"] == "balloon"]
+
+
+def test_result_detail_ignores_arena_sand_outside_cushions_and_low_sat():
+    import cv2
+
+    from droid_harness.domains.clash_royale.perception.screens import read_result_detail
+
+    h, w = 1024, 464
+    img = np.zeros((h, w, 3), np.uint8)
+    # Top pink opponent banner, bottom blue player banner.
+    img[int(0.24 * h):int(0.36 * h), int(0.08 * w):int(0.92 * w)] = (147, 20, 220)
+    img[int(0.44 * h):int(0.56 * h), int(0.08 * w):int(0.92 * w)] = (220, 120, 20)
+    # Genuine crown on top-left cushion (x=0.27) in gold BGR (0, 215, 255)
+    img[int(0.21 * h):int(0.29 * h), int(0.22 * w):int(0.32 * w)] = (0, 215, 255)
+    # Bone Pit sunlit golden sand patches: side edges (x=0.05..0.14, x=0.86..0.95) & dull gold inside crown band
+    sand_edge_bgr = cv2.cvtColor(np.uint8([[[17, 144, 123]]]), cv2.COLOR_HSV2BGR)[0, 0].tolist()
+    sand_dull_bgr = cv2.cvtColor(np.uint8([[[15, 134, 136]]]), cv2.COLOR_HSV2BGR)[0, 0].tolist()
+    img[int(0.20 * h):int(0.29 * h), int(0.86 * w):int(0.95 * w)] = sand_edge_bgr
+    img[int(0.42 * h):int(0.51 * h), int(0.05 * w):int(0.14 * w)] = sand_edge_bgr
+    img[int(0.19 * h):int(0.25 * h), int(0.66 * w):int(0.76 * w)] = sand_dull_bgr
+    assert read_result_detail(img) == ("loss", 1, 0)

@@ -36,3 +36,17 @@ other_ground_me
 other_ground_opp
 other_air_me
 other_air_opp
+# Common Arena 1-3 opponent threats promoted out of catch-alls for card/cost/cycle tracking
+goblin_opp
+spear_goblin_opp
+goblin_cage_opp
+goblin_brawler_opp
+goblin_hut_opp
+skeleton_opp
+bomber_opp
+tombstone_opp
+valkyrie_opp
+baby_dragon_opp
+barbarian_opp
+cannon_opp
+prince_opp

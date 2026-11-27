@@ -66,7 +66,9 @@ class CardDB:
         self.cards = cards
         self.meta = meta or {}
         self._by_class: dict[str, str] = {}
-        for c in cards.values():
+        # Resolve shared unit_classes (e.g. minion -> minions 3 before minion_horde 5,
+        # skeleton -> skeletons 1 before skeleton_army 3) canonically to the cheapest standalone card.
+        for c in sorted(cards.values(), key=lambda c: (len(c.unit_classes), c.cost, c.units, c.key)):
             for cls in c.unit_classes or (c.key,):
                 self._by_class.setdefault(cls, c.key)
 
@@ -100,4 +102,6 @@ class CardDB:
         c = self.card_for_class(detector_class)
         if c is not None:
             return c.unit_value
+        if detector_class == "goblin_brawler":
+            return 2.5
         return 2.0 if detector_class in ("other_ground", "other_air") else 0.0

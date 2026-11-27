@@ -52,6 +52,51 @@ class CycleTracker:
         """True if ``card`` was played in the last 4 plays (cannot be in hand)."""
         return card in self.last_four
 
+    def cards_until_back(self, card: str) -> int:
+        """Number of other plays required before ``card`` re-enters hand (0 if ready now)."""
+        last = self.last_four
+        if card not in last:
+            return 0
+        idx = len(last) - 1 - last[::-1].index(card)
+        return HAND_SIZE - (len(last) - 1 - idx)
+
+    @property
+    def unknown_slots(self) -> int:
+        return max(0, DECK_SIZE - len(self.deck_seen))
+
+    def replace_recent(self, old: str, new: str) -> bool:
+        """Upgrade a recently logged card in place (e.g. minions -> minion_horde)."""
+        replaced = False
+        for i in range(len(self.history) - 1, -1, -1):
+            if self.history[i] == old:
+                self.history[i] = new
+                replaced = True
+                break
+        if old in self.deck_seen:
+            if old not in self.history and new not in self.deck_seen:
+                self.deck_seen[self.deck_seen.index(old)] = new
+            elif new not in self.deck_seen and len(self.deck_seen) < DECK_SIZE:
+                self.deck_seen.append(new)
+        elif new not in self.deck_seen and len(self.deck_seen) < DECK_SIZE:
+            self.deck_seen.append(new)
+        return replaced
+
+    def min_cycle_elixir_to_return(self, card: str, cards) -> float:
+        """Minimum elixir opponent must spend on OTHER plays to rotate ``card`` back to hand."""
+        n = self.cards_until_back(card)
+        if n <= 0:
+            return 0.0
+        in_hand_costs = sorted(
+            cards.cost(k) if k in cards else 3.0
+            for k in self.possible_hand()
+            if k != card
+        )
+        costs = list(in_hand_costs) + [2.5] * self.unknown_slots
+        costs.sort()
+        if len(costs) < n:
+            costs.extend([2.5] * (n - len(costs)))
+        return float(sum(costs[:n]))
+
 
 @dataclass
 class OpponentModel:
@@ -62,6 +107,14 @@ class OpponentModel:
         self.elixir.on_play(cost, t_s)
         if card:
             self.cycle.on_play(card)
+
+    def upgrade_play(self, old_card: str, new_card: str, extra_cost: float, t_s: float) -> None:
+        """Apply incremental elixir & replace card in cycle when a multi-unit swarm expands."""
+        if extra_cost > 0:
+            self.elixir.on_play(extra_cost, t_s)
+        else:
+            self.elixir.advance(t_s)
+        self.cycle.replace_recent(old_card, new_card)
 
     def advance(self, t_s: float) -> None:
         self.elixir.advance(t_s)

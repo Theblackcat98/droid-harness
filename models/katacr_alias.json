@@ -6,5 +6,18 @@
   "mini-pekka": "mini_pekka",
   "arrows": "arrows_effect",
   "fireball": "fireball_effect",
-  "archer": "archer"
+  "archer": "archer",
+  "goblin": "goblin",
+  "spear-goblin": "spear_goblin",
+  "goblin-cage": "goblin_cage",
+  "goblin-brawler": "goblin_brawler",
+  "goblin-hut": "goblin_hut",
+  "skeleton": "skeleton",
+  "bomber": "bomber",
+  "tombstone": "tombstone",
+  "valkyrie": "valkyrie",
+  "baby-dragon": "baby_dragon",
+  "barbarian": "barbarian",
+  "cannon": "cannon",
+  "prince": "prince"
 }

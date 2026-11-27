@@ -173,3 +173,146 @@ def test_spell_value_needs_enough_elixir_hit(arena, cards, strategy):
     pol2 = CRPolicy(cards, arena, p)
     d2 = pol2.decide(state(units=lone, hand=["fireball", "cannon", "hog_rider", "skeletons"], my_elixir=5))
     assert d2.chosen is None or d2.chosen.rule_id != "spell.value"
+
+
+def test_ladder_v4_blocks_suicide_bridge_and_tracks_cost_cycle(arena, cards):
+    from pathlib import Path
+
+    from droid_harness.domains.clash_royale.cards import Card, CardDB
+    from droid_harness.domains.clash_royale.policy.strategy import load_strategy
+
+    ext = CardDB({
+        **cards.cards,
+        "giant": Card("giant", "Giant", 5, "troop", speed_tiles_s=0.75, range_tiles=1.2, hitpoints=1930,
+                      buildings_only=True),
+        "mini_pekka": Card("mini_pekka", "Mini P.E.K.K.A", 4, "troop", speed_tiles_s=1.5, range_tiles=0.8,
+                           hitpoints=642),
+        "archers": Card("archers", "Archers", 3, "troop", units=2, speed_tiles_s=1.0, range_tiles=5.0,
+                        hitpoints=119, targets_air=True, unit_classes=("archer",)),
+        "goblin_cage": Card("goblin_cage", "Goblin Cage", 4, "building", range_tiles=0.0, hitpoints=350),
+    })
+    _, p, _ = load_strategy(Path(__file__).resolve().parents[1] / "configs/strategies/ladder-vision-v4.yaml")
+    pol = CRPolicy(ext, arena, p)
+
+    # 1. t=0.8s with opp at 7.3 elixir: NEVER slam naked bridge Giant
+    s_open = GameState(t_ms=800, my_elixir=7.0, opp_elixir=(7.3, 7.3),
+                       hand=["giant", "minions", "knight", "arrows"], towers=dict(TOWERS))
+    cands_open = [c for r in pol.rules for c in r.propose(s_open, p, pol.ctx, None)
+                  if c.rule_id == "offense.win_condition_when_opp_low"]
+    assert not cands_open
+
+    # 2. Counter availability + affordability scaling on bridge Giant
+    deck8 = ["knight", "archers", "minions", "arrows", "fireball", "giant", "musketeer", "goblin_cage"]
+    # (a) Goblin Cage (cost 4) in hand AND affordable (opp 4.5)
+    s_ready = GameState(t_ms=60_000, my_elixir=8.0, opp_elixir=(4.0, 4.5),
+                        hand=["giant", "minions", "knight", "arrows"], towers=dict(TOWERS),
+                        opp_deck_seen=deck8, opp_last_four=["knight", "arrows", "fireball", "musketeer"])
+    sc_ready = [c for r in pol.rules for c in r.propose(s_ready, p, pol.ctx, None)
+                if c.rule_id == "offense.win_condition_when_opp_low"][0]
+    # (b) Goblin Cage in hand, UNAFFORDABLE (opp 1.5 < 3.5) -> boosted (punish!)
+    s_broke = GameState(t_ms=60_000, my_elixir=8.0, opp_elixir=(1.0, 1.5),
+                        hand=["giant", "minions", "knight", "arrows"], towers=dict(TOWERS),
+                        opp_deck_seen=deck8, opp_last_four=["knight", "arrows", "fireball", "musketeer"])
+    sc_broke = [c for r in pol.rules for c in r.propose(s_broke, p, pol.ctx, None)
+                if c.rule_id == "offense.win_condition_when_opp_low"][0]
+    # (c) Goblin Cage & Minions BOTH out of cycle -> boosted (1.40x)
+    s_out = GameState(t_ms=60_000, my_elixir=8.0, opp_elixir=(1.0, 1.5),
+                      hand=["giant", "minions", "knight", "arrows"], towers=dict(TOWERS),
+                      opp_deck_seen=deck8, opp_last_four=["goblin_cage", "minions", "fireball", "musketeer"])
+    sc_out = [c for r in pol.rules for c in r.propose(s_out, p, pol.ctx, None)
+              if c.rule_id == "offense.win_condition_when_opp_low"][0]
+    assert "may be in hand" in sc_ready.reason
+    assert "unaffordable" in sc_broke.reason and sc_broke.score > sc_ready.score
+    assert "out of cycle" in sc_out.reason and sc_out.score > sc_broke.score
+
+
+def test_ladder_v4_spell_aware_minions_kill_spells_and_counter_saving(arena, cards):
+    from pathlib import Path
+
+    from droid_harness.domains.clash_royale.cards import Card, CardDB
+    from droid_harness.domains.clash_royale.policy.strategy import load_strategy
+
+    ext = CardDB({
+        **cards.cards,
+        "giant": Card("giant", "Giant", 5, "troop", speed_tiles_s=0.75, range_tiles=1.2, hitpoints=1930,
+                      buildings_only=True),
+        "mini_pekka": Card("mini_pekka", "Mini P.E.K.K.A", 4, "troop", speed_tiles_s=1.5, range_tiles=0.8,
+                           hitpoints=642),
+        "archers": Card("archers", "Archers", 3, "troop", units=2, speed_tiles_s=1.0, range_tiles=5.0,
+                        hitpoints=119, targets_air=True, unit_classes=("archer",)),
+    })
+    _, p, _ = load_strategy(Path(__file__).resolve().parents[1] / "configs/strategies/ladder-vision-v4.yaml")
+    pol = CRPolicy(ext, arena, p)
+
+    # 1. Spell-aware Minions on counter-push
+    survivors = [Unit(1, "knight", "me", (14.5, 13.0), vel=(0.0, 1.0), hp_pct=1.0)]
+    s_arrows_up = GameState(t_ms=60_000, my_elixir=7.0, opp_elixir=(3.2, 3.5), units=survivors,
+                            hand=["minions", "knight", "arrows", "fireball"], towers=dict(TOWERS),
+                            opp_deck_seen=["arrows"], opp_last_four=[])
+    s_arrows_down = GameState(t_ms=60_000, my_elixir=7.0, opp_elixir=(3.2, 3.5), units=survivors,
+                              hand=["minions", "knight", "arrows", "fireball"], towers=dict(TOWERS),
+                              opp_deck_seen=["arrows", "knight", "giant"], opp_last_four=["arrows", "knight", "giant"])
+    c_up = [c for r in pol.rules for c in r.propose(s_arrows_up, p, pol.ctx, None)
+            if c.rule_id == "offense.counter_push" and c.card == "minions"][0]
+    c_down = [c for r in pol.rules for c in r.propose(s_arrows_down, p, pol.ctx, None)
+              if c.rule_id == "offense.counter_push" and c.card == "minions"][0]
+    assert "arrows in hand" in c_up.reason and "arrows out of cycle" in c_down.reason
+    assert c_down.score > c_up.score
+
+    # 2. Kill-aware spells: Fireball won't waste on full-HP solo Giant, Arrows DOES kill 3 Minions
+    s_giant = GameState(t_ms=60_000, my_elixir=6.0, opp_elixir=(3.0, 3.0),
+                        hand=["fireball", "arrows", "knight", "archers"], towers=dict(TOWERS),
+                        units=[Unit(1, "giant", "opp", (3.5, 19.0), vel=(0.0, -0.75))])
+    assert not [c for r in pol.rules for c in r.propose(s_giant, p, pol.ctx, None) if c.rule_id == "spell.value"]
+    minions3 = [Unit(10 + i, "minion", "opp", (3.5 + 0.3 * i, 20.0), vel=(0.0, -1.5), flying=True) for i in range(3)]
+    s_min = GameState(t_ms=60_000, my_elixir=6.0, opp_elixir=(3.0, 3.0),
+                      hand=["fireball", "arrows", "knight", "archers"], towers=dict(TOWERS), units=minions3)
+    assert [c for r in pol.rules for c in r.propose(s_min, p, pol.ctx, None)
+            if c.rule_id == "spell.value" and c.card == "arrows"]
+
+    # 3. Protect Mini P.E.K.K.A when opp has affordable Giant ready in hand
+    s_cyc = GameState(t_ms=60_000, my_elixir=8.5, opp_elixir=(6.0, 7.0),
+                      hand=["mini_pekka", "knight", "fireball", "arrows"], towers=dict(TOWERS),
+                      opp_deck_seen=["giant", "knight"], opp_last_four=["knight"])
+    # Make knight cost > mini_pekka in copy OR equal to check filter excludes mini_pekka even if knight costs 3 vs mini_pekka 4;
+    # set mini_pekka=2 in a tiny override? Better: verify knight (cost 3) beat mini_pekka even if only mini_pekka & archers (cost 3):
+    # Test with hand=["mini_pekka", "knight", ...] where both mini_pekka and archers=3:
+    ext2 = CardDB({**ext.cards, "mini_pekka": Card("mini_pekka", "Mini P.E.K.K.A", 2, "troop", speed_tiles_s=1.5,
+                                                     range_tiles=0.8, hitpoints=642)})
+    pol2 = CRPolicy(ext2, arena, p)
+    cyc = [c for r in pol2.rules for c in r.propose(s_cyc, p, pol2.ctx, None) if c.rule_id == "cycle.cheap_cycle"][0]
+    assert cyc.card == "knight"
+
+
+def test_ladder_v5_giant_back_build_block_tiles(arena, cards):
+    from pathlib import Path
+
+    from droid_harness.domains.clash_royale.cards import Card, CardDB
+    from droid_harness.domains.clash_royale.policy.strategy import load_strategy
+
+    ext = CardDB({
+        **cards.cards,
+        "giant": Card("giant", "Giant", 5, "troop", speed_tiles_s=0.75, range_tiles=1.2, hitpoints=1930,
+                      buildings_only=True),
+        "archers": Card("archers", "Archers", 3, "troop", units=2, speed_tiles_s=1.0, range_tiles=5.0,
+                        hitpoints=119, targets_air=True, unit_classes=("archer",)),
+    })
+    _, p_v5, _ = load_strategy(Path(__file__).resolve().parents[1] / "configs/strategies/ladder-vision-v5.yaml")
+    _, p_v4, _ = load_strategy(Path(__file__).resolve().parents[1] / "configs/strategies/ladder-vision-v4.yaml")
+    pol5 = CRPolicy(ext, arena, p_v5)
+    pol4 = CRPolicy(ext, arena, p_v4)
+    tx, ty = arena.towers["me_left"]
+
+    # Enemy at 11 tiles from tower: v5 back-builds Giant cleanly (11 > 9.0), while legacy v4 defers (11 <= 13).
+    far_enemy = [Unit(1, "archers", "opp", (tx, ty + 11.0), vel=(0.0, -1.0))]
+    s_far = GameState(t_ms=60_000, my_elixir=8.0, opp_elixir=(4.0, 4.0), units=far_enemy,
+                      hand=["giant", "knight", "arrows", "fireball"], towers=dict(TOWERS))
+    c5_far = [c for r in pol5.rules for c in r.propose(s_far, p_v5, pol5.ctx, None) if c.rule_id == "offense.giant_back_build"]
+    c4_far = [c for r in pol4.rules for c in r.propose(s_far, p_v4, pol4.ctx, None) if c.rule_id == "offense.giant_back_build"]
+    assert len(c5_far) == 1 and c5_far[0].card == "giant" and c4_far == []
+
+    # Enemy within 7 tiles of tower: v5 still defers back-build Giant (7 <= 9.0).
+    near_enemy = [Unit(2, "knight", "opp", (tx, ty + 7.0), vel=(0.0, -1.0))]
+    s_near = GameState(t_ms=60_000, my_elixir=8.0, opp_elixir=(4.0, 4.0), units=near_enemy,
+                       hand=["giant", "knight", "arrows", "fireball"], towers=dict(TOWERS))
+    assert not [c for r in pol5.rules for c in r.propose(s_near, p_v5, pol5.ctx, None) if c.rule_id == "offense.giant_back_build"]

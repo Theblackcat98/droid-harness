@@ -79,6 +79,7 @@ class ScreenClassifier:
 
 _CROWN_TOP = (0.18, 0.32)
 _CROWN_BOTTOM = (0.40, 0.55)
+_CROWN_X = (0.16, 0.84)
 
 
 def _colour_fraction(img: np.ndarray, x0: float, y0: float, x1: float, y1: float,
@@ -93,15 +94,16 @@ def _colour_fraction(img: np.ndarray, x0: float, y0: float, x1: float, y1: float
 
 
 def _large_gold_components(img: np.ndarray, y0: float, y1: float, min_area: int | None = None) -> int:
-    h = img.shape[0]
-    crop = img[int(y0 * h):int(y1 * h), :]
+    h, w = img.shape[:2]
+    # Crown cushions span x in [0.16, 0.84]; cropping horizontally ignores sunlit Arena 2/3 sand along the edges.
+    crop = img[int(y0 * h):int(y1 * h), int(_CROWN_X[0] * w):int(_CROWN_X[1] * w)]
     if crop.size == 0:
         return 0
     if min_area is None:
         # Relative area keeps this working at 360p, 464p or 1080p captures.
-        min_area = max(500, int(0.002 * img.shape[0] * img.shape[1]))
+        min_area = max(500, int(0.0025 * h * w))
     mask = cv2.inRange(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV),
-                       np.array([12, 120, 120], np.uint8), np.array([38, 255, 255], np.uint8))
+                       np.array([12, 160, 160], np.uint8), np.array([38, 255, 255], np.uint8))
     _n, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
     return sum(1 for s in stats[1:] if s[4] >= min_area)
 

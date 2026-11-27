@@ -42,3 +42,8 @@ def ownership_and_hp(img: np.ndarray, box, min_fill: float = 0.05) -> tuple[str 
     filled = np.flatnonzero(cols)
     hp = (filled.max() + 1) / cols.size if filled.size else 0.0
     return side, float(min(1.0, hp))
+
+
+def strong_bar_side(img: np.ndarray, box, min_fill: float = 0.18) -> tuple[str | None, float | None]:
+    """Strict HP-bar check used to catch high-confidence blue/red team overrides."""
+    return ownership_and_hp(img, box, min_fill=min_fill)

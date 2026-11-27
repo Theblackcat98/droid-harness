@@ -96,6 +96,16 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "giant_back_build": False,         # E5
     "giant_safe_build_elixir": 9.0,
     "giant_back_build_score": 0.4,
+    "giant_build_block_tiles": None,   # None preserves defend_trigger_tiles for legacy strategies
+    # Pro card/cost/cycle awareness (opt-in; v1-v3 keep legacy behavior)
+    "max_opp_elixir_to_bridge": 10.0,
+    "min_elixir_advantage_to_bridge": -10.0,
+    "cycle_punish_partial_deck": False,
+    "counter_unaffordable_punish_mult": 1.0,
+    "back_build_counter_in_hand_mult": None,
+    "spell_aware": False,
+    "kill_aware_spells": False,
+    "save_counters_for_in_hand_threats": False,
 }
 
 

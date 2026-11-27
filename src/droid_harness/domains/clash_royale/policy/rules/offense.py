@@ -21,20 +21,42 @@ def _scale(score: float, f: float) -> float:
     return score * f if score > 0 else score
 
 
-def counter_factor(s, p, card_key: str) -> tuple[float, str]:
-    """E4: is a known counter to our win condition possibly in their hand?"""
+def counter_factor(s, p, card_key: str, ctx: RuleContext | None = None, *,
+                   is_back_build: bool = False) -> tuple[float, str]:
+    """E4 + cost/cycle awareness: scale pushes by counter availability & affordability."""
     if not p.counter_gate or card_key not in p.win_conditions:
         return 1.0, ""
     seen = set(p.wc_counters) & set(s.opp_deck_seen)
     if not seen:
         return 1.0, ""
-    # Cards in their last four plays are at the back of their queue: not in hand. Computed
-    # from deck_seen/last_four (both survive the decision log) rather than a derived set.
-    in_hand = seen - set(s.opp_last_four)
-    if in_hand:
-        return p.counter_in_hand_mult, f"; their {'/'.join(sorted(in_hand))} may be in hand"
-    if len(s.opp_deck_seen) >= 8:  # unseen cards can't be counters only once the deck is known
-        return p.counter_out_mult, f"; their {'/'.join(sorted(seen))} out of cycle"
+    opp_hi = s.opp_elixir[1]
+    cost_aware = p.counter_unaffordable_punish_mult != 1.0 or p.cycle_punish_partial_deck
+    in_hand_ready = []
+    in_hand_unaffordable = []
+    out_of_cycle = []
+    for c in sorted(seen):
+        until = s.opp_cards_until_back(c)
+        if until == 0:
+            if cost_aware and ctx is not None and c in ctx.cards and opp_hi < ctx.cards.cost(c) - 0.5:
+                in_hand_unaffordable.append(c)
+            else:
+                in_hand_ready.append(c)
+        else:
+            out_of_cycle.append(c)
+    if in_hand_ready:
+        mult = (
+            p.back_build_counter_in_hand_mult
+            if is_back_build and p.back_build_counter_in_hand_mult is not None
+            else p.counter_in_hand_mult
+        )
+        return mult, f"; their {'/'.join(in_hand_ready)} may be in hand"
+    deck_full = len(s.opp_deck_seen) >= 8
+    if deck_full or (p.cycle_punish_partial_deck and len(s.opp_deck_seen) >= 5):
+        if out_of_cycle and not in_hand_unaffordable:
+            mult = p.counter_out_mult if deck_full else (1.0 + 0.5 * (p.counter_out_mult - 1.0))
+            return mult, f"; their {'/'.join(out_of_cycle)} out of cycle"
+        if in_hand_unaffordable:
+            return p.counter_unaffordable_punish_mult, f"; {'/'.join(in_hand_unaffordable)} unaffordable"
     return 1.0, ""
 
 
@@ -78,6 +100,8 @@ class WinConditionWhenOppLow:
         if s.my_elixir < p.min_elixir_to_attack or unanswered_threat(s, p, ctx):
             return
         opp_hi = s.opp_elixir[1]
+        if opp_hi > p.max_opp_elixir_to_bridge and (s.my_elixir - opp_hi) < p.min_elixir_advantage_to_bridge:
+            return
         aggression = intent.aggression if intent is not None else 0.5
         for slot, key in s.affordable_hand(ctx.cards):
             if key not in p.win_conditions:
@@ -85,7 +109,7 @@ class WinConditionWhenOppLow:
             lane = intent.lane if intent is not None and intent.lane else _weaker_lane(s, ctx)
             tile = ctx.placement.snap(tuple(p.placement.bridge_tiles[lane]), ctx.cards[key], s)
             score = (1.0 - opp_hi / 10) * (0.5 + aggression) - p.elixir_weight * ctx.cards.cost(key) / 20
-            fc, why_c = counter_factor(s, p, key)
+            fc, why_c = counter_factor(s, p, key, ctx)
             fr, why_r = reserve_factor(s, p, ctx.cards.cost(key))
             yield Candidate(self.id, key, slot, tile, score=_scale(score, fc * fr),
                             reason=f"opp elixir ≤ {opp_hi:.1f}, lane {lane}{why_c}{why_r}")
@@ -120,11 +144,21 @@ class CounterPush:
                 if tank:  # E3: the tank leads, so the survivors shoot from behind it
                     tile = ctx.placement.snap((lx, ly + 1.0), card, s)
                     score += p.counterpush_tank_bonus
-                    fc, why = counter_factor(s, p, key)
-                    score = _scale(score, fc)
+                    fc, why = counter_factor(s, p, key, ctx)
+                    fr, why_r = reserve_factor(s, p, card.cost)
+                    score = _scale(score, fc * fr)
+                    why = f"{why}{why_r}"
                 else:
                     tile = ctx.placement.snap((lx, ly - 2.0), card, s)
-                    why = ""
+                    fr, why = reserve_factor(s, p, card.cost)
+                    score = _scale(score, fr)
+                    if p.spell_aware and key == "minions":
+                        if s.opp_can_play_now("arrows", ctx.cards):
+                            score = _scale(score, 0.65)
+                            why = f"{why}; arrows in hand"
+                        elif "arrows" in s.opp_deck_seen and s.opp_cards_until_back("arrows") >= 2:
+                            score = _scale(score, 1.30)
+                            why = f"{why}; arrows out of cycle"
                 yield Candidate(self.id, key, slot, tile, score=score,
                                 reason=f"{'tank ahead of' if tank else 'support'} {value:.1f} elixir push {lane}{why}")
 
@@ -138,7 +172,8 @@ class GiantBackBuild:
     def propose(self, s, p, ctx: RuleContext, intent):
         if not p.giant_back_build or s.my_elixir < p.giant_safe_build_elixir:
             return
-        if s.threats(ctx.arena, ctx.cards, max_tiles_to_tower=p.defend_trigger_tiles):
+        block_tiles = p.defend_trigger_tiles if p.giant_build_block_tiles is None else p.giant_build_block_tiles
+        if s.threats(ctx.arena, ctx.cards, max_tiles_to_tower=block_tiles):
             return  # defend first
         lane = intent.lane if intent is not None and intent.lane else _weaker_lane(s, ctx)
         for slot, key in s.affordable_hand(ctx.cards):
@@ -146,7 +181,7 @@ class GiantBackBuild:
             if key not in p.win_conditions or card.is_spell or card.kind == "building":
                 continue
             tile = ctx.placement.snap(tuple(p.placement.back_tiles[lane]), card, s)
-            fc, why_c = counter_factor(s, p, key)
+            fc, why_c = counter_factor(s, p, key, ctx, is_back_build=True)
             fr, why_r = reserve_factor(s, p, card.cost)
             yield Candidate(self.id, key, slot, tile, score=_scale(p.giant_back_build_score, fc * fr),
                             reason=f"back-build {key} {lane} at {s.my_elixir:.1f} elixir{why_c}{why_r}")

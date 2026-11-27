@@ -59,6 +59,10 @@ def our_class(kata_name: str, bel: int | None, alias: dict[str, str], names: lis
         sided = f"{base}_{'me' if bel == 0 else 'opp'}"
         if sided in names:
             return sided
+        if bel == 0:
+            fallback = "other_air_me" if base in ("baby_dragon", "minion", "other_air") else "other_ground_me"
+            if fallback in names:
+                return fallback
     return base if base in names else None
 
 

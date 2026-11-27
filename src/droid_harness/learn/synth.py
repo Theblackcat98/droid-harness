@@ -41,6 +41,7 @@ _KATACR_FILE = re.compile(r"_(?P<bel>[01])_\d+\.png$")
 class Sprite:
     img: np.ndarray  # BGRA cut-out
     cls: str  # our class name: side-aware unit (knight_opp) or effect (fireball_effect)
+    force_bar: bool = False
 
 
 @dataclass
@@ -127,7 +128,7 @@ def compose(background: np.ndarray, sprites: list[Sprite], cfg: SynthConfig, rng
     area = (left, top, left + int(round(bw * r)), top + int(round(bh * r)))
     base_scale = (bw / cfg.src_arena_width_px) * r
 
-    placed = []  # (foot_y, sprite_img, x, y, cls)
+    placed = []  # (foot_y, sprite_img, x, y, cls, force_bar)
     for j, sp in enumerate(sprites):
         s = base_scale * rng.uniform(1 - cfg.scale_jitter, 1 + cfg.scale_jitter)
         img = _bgra(sp.img)
@@ -138,16 +139,16 @@ def compose(background: np.ndarray, sprites: list[Sprite], cfg: SynthConfig, rng
         else:
             fx = rng.uniform(area[0], area[2])
             fy = rng.uniform(area[1] + nh * 0.5, area[3])  # keep most of the sprite inside vertically
-        placed.append((fy, img, int(round(fx - nw / 2)), int(round(fy - nh)), sp.cls))
+        placed.append((fy, img, int(round(fx - nw / 2)), int(round(fy - nh)), sp.cls, sp.force_bar))
     placed.sort(key=lambda p: p[0])  # farther (higher on screen) first; the game draws lower on top
 
     owner = np.full(canvas.shape[:2], -1, np.int32)
-    for i, (_, img, x, y, _) in enumerate(placed):
+    for i, (_, img, x, y, _, _) in enumerate(placed):
         _paste(canvas, owner, img, x, y, area, i)
 
     boxes: list[PlacedBox] = []
     bar_jobs = []
-    for i, (_, img, x, y, cls) in enumerate(placed):
+    for i, (_, img, x, y, cls, force_bar) in enumerate(placed):
         alpha = img[:, :, 3]
         total = int((alpha > 127).sum())
         visible = int((owner == i).sum())
@@ -164,7 +165,7 @@ def compose(background: np.ndarray, sprites: list[Sprite], cfg: SynthConfig, rng
             continue
         box = (float(x0b), float(y0b), float(x1b), float(y1b))
         boxes.append(PlacedBox(cls, box))
-        if not is_effect(split_side(cls)[0]) and rng.random() < cfg.hp_bar_prob:
+        if not is_effect(split_side(cls)[0]) and (force_bar or rng.random() < cfg.hp_bar_prob):
             bar_jobs.append((box, split_side(cls)[1]))
     for box, side in bar_jobs:  # UI layer: bars sit on top of every sprite
         draw_hp_bar(canvas, box, rng.uniform(0.2, 1.0), side, bars, rng)
@@ -242,7 +243,19 @@ def class_for(base: str, side: str | None, names: list[str]) -> str | None:
     return base if base in names else None
 
 
-def load_sprites(segment_dir: str | Path, names: list[str]) -> tuple[list[Sprite], Counter]:
+def _recolor_opp_to_me(bgra: np.ndarray) -> np.ndarray:
+    """Shift red enemy team accents to blue player accents on opaque pixels."""
+    out = _bgra(bgra).copy()
+    bgr = out[:, :, :3]
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    mask = ((hsv[:, :, 0] <= 18) | (hsv[:, :, 0] >= 158)) & (hsv[:, :, 1] >= 70) & (out[:, :, 3] > 127)
+    hsv[mask, 0] = 112
+    out[:, :, :3] = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    return out
+
+
+def load_sprites(segment_dir: str | Path, names: list[str], *,
+                 synthesize_missing_sides: bool = False) -> tuple[list[Sprite], Counter]:
     """``<segment_dir>/<our_base_class>/*.png`` (``tools/fetch_katacr.py`` layout)."""
     sprites, counts = [], Counter()
     for d in sorted(p for p in Path(segment_dir).iterdir() if p.is_dir()):
@@ -256,6 +269,19 @@ def load_sprites(segment_dir: str | Path, names: list[str]) -> tuple[list[Sprite
                 continue
             sprites.append(Sprite(img, cls))
             counts[cls] += 1
+    if synthesize_missing_sides:
+        for cls in names:
+            if not cls.endswith("_me") or counts[cls] >= 10:
+                continue
+            opp_cls = f"{cls[:-3]}_opp"
+            opp_pool = [s for s in sprites if s.cls == opp_cls]
+            if not opp_pool:
+                continue
+            step = max(1, len(opp_pool) // 80)
+            for s in opp_pool[::step][:80]:
+                sprites.append(Sprite(_recolor_opp_to_me(s.img), cls, force_bar=True))
+                counts[cls] += 1
+                counts[f"synth_me:{cls}"] += 1
     return sprites, counts
 
 

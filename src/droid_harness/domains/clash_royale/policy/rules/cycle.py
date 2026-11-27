@@ -7,6 +7,12 @@ from . import RuleContext
 def _cheapest_cycle_card(s, p, ctx: RuleContext):
     opts = [(ctx.cards.cost(k), slot, k) for slot, k in s.affordable_hand(ctx.cards)
             if not ctx.cards[k].is_spell and k not in p.win_conditions]
+    if p.save_counters_for_in_hand_threats and len(opts) > 1:
+        urgent_tanks = ("giant", "prince", "hog_rider", "goblin_giant", "pekka")
+        if any(s.opp_can_play_now(t, ctx.cards) for t in urgent_tanks):
+            filtered = [o for o in opts if o[2] not in ("mini_pekka", "minions")]
+            if filtered:
+                opts = filtered
     return min(opts) if opts else None
 
 

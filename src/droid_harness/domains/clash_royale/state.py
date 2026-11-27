@@ -95,6 +95,23 @@ class GameState:
         except ValueError:
             return None
 
+    def opp_cards_until_back(self, card: str) -> int:
+        last = self.opp_last_four[-4:]
+        if card not in last:
+            return 0
+        idx = len(last) - 1 - last[::-1].index(card)
+        return 4 - (len(last) - 1 - idx)
+
+    def opp_can_play_now(self, card: str, cards: CardDB, *, margin: float = 0.5) -> bool:
+        if card not in self.opp_deck_seen or card not in cards:
+            return False
+        if self.opp_cards_until_back(card) != 0:
+            return False
+        return self.opp_elixir[1] >= cards.cost(card) - margin
+
+    def opp_elixir_advantage(self) -> float:
+        return self.my_elixir - (self.opp_elixir[0] + self.opp_elixir[1]) / 2.0
+
     def threats(self, arena: Arena, cards: CardDB, *, max_tiles_to_tower: float = 99.0,
                 speed_floor: float = 0.3) -> list[Threat]:
         from .path import path_distance_to_tower  # local import avoids a cycle

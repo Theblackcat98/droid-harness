@@ -32,7 +32,7 @@ from .detector import AsyncDetector, Detector
 from .digits import DigitReader, binarize, segment
 from .grid import Layout, TileMapper
 from .hud import is_greyed, read_elixir
-from .ownership import ownership_and_hp
+from .ownership import ownership_and_hp, strong_bar_side
 from .towers import TowerStateReader
 from .tracker import PlayEvent, SpawnGrouper, TileDetection, Track, Tracker
 
@@ -89,6 +89,11 @@ class CRPerception:
         self.warnings: Counter = Counter()
         self.units: list[Unit] = []
         self.events: list[dict] = []
+        self._opp_last_play_ms: dict[str, int] = {}
+        self._opp_recent_plays: list[tuple[int, tuple[float, float]]] = []
+        self._pre_reported_opp: list[tuple[float, float]] = []
+        self._last_hud: float | None = None
+        self._battle_hud_seen: bool = False
         self._started = False
         self._last_t_ms = 0
 
@@ -108,10 +113,15 @@ class CRPerception:
         warns: list[str] = []
 
         hud = read_elixir(img, self.layout.elixir_bar, self.layout.elixir_hsv_lo, self.layout.elixir_hsv_hi)
+        self._last_hud = hud
+        if hud is not None and hud >= 1.0:
+            self._battle_hud_seen = True
         if self.frame_i == 0 and hud is not None and hud >= 1.0:
             self.elixir.reset(hud, t_s)
             self.opp.elixir.low = self.opp.elixir.high = hud
-        elif t_s <= 3.0 and hud is not None and not self.events and hud > self.elixir.value + 1.0:
+        elif (t_s <= 4.0 and hud is not None and hud >= 1.0
+              and not self._opp_recent_plays and not any(e["kind"] == "my_play" for e in self.events)
+              and hud > self.elixir.value + 1.0):
             self.elixir.reset(hud, t_s)
             self.opp.elixir.low = max(self.opp.elixir.low, hud)
             self.opp.elixir.high = max(self.opp.elixir.high, hud)
@@ -287,6 +297,12 @@ class CRPerception:
             else:
                 bar_side, hp = ownership_and_hp(img, (bx1, by1, bx2, by2))
                 side = cls_side or bar_side  # a side-aware class beats the HP-bar color
+                if cls_side and d.conf < 0.75:
+                    strong_side, strong_hp = strong_bar_side(img, (bx1, by1, bx2, by2), min_fill=0.18)
+                    if strong_side is not None and strong_side != cls_side:
+                        side = strong_side
+                        if strong_hp is not None:
+                            hp = strong_hp
                 if is_generic(base) and d.conf < 0.65 and side is not None:
                     cx_tile = self.tiles.px_to_tile((fx, (by1 + by2) / 2), img.shape)
                     if any(
@@ -296,8 +312,11 @@ class CRPerception:
                         for tk, tpos in self.arena.towers.items()
                     ):
                         continue
-            key = f"{base}|{cls_side}" if cls_side else base  # never associate my knight with theirs
+            key = f"{base}|{side}" if side else base  # never associate my knight with theirs
             dets.append(TileDetection(base, d.conf, tile, side, hp, key=key))
+        self._pre_reported_opp = [
+            tr.tile for tr in self.tracker.tracks.values() if tr.spawn_reported and tr.side == "opp"
+        ]
         tracks, spawns = self.tracker.update(dets, t_ms)
         self.grouper.expire(t_ms)
         for ev in spawns:
@@ -348,16 +367,92 @@ class CRPerception:
                               flying=flying_of(tr.cls, card)))
         return units
 
+    def _is_legal_opp_spawn(self, play: PlayEvent) -> bool:
+        if is_effect(play.card) or play.card in ("miner", "goblin_barrel", "goblin_drill"):
+            return True
+        c = self.cards.get(play.card)
+        if c is not None and c.is_spell:
+            return True
+        river_mid = sum(self.arena.river_y) / 2
+        if play.tile[1] >= river_mid - 1.2:
+            return True
+        lane = self.arena.lane_of(play.tile[0])
+        return self.towers.get(f"me_{lane}") == 0 and play.tile[1] >= 10.5
+
+    def _is_building_spawn(self, play: PlayEvent) -> bool:
+        if play.card == "skeletons":
+            sources = ("tombstone", "witch")
+        elif play.card == "spear_goblins":
+            sources = ("goblin_hut",)
+        else:
+            return False
+        return any(
+            tr.side == "opp" and tr.cls in sources and math.dist(play.tile, tr.tile) <= 2.8
+            for tr in self.tracker.tracks.values()
+        )
+
+    def _accept_opp_play(self, play: PlayEvent) -> bool:
+        if self.frame_i > 0 and not self._battle_hud_seen and play.t_ms <= 3500:
+            return False
+        if not self._is_legal_opp_spawn(play) or self._is_building_spawn(play):
+            return False
+        t_ms = play.t_ms
+        t_s = t_ms / 1000.0
+        self.opp.advance(t_s)
+        c = self.cards.get(play.card)
+        if play.upgraded_from:
+            prev_t = self._opp_last_play_ms.get(play.upgraded_from)
+            return prev_t is not None and (t_ms - prev_t) <= 2000
+        if c is not None and c.kind == "building":
+            if play.peak_conf < 0.85 and (play.speed > 0.5 or play.hits < 5):
+                return False
+        min_cost = float(c.cost) if c is not None else 2.0
+        if self.opp.elixir.high + 1.5 < min_cost and not (play.peak_conf >= 0.72 and play.hits >= 5):
+            return False
+        if (c is not None and len(self.opp.cycle.deck_seen) >= 8
+                and play.card not in self.opp.cycle.deck_seen and play.card != "mirror"):
+            if not (play.peak_conf >= 0.82 and play.hits >= 6):
+                return False
+        if is_generic(play.card):
+            self._opp_recent_plays = [(t, p) for t, p in self._opp_recent_plays if t_ms - t <= 3000]
+            if any((t_ms - t) <= 1500 and math.dist(play.tile, pt) <= 4.0 for t, pt in self._opp_recent_plays):
+                return False
+            if any(math.dist(play.tile, pt) <= 2.5 for pt in self._pre_reported_opp):
+                return False
+            return True
+        prev_t = self._opp_last_play_ms.get(play.card)
+        if prev_t is not None:
+            dt_s = (t_ms - prev_t) / 1000.0
+            if dt_s < 5.0:
+                return False
+            min_cycle_s = 12.0 if phase_at(t_s) == "x1" else 9.0
+            if play.card in self.opp.cycle.last_four and dt_s < min_cycle_s:
+                return False
+        return True
+
     def _on_play(self, play: PlayEvent) -> None:
+        if play.side == "opp":
+            if not self._accept_opp_play(play):
+                return
+            t_s = play.t_ms / 1000.0
+            if play.upgraded_from and play.card in self.cards:
+                old_c = self.cards.cost(play.upgraded_from) if play.upgraded_from in self.cards else 0
+                extra = max(0, self.cards.cost(play.card) - old_c)
+                self.opp.upgrade_play(play.upgraded_from, play.card, extra, t_s)
+                self._opp_last_play_ms.pop(play.upgraded_from, None)
+                self._opp_last_play_ms[play.card] = play.t_ms
+            elif play.card in self.cards:
+                self.opp.on_play(play.card, self.cards.cost(play.card), t_s)
+                self._opp_last_play_ms[play.card] = play.t_ms
+            elif is_generic(play.card):
+                self.opp.on_play(None, (2.0, 5.0), t_s)
+            self._opp_recent_plays.append((play.t_ms, play.tile))
         rec = {"kind": f"{play.side}_spawn_play", "card": play.card, "tile": play.tile, "t_ms": play.t_ms}
+        if play.upgraded_from:
+            rec["upgraded_from"] = play.upgraded_from
         self.events.append(rec)
         if self.on_event:
             self.on_event(rec)
-        if play.side == "opp":
-            if play.card in self.cards:
-                self.opp.on_play(play.card, self.cards.cost(play.card), play.t_ms / 1000)
-            elif is_generic(play.card):
-                self.opp.on_play(None, (2.0, 5.0), play.t_ms / 1000)
 
     def _read_towers(self, img: np.ndarray, warns: list[str]) -> None:
         if self.tower_states is not None:

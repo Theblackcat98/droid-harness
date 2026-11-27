@@ -34,6 +34,9 @@ class TrainConfig:
     project: Path = Path("models/runs")
     name: str = "yolo26n-arena"
     out_onnx: Path = Path("models/detector.onnx")
+    cache: str | bool = False
+    workers: int = 8
+    patience: int = 15
 
 
 def train(cfg: TrainConfig) -> Path:
@@ -43,6 +46,7 @@ def train(cfg: TrainConfig) -> Path:
     model = YOLO(cfg.model)
     model.train(data=str(cfg.data_yaml), imgsz=cfg.imgsz, epochs=cfg.epochs, batch=cfg.batch,
                 device=cfg.device, project=str(cfg.project), name=cfg.name,
+                cache=cfg.cache, workers=cfg.workers, patience=cfg.patience,
                 exist_ok=True)  # without it Ultralytics auto-increments the dir and we'd read a stale best.pt
     best = Path(getattr(model.trainer, "best", "") or Path(model.trainer.save_dir) / "weights" / "best.pt")
     return export_onnx(best, cfg.out_onnx, cfg.export_imgsz, expected_names=dataset_names(cfg.data_yaml))
@@ -88,6 +92,15 @@ def write_classes(names: list[str], out: Path) -> Path:
     return out
 
 
+def _parse_cache(v: str) -> str | bool:
+    low = v.strip().lower()
+    if low in ("", "false", "0", "no"):
+        return False
+    if low in ("true", "1", "yes"):
+        return True
+    return v.strip()
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="train_detector")
     ap.add_argument("--data", required=True, help="Ultralytics data.yaml (from droid-harness synth / convert-katacr)")
@@ -99,9 +112,13 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--device", default="0")
     ap.add_argument("--name", default="yolo26n-arena")
     ap.add_argument("--out", default="models/detector.onnx")
+    ap.add_argument("--cache", default="false")
+    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--patience", type=int, default=15)
     a = ap.parse_args(argv)
     out = train(TrainConfig(Path(a.data), a.model, a.imgsz, tuple(a.export_imgsz), a.epochs, a.batch, a.device,
-                            name=a.name, out_onnx=Path(a.out)))
+                            name=a.name, out_onnx=Path(a.out),
+                            cache=_parse_cache(a.cache), workers=a.workers, patience=a.patience))
     print(f"exported {out}")
 
 
