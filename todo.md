@@ -18,7 +18,7 @@ Tags: **[you]** needs your hands, phone or account · **[code]** pure code work 
 - **Measurement problems found in the review:** opponent tower HP is read in only some frames (10 of the 16 EXP-0001 matches, never in the older `data/matches/` batch), so `tower_hp_diff` has the wrong sign in several losses (a 0–3 loss scored +337, a 0–1 loss +2620) and `tower_hp_increase` fires hundreds of times per match. That difference feeds engagement value, triage, Speed-1 scoring and the Stage-A futility margin.
 - **Built 2026-11-27 (plan steps 1–6, see the run log):** trustworthy tower HP, account levels and level-aware policy (v7), a counter prior, Practice/friendly flows, the dense mSPRT, targeted Speed 1, the detector's next class list and unseen-card eval, template harvesting, a value model, and the `autopilot` with a systemd unit and a weekly coding-agent job. Everything new in `policy/` is opt-in and default off; it changed every strategy ID (v4 `61f2df2e1ec1`, v6 `434fb3d8d263`, v7 `f42458bd6f37`) but not a single logged decision of v4 or v6.
 - **Not yet run on the phone.** None of the new code has played a match. The first real run is the next step.
-- **Tests:** 243 passed, 1 skipped (torch); `ruff` clean.
+- **Tests:** 244 passed, 1 skipped (torch); `ruff` clean.
 
 ## Priority queue
 
@@ -318,7 +318,7 @@ All code, no phone runs yet. Verified on the committed match data (56 matches) a
 - **Cards (R6).** `models/classes-next.txt` (86 classes), `-next` alias/generic maps, `check-classes`, `eval-unseen`; template harvesting (`--harvest-templates`, `promote-templates`). Skipped: the unknown-spawn cost heuristic (no size signal in the play event; naming cards is the real fix).
 - **Value model.** `train-value`: 39 train / 17 validation matches, validation AUC 0.69, under-confident at the low end. Studio win-chance badge and tape line; `digest --value` lists swing moments.
 - **Autopilot.** `flywheel/autopilot.py`, `flywheel/eval/live.py` (`run_paired`, shared with `experiment`), `droid-harness autopilot`, `tools/systemd/droid-autopilot.service`, the weekly agent scheduled task. Tests run a full cycle with a fake phone (farm, value model, proposal, promotion, report), the rejected path, the STOP file, notification and publishing into a temp repo.
-- Tests 243 passed, 1 skipped; `ruff` clean.
+- Tests 244 passed, 1 skipped; `ruff` clean.
 
 ## 2026-11-27 — Studio GUI, docs consolidation, strategy review
 

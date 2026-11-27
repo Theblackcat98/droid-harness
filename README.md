@@ -43,7 +43,7 @@ Measured on `phone-a` (OnePlus N10, `741be240`), account `theblackcat99`. The la
 | Strategies | Champion `ladder-vision-v4` (`61f2df2e1ec1`); candidates v6 (`434fb3d8d263`) and level-aware v7 (`f42458bd6f37`). The 2026-11-27 policy release changed every ID; old IDs resolve through [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml) |
 | Automation | `autopilot` runs farm → diagnose → propose → test → promote → report unattended ([§5](#autopilot-unattended-loop)); a weekly coding-agent job turns its reports into one structural-rule pull request |
 | Studio | Live view (`play --ui`, `watch`), replay inspector (`inspect`) with a win-chance line, no-phone demo (`sim --ui`) |
-| Tests | `pytest` 243 passed, 1 skipped without torch; `ruff check src tests tools` clean |
+| Tests | `pytest` 244 passed, 1 skipped without torch; `ruff check src tests tools` clean |
 
 ---
 
