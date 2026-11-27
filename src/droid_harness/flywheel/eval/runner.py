@@ -28,6 +28,7 @@ pair can complete, and abort rates are compared between arms
 from __future__ import annotations
 
 import json
+import math
 import random
 import time
 from dataclasses import dataclass
@@ -38,6 +39,18 @@ from .sprt import SprtResult, sprt
 LEGACY_TESTS = {"sprt_h2h": "fixed", "sprt_paired": "h2h"}  # old names in older ledgers/CLIs
 HEAD_TO_HEAD_KINDS = ("selfplay", "friendly")
 SCORE = {"win": 1.0, "draw": 0.5, "loss": 0.0}
+
+
+def dense_match_score(summary: dict) -> float:
+    """Continuous match dominance score so W-W and L-L pairs still measure margin."""
+    res = str(summary.get("result") or "")
+    base = 3.0 if res == "win" else (1.5 if res == "draw" else 0.0)
+    my_c = float(summary.get("my_crowns") or 0.0)
+    opp_c = float(summary.get("opp_crowns") or 0.0)
+    hp_diff = float(summary.get("tower_hp_diff") or 0.0)
+    dur = float(summary.get("duration_s") or 180.0)
+    speed_bonus = max(0.0, (180.0 - dur) / 600.0) if res == "win" else 0.0
+    return base + 0.5 * (my_c - opp_c) + max(-0.8, min(0.8, hp_diff / 3000.0)) + speed_bonus
 
 
 @dataclass
@@ -58,6 +71,7 @@ class ExperimentConfig:
     max_games: int = 400
     seed: int = 0
     max_slot_retries: int = 3  # replays of one aborted slot before its pair is dropped
+    futility_min_pairs: int = 0  # >0 enables Stage-A dense-margin futility stop when UCB95 < 0
 
     def __post_init__(self) -> None:
         self.test = LEGACY_TESTS.get(self.test, self.test)
@@ -76,8 +90,10 @@ class ExperimentRunner:
         self._rng = random.Random(cfg.seed)
         self._queue: list[tuple[str, str]] = []  # (arm, pair_id) still to play
         self._pairs: dict[str, dict[str, str]] = {}  # pair_id -> arm -> result
+        self._pair_summaries: dict[str, dict[str, dict]] = {}  # pair_id -> arm -> summary
         self._retries: dict[tuple[str, str], int] = {}
         self.dropped_pairs: list[str] = []
+        self.futility_reason: str | None = None
         self._n_blocks = 0
         self.last_pair_id: str | None = None
 
@@ -127,6 +143,7 @@ class ExperimentRunner:
             return  # otherwise the slot stays at the head of the queue and is replayed
         self._queue.remove(slot)
         self._pairs.setdefault(pid, {})[arm] = summary["result"]
+        self._pair_summaries.setdefault(pid, {})[arm] = summary
 
     # --- evaluation ------------------------------------------------------------
     def pair_counts(self) -> tuple[int, int, int]:
@@ -144,11 +161,36 @@ class ExperimentRunner:
                 tied += 1
         return better, worse, tied
 
+    def dense_pair_stats(self) -> dict[str, float]:
+        """Paired dense-dominance stats across ALL completed pairs (including W-W and L-L)."""
+        diffs = []
+        for pid, sums in self._pair_summaries.items():
+            if pid in self.dropped_pairs or "candidate" not in sums or "champion" not in sums:
+                continue
+            diffs.append(dense_match_score(sums["candidate"]) - dense_match_score(sums["champion"]))
+        n = len(diffs)
+        if n == 0:
+            return {"pairs": 0, "mean": 0.0, "se": 0.0, "lcb95": 0.0, "ucb95": 0.0}
+        mean = sum(diffs) / n
+        if n < 2:
+            return {"pairs": n, "mean": round(mean, 4), "se": 0.0, "lcb95": round(mean, 4), "ucb95": round(mean, 4)}
+        var = sum((x - mean) ** 2 for x in diffs) / (n - 1)
+        se = math.sqrt(var / n)
+        return {"pairs": n, "mean": round(mean, 4), "se": round(se, 4),
+                "lcb95": round(mean - 1.96 * se, 4), "ucb95": round(mean + 1.96 * se, 4)}
+
     def evaluate(self) -> SprtResult:
         cfg = self.cfg
         if cfg.test == "pairs":
             better, worse, _ = self.pair_counts()
-            return sprt(better, worse, 0.5, cfg.p1, cfg.alpha, cfg.beta)
+            res = sprt(better, worse, 0.5, cfg.p1, cfg.alpha, cfg.beta)
+            if res.decision == "continue" and cfg.futility_min_pairs > 0:
+                ds = self.dense_pair_stats()
+                if ds["pairs"] >= cfg.futility_min_pairs and ds["ucb95"] < 0.0:
+                    self.futility_reason = (f"stage-a dense-margin futility at {int(ds['pairs'])} pairs "
+                                            f"(mean={ds['mean']:+.3f}, ucb95={ds['ucb95']:+.3f} < 0)")
+                    return SprtResult("accept_H0", res.llr, res.lower, res.upper, res.wins, res.losses)
+            return res
         cand = tally(self.matches, "candidate", cfg.game_version)
         w, lo = cand.wins + 0.5 * cand.draws, cand.losses + 0.5 * cand.draws
         p0 = 0.5 if cfg.test == "h2h" else cfg.p0
@@ -202,10 +244,13 @@ class ExperimentRunner:
         parts = []
         if self.void_reason:
             parts.append(self.void_reason)
+        if self.futility_reason:
+            parts.append(self.futility_reason)
         if self.cfg.test == "pairs":
             b, w, t = self.pair_counts()
+            ds = self.dense_pair_stats()
             parts.append(f"pairs: candidate better {b}, champion better {w}, tied {t}, "
-                         f"dropped {len(self.dropped_pairs)}")
+                         f"dropped {len(self.dropped_pairs)}, dense_margin={ds['mean']:+.3f}")
         warn = self.abort_warning()
         if warn:
             parts.append(warn)

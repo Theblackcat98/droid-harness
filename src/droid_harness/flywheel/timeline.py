@@ -20,6 +20,8 @@ class Point:
     posture: str = "BALANCED"
     my_elixir: float = 0.0
     loop_ms: float | None = None
+    opp_elixir: tuple[float, float] = (5.0, 5.0)
+    opp_hand_possible: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -41,6 +43,7 @@ class ChosenAction:
     tile: tuple[float, float]
     execute_at_ms: int | None
     posture: str
+    runners_up: list[tuple[str, str, float]] = field(default_factory=list)  # (rule_id, card, score)
 
 
 @dataclass
@@ -66,12 +69,28 @@ def load_match(match_dir: str | Path) -> MatchTimeline:
     for rec in _jsonl(d / "decisions.jsonl"):
         st = rec.get("state") or {}
         if st:
+            opp_el = st.get("opp_elixir") or (5.0, 5.0)
+            opp_pair = (float(opp_el[0]), float(opp_el[1])) if len(opp_el) >= 2 else (5.0, 5.0)
             tl.points.append(Point(st["t_ms"], st.get("units", []), st.get("towers", {}), st.get("warnings", []),
                                    st.get("posture", "BALANCED"), st.get("my_elixir", 0.0),
-                                   (rec.get("lat") or {}).get("total")))
+                                   (rec.get("lat") or {}).get("total"), opp_pair,
+                                   list(st.get("opp_deck_seen") or [])))
         if rec.get("chosen_rule"):
+            cands = rec.get("candidates") or []
+            runners: list[tuple[str, str, float]] = []
+            for c in sorted(
+                (x for x in cands if isinstance(x, dict) and x.get("rule_id")),
+                key=lambda x: float(x.get("score") or 0.0),
+                reverse=True,
+            ):
+                if c.get("rule_id") == rec["chosen_rule"] and c.get("card") == rec["chosen_card"]:
+                    continue
+                runners.append((str(c["rule_id"]), str(c.get("card") or "?"), round(float(c.get("score") or 0.0), 3)))
+                if len(runners) >= 2:
+                    break
             tl.chosen.append(ChosenAction(rec.get("seq", 0), rec["t_ms"], rec["chosen_rule"], rec["chosen_card"],
-                                          tuple(rec["tile"]), rec.get("execute_at_ms"), rec.get("posture", "")))
+                                          tuple(rec["tile"]), rec.get("execute_at_ms"), rec.get("posture", ""),
+                                          runners))
     tl.points.sort(key=lambda p: p.t_ms)
     start_pts = summary.get("start_pts_us") or 0
     for f in _jsonl(d / "frames.jsonl"):

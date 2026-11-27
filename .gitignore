@@ -24,7 +24,8 @@ configs/domains/clash_royale/templates/*
 !configs/domains/clash_royale/templates/phone-a/
 configs/domains/clash_royale/screens/*
 !configs/domains/clash_royale/screens/phone-a/
-configs/domains/clash_royale/digits/
+configs/domains/clash_royale/digits/*
+!configs/domains/clash_royale/digits/phone-a/
 configs/domains/clash_royale/towers/*
 !configs/domains/clash_royale/towers/phone-a/
 configs/domains/clash_royale/rois/phone-*.yaml

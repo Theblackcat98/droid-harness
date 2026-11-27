@@ -43,8 +43,20 @@ params:
   spell_aware: true
   kill_aware_spells: true
   save_counters_for_in_hand_threats: true
+  # Pro engine mechanics (docs/pro-strategy-research.md §4):
+  giant_back_build_allow_in_opening: false
+  giant_x1_min_elixir: 8.6
+  use_min_cycle_elixir: true
+  ignore_chip_tower_hp_frac: 0.60
+  ignore_chip_max_threat_value: 1.6
+  opposite_lane_punish: true
+  punish_min_enemy_cost: 5
+  punish_enemy_back_y: 23.5
+  punish_min_my_elixir: 5.5
+  punish_score: 0.68
+  punish_cards: [mini_pekka, giant]
 tier0:
-  lethal_margin_hp: 20
+  lethal_margin_hp: 0
   spell_tower_damage:
     fireball: 75
     arrows: 30
@@ -53,12 +65,16 @@ tier0:
   leak_card_preference: [knight, archers, minions, musketeer, mini_pekka]
   emergency_eta_s: 1.8
   emergency_hp_frac: 0.35
+placement:
+  anti_spell_tower_offset: 3.2
+  melee_kite_center: true
 weights:
   defend.lane_threat: 1.0
   defend.air_threat: 1.0
   offense.win_condition_when_opp_low: 1.0
   offense.counter_push: 0.85
   offense.giant_back_build: 1.0
+  offense.opposite_lane_punish: 1.0
   spell.value: 0.85
   spell.tower_chip: 0.6
   opening.safe_first_play: 1.0

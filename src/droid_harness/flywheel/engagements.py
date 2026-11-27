@@ -64,10 +64,28 @@ def contested(p: Point, lane: str, arena: Arena, advancing: float = 0.2) -> bool
     return False
 
 
-def _towers(lane: str, side: str, towers: dict[str, int]) -> int:
+DEFAULT_PRINCESS_HP = 1400
+DEFAULT_KING_HP = 2400
+
+
+def _towers(lane: str, side: str, towers: dict[str, int], *, infer_missing: dict[str, int] | None = None) -> int:
     """HP that matters for a lane: the princess tower, plus the king once that princess is down."""
-    princess = towers.get(f"{side}_{lane}", 0)
-    king = towers.get(f"{side}_king", 0) if princess == 0 else 0
+    pkey, kkey = f"{side}_{lane}", f"{side}_king"
+    if pkey in towers:
+        princess = towers[pkey]
+    elif infer_missing and pkey in infer_missing:
+        princess = infer_missing[pkey]
+    else:
+        princess = 0
+    if princess == 0:
+        if kkey in towers:
+            king = towers[kkey]
+        elif infer_missing and kkey in infer_missing:
+            king = infer_missing[kkey]
+        else:
+            king = 0
+    else:
+        king = 0
     return princess + king
 
 
@@ -111,9 +129,10 @@ def segment(tl: MatchTimeline, arena: Arena, cards: CardDB, *, quiet_ms: int = 2
         if open_eng is not None:
             out.append(open_eng)
     out.sort(key=lambda e: (e.t_start, e.lane))
+    baselines = _infer_baselines(tl)
     for i, e in enumerate(out):
         e.eng_id = i
-        _score(e, tl, arena, cards, lam)
+        _score(e, tl, arena, cards, lam, baselines=baselines)
     return out
 
 
@@ -123,7 +142,30 @@ def _opp_cost(card: str, cards: CardDB) -> float:
     return 3.5 if card in ("other_ground", "other_air") else 0.0
 
 
-def _score(e: Engagement, tl: MatchTimeline, arena: Arena, cards: CardDB, lam: float) -> None:
+def _infer_baselines(tl: MatchTimeline) -> dict[str, int]:
+    """Infer baseline tower max HP across the match so legacy/unactivated towers get real destruction delta."""
+    max_seen: dict[str, int] = {}
+    ever_seen: set[str] = set()
+    for pt in tl.points:
+        for k, v in pt.towers.items():
+            ever_seen.add(k)
+            if v > max_seen.get(k, 0):
+                max_seen[k] = v
+    base: dict[str, int] = {}
+    for side in ("me", "opp"):
+        p_ref = max(max_seen.get(f"{side}_left", 0), max_seen.get(f"{side}_right", 0)) or DEFAULT_PRINCESS_HP
+        for lane in ("left", "right"):
+            pk = f"{side}_{lane}"
+            if pk in ever_seen:
+                base[pk] = max_seen.get(pk, 0) or p_ref
+        kk = f"{side}_king"
+        if kk in ever_seen or any(f"{side}_{ln}" in ever_seen for ln in ("left", "right")):
+            base[kk] = max_seen.get(kk, 0) or (int(round(p_ref * 1.66)) if p_ref != DEFAULT_PRINCESS_HP else DEFAULT_KING_HP)
+    return base
+
+
+def _score(e: Engagement, tl: MatchTimeline, arena: Arena, cards: CardDB, lam: float,
+           baselines: dict[str, int] | None = None) -> None:
     start, end = _at(tl.points, e.t_start - 1), _at(tl.points, e.t_end)
     e.plays = [pl for pl in tl.plays if pl.tile is not None and _lane(arena, pl.tile[0]) == e.lane
                and e.t_start <= pl.t_ms <= e.t_end]
@@ -133,8 +175,11 @@ def _score(e: Engagement, tl: MatchTimeline, arena: Arena, cards: CardDB, lam: f
     e.board_me_end = board_value(end, "me", e.lane, arena, cards)
     e.board_opp_start = board_value(start, "opp", e.lane, arena, cards)
     e.board_opp_end = board_value(end, "opp", e.lane, arena, cards)
-    e.tower_dmg_dealt = max(0, _towers(e.lane, "opp", start.towers) - _towers(e.lane, "opp", end.towers))
-    e.tower_dmg_taken = max(0, _towers(e.lane, "me", start.towers) - _towers(e.lane, "me", end.towers))
+    base = baselines if baselines is not None else _infer_baselines(tl)
+    e.tower_dmg_dealt = max(0, _towers(e.lane, "opp", start.towers, infer_missing=base)
+                            - _towers(e.lane, "opp", end.towers, infer_missing=base))
+    e.tower_dmg_taken = max(0, _towers(e.lane, "me", start.towers, infer_missing=base)
+                            - _towers(e.lane, "me", end.towers, infer_missing=base))
     net_me = e.board_me_end - e.board_me_start - e.spent_me
     net_opp = e.board_opp_end - e.board_opp_start - e.spent_opp
     e.value = (net_me - net_opp) + lam * (e.tower_dmg_dealt - e.tower_dmg_taken)

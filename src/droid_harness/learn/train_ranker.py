@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import threading
 import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -33,7 +35,14 @@ HASH_BUCKETS = 16
 ARENA_W, ARENA_H = 18.0, 32.0
 MAX_ELIXIR = 10.0
 FORMAT = "droid-harness-ranker/1"
+FORMAT_V2 = "droid-harness-ranker/2"
+SUPPORTED_FORMATS = (FORMAT, FORMAT_V2)
+BOARD_CYCLE_DIM = 10
+AIR_KINDS = frozenset({"minion", "minions", "minion_horde", "baby_dragon", "balloon", "lava_hound",
+                       "mega_minion", "bats", "inferno_dragon", "skeleton_dragons", "other_air"})
 DEFAULT_MAX_CANDIDATES = 32
+_RANKER_CACHE: dict[tuple[Any, ...], OnnxRanker] = {}
+_RANKER_CACHE_LOCK = threading.Lock()
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -51,16 +60,60 @@ def _as_pair(value: Any, default: tuple[float, float]) -> tuple[float, float]:
         return default
 
 
-def state_dim(deck: Sequence[str]) -> int:
-    return 3 + len(deck) + 2 + len(TOWER_KEYS) + len(POSTURES) + len(PHASES)
+def state_dim(deck: Sequence[str], *, version: int = 1) -> int:
+    base = 3 + len(deck) + 2 + len(TOWER_KEYS) + len(POSTURES) + len(PHASES)
+    return base + (BOARD_CYCLE_DIM if version >= 2 else 0)
 
 
 def candidate_dim(deck: Sequence[str]) -> int:
     return len(deck) + 1 + 2 + HASH_BUCKETS
 
 
-def encode_state(state: Any, deck: Sequence[str]) -> np.ndarray:
-    """Compact state vector: elixir, hand multi-hot, crowns, towers, posture, phase."""
+def _board_and_cycle_features(state: Any) -> list[float]:
+    """10 normalized features capturing lane board balance, threat ETA, and opponent cycle."""
+    units = _get(state, "units", []) or []
+    my_val = [0.0, 0.0]
+    opp_gnd = [0.0, 0.0]
+    opp_air = [0.0, 0.0]
+    min_eta = [15.0, 15.0]
+    for u in units:
+        if isinstance(u, (list, tuple)) and len(u) >= 8:
+            _, kind, side, x, y, vx, vy, hp = u[:8]
+            flying = str(kind) in AIR_KINDS
+        else:
+            kind = _get(u, "kind", "")
+            side = _get(u, "side", "")
+            tile = _as_pair(_get(u, "tile", (9.0, 16.0)), (9.0, 16.0))
+            vel = _as_pair(_get(u, "vel", (0.0, 0.0)), (0.0, 0.0))
+            x, y, vx, vy = tile[0], tile[1], vel[0], vel[1]
+            hp = float(_get(u, "hp_pct", 1.0) or 1.0)
+            flying = bool(_get(u, "flying", False) or str(kind) in AIR_KINDS)
+        li = 0 if float(x) < ARENA_W / 2.0 else 1
+        val = max(0.2, min(float(hp), 1.0)) * 3.0
+        if side == "me":
+            my_val[li] += val
+        elif side == "opp":
+            if flying:
+                opp_air[li] += val
+            else:
+                opp_gnd[li] += val
+            dist = max(0.0, float(y) - 6.5)
+            spd = max(math.hypot(float(vx), float(vy)), 1.0)
+            min_eta[li] = min(min_eta[li], dist / spd)
+    opp_seen = _get(state, "opp_deck_seen", []) or []
+    opp_last4 = _get(state, "opp_last_four", []) or []
+    return [
+        min(my_val[0] / 12.0, 1.0), min(my_val[1] / 12.0, 1.0),
+        min(opp_gnd[0] / 12.0, 1.0), min(opp_gnd[1] / 12.0, 1.0),
+        min(opp_air[0] / 12.0, 1.0), min(opp_air[1] / 12.0, 1.0),
+        min(min_eta[0] / 15.0, 1.0), min(min_eta[1] / 15.0, 1.0),
+        min(len(opp_seen) / 8.0, 1.0),
+        min(len(opp_last4) / 4.0, 1.0),
+    ]
+
+
+def encode_state(state: Any, deck: Sequence[str], *, version: int = 1) -> np.ndarray:
+    """Compact state vector: elixir, hand, crowns, towers, posture, phase (+ board & cycle in v2)."""
     deck = list(deck)
     hand = _get(state, "hand", []) or []
     if not isinstance(hand, (list, tuple)):
@@ -83,6 +136,8 @@ def encode_state(state: Any, deck: Sequence[str]) -> np.ndarray:
     vec += [1.0 if posture == p else 0.0 for p in POSTURES]
     phase = _get(state, "phase", "x1") or ""
     vec += [1.0 if phase == p else 0.0 for p in PHASES]
+    if version >= 2:
+        vec += _board_and_cycle_features(state)
     return np.asarray(vec, np.float32)
 
 
@@ -103,24 +158,34 @@ def encode_candidate(candidate: Any, deck: Sequence[str]) -> np.ndarray:
 
 
 def model_metadata(deck: Sequence[str], *, hidden: Sequence[int], max_candidates: int,
-                   trained_rows: int, epochs: int) -> dict:
+                   trained_rows: int, epochs: int, version: int = 1) -> dict:
     deck = list(deck)
+    sdim = state_dim(deck, version=version)
+    state_layout = [
+        {"name": "my_elixir", "size": 1},
+        {"name": "opp_elixir_bounds", "size": 2},
+        {"name": "hand_multi_hot", "size": len(deck), "classes": deck},
+        {"name": "crowns", "size": 2},
+        {"name": "towers_hp", "size": len(TOWER_KEYS), "classes": list(TOWER_KEYS),
+         "normalizer": TOWER_REF_HP},
+        {"name": "posture_one_hot", "size": len(POSTURES), "classes": list(POSTURES)},
+        {"name": "phase_one_hot", "size": len(PHASES), "classes": list(PHASES)},
+    ]
+    if version >= 2:
+        state_layout.append({
+            "name": "board_and_cycle",
+            "size": BOARD_CYCLE_DIM,
+            "fields": ["my_val_L", "my_val_R", "opp_gnd_L", "opp_gnd_R", "opp_air_L", "opp_air_R",
+                       "min_eta_L", "min_eta_R", "opp_deck_lock_frac", "opp_last_four_frac"],
+        })
     return {
-        "format": FORMAT,
+        "format": FORMAT_V2 if version >= 2 else FORMAT,
+        "version": int(version),
         "deck": deck,
-        "state_dim": state_dim(deck),
+        "state_dim": sdim,
         "candidate_dim": candidate_dim(deck),
-        "input_dim": state_dim(deck) + candidate_dim(deck),
-        "state_layout": [
-            {"name": "my_elixir", "size": 1},
-            {"name": "opp_elixir_bounds", "size": 2},
-            {"name": "hand_multi_hot", "size": len(deck), "classes": deck},
-            {"name": "crowns", "size": 2},
-            {"name": "towers_hp", "size": len(TOWER_KEYS), "classes": list(TOWER_KEYS),
-             "normalizer": TOWER_REF_HP},
-            {"name": "posture_one_hot", "size": len(POSTURES), "classes": list(POSTURES)},
-            {"name": "phase_one_hot", "size": len(PHASES), "classes": list(PHASES)},
-        ],
+        "input_dim": sdim + candidate_dim(deck),
+        "state_layout": state_layout,
         "candidate_layout": [
             {"name": "card_one_hot", "size": len(deck), "classes": deck},
             {"name": "rule_score", "size": 1},
@@ -190,13 +255,26 @@ def _adam_step(params: list[list[np.ndarray]], grads: list[tuple[np.ndarray, np.
             params[i][j] -= (lr * mhat / (np.sqrt(vhat) + eps)).astype(np.float32)
 
 
-def _state_vector(value: Any, deck: Sequence[str]) -> np.ndarray:
+def _state_vector(value: Any, deck: Sequence[str], *, version: int = 1) -> np.ndarray:
     if isinstance(value, Mapping):
-        return encode_state(value, deck)
+        return encode_state(value, deck, version=version)
     return np.asarray(value, np.float32)
 
 
-def build_examples(rows: Sequence[dict], deck: Sequence[str] | None = None
+def _infer_version(rows: Sequence[dict], deck: Sequence[str], version: int | None) -> int:
+    if version is not None:
+        return int(version)
+    for row in rows:
+        if row.get("version") in (1, 2):
+            return int(row["version"])
+        st = row.get("state")
+        if isinstance(st, (list, tuple)) and len(st) == state_dim(deck, version=2):
+            return 2
+    return 1
+
+
+def build_examples(rows: Sequence[dict], deck: Sequence[str] | None = None, *,
+                   version: int | None = None
                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], dict]:
     """Flatten labeled decisions into (candidate row, played?, outcome weight) examples."""
     rows = list(rows)
@@ -205,7 +283,8 @@ def build_examples(rows: Sequence[dict], deck: Sequence[str] | None = None
     deck = list(deck or rows[0].get("deck") or [])
     if not deck:
         raise ValueError("labeled rows carry no deck order; pass deck=...")
-    sdim, cdim = state_dim(deck), candidate_dim(deck)
+    ver = _infer_version(rows, deck, version)
+    sdim, cdim = state_dim(deck, version=ver), candidate_dim(deck)
 
     xs, ys, ws = [], [], []
     used_rows = skipped = positives = 0
@@ -218,7 +297,7 @@ def build_examples(rows: Sequence[dict], deck: Sequence[str] | None = None
         if not candidates or not (0 <= chosen < len(candidates)):
             skipped += 1
             continue
-        state = _state_vector(row.get("state"), deck)
+        state = _state_vector(row.get("state"), deck, version=ver)
         if state.shape != (sdim,):
             raise ValueError(f"state has {state.shape[0]} values, model expects {sdim}")
         weight = float(row.get("weight", 1.0))
@@ -237,7 +316,7 @@ def build_examples(rows: Sequence[dict], deck: Sequence[str] | None = None
     y = np.asarray(ys, np.float32).reshape(-1, 1)
     w = np.asarray(ws, np.float32)
     return x, y, w, deck, {"rows": used_rows, "candidate_rows": len(x), "positives": positives,
-                           "skipped": skipped}
+                           "skipped": skipped, "version": ver}
 
 
 def export_onnx(params: list[list[np.ndarray]], out: Path, input_dim: int, max_candidates: int,
@@ -288,10 +367,11 @@ def export_onnx(params: list[list[np.ndarray]], out: Path, input_dim: int, max_c
 def train_ranker(rows: Sequence[dict], out_onnx: str | Path, meta_out: str | Path | None = None, *,
                  epochs: int = 60, hidden: Sequence[int] = (64, 32), lr: float = 0.01,
                  batch_size: int = 16, seed: int = 0, max_candidates: int = DEFAULT_MAX_CANDIDATES,
-                 deck: Sequence[str] | None = None) -> dict:
+                 deck: Sequence[str] | None = None, version: int | None = None) -> dict:
     """Behavior cloning on labeled decisions; writes ONNX + sidecar order metadata."""
-    x, y, weight, deck, stats = build_examples(rows, deck)
-    input_dim = state_dim(deck) + candidate_dim(deck)
+    x, y, weight, deck, stats = build_examples(rows, deck, version=version)
+    ver = int(stats["version"])
+    input_dim = state_dim(deck, version=ver) + candidate_dim(deck)
     if x.shape[1] != input_dim:
         raise ValueError(f"feature width {x.shape[1]} != state+candidate {input_dim}")
 
@@ -311,7 +391,7 @@ def train_ranker(rows: Sequence[dict], out_onnx: str | Path, meta_out: str | Pat
             _adam_step(params, grads, m, v, t, lr)
 
     meta = model_metadata(deck, hidden=hidden, max_candidates=max_candidates,
-                          trained_rows=stats["rows"], epochs=int(epochs))
+                          trained_rows=stats["rows"], epochs=int(epochs), version=ver)
     meta.update({k: stats[k] for k in ("rows", "candidate_rows", "positives", "skipped")})
 
     probs, _ = _forward(x, params)
@@ -366,8 +446,9 @@ class OnnxRanker:
             meta = json.loads(mp.read_text())
         except (OSError, ValueError) as e:
             raise ValueError(f"ranker metadata missing or unreadable: {mp} ({e})") from e
-        if meta.get("format") != FORMAT:
-            raise ValueError(f"ranker metadata {mp} has format {meta.get('format')!r}, expected {FORMAT!r}")
+        fmt = meta.get("format")
+        if fmt not in SUPPORTED_FORMATS:
+            raise ValueError(f"ranker metadata {mp} has format {fmt!r}, expected one of {SUPPORTED_FORMATS}")
         if deck is not None and list(deck) != list(meta.get("deck") or []):
             raise ValueError(f"ranker deck order {meta.get('deck')} does not match the strategy deck "
                              f"{list(deck)}; retrain or fix learned_ranker")
@@ -391,17 +472,17 @@ class OnnxRanker:
             raise ValueError(f"ranker ONNX input width {self.input_dim} != metadata "
                              f"input_dim {meta.get('input_dim')}")
         self.meta = meta
+        self.version = 2 if fmt == FORMAT_V2 else 1
         self.deck = list(meta["deck"])
         self.state_dim = int(meta["state_dim"])
         self.candidate_dim = int(meta["candidate_dim"])
         self.model_path = model_path
 
-    def rescore(self, state: Any, candidates: Sequence[Any]) -> list[Any]:
-        """Return the same candidates in order with model scores (utility-scale floats)."""
+    def predict_probs(self, state: Any, candidates: Sequence[Any]) -> list[float]:
         candidates = list(candidates)
         if not candidates:
-            return candidates
-        sv = encode_state(state, self.deck)
+            return []
+        sv = encode_state(state, self.deck, version=self.version)
         rows = np.stack([np.concatenate([sv, encode_candidate(c, self.deck)]) for c in candidates])
         scores: list[float] = []
         for start in range(0, len(rows), self.max_candidates):
@@ -410,13 +491,49 @@ class OnnxRanker:
             batch[:len(chunk)] = chunk
             out = self._session.run(None, {self.input_name: batch})[0]
             scores.extend(float(s) for s in np.asarray(out).reshape(-1)[:len(chunk)])
-        return [replace(c, score=s) for c, s in zip(candidates, scores, strict=False)]
+        return scores
+
+    def rescore(self, state: Any, candidates: Sequence[Any]) -> list[Any]:
+        """Return the same candidates in order with model scores (utility-scale floats)."""
+        candidates = list(candidates)
+        probs = self.predict_probs(state, candidates)
+        return [replace(c, score=s) for c, s in zip(candidates, probs, strict=False)]
+
+    def rescore_residual(self, state: Any, candidates: Sequence[Any], *, weight: float = 0.25) -> list[Any]:
+        """Bounded residual tie-breaker: ``rule_score + weight * (prob - 0.5)``."""
+        candidates = list(candidates)
+        probs = self.predict_probs(state, candidates)
+        out = []
+        for c, prob in zip(candidates, probs, strict=False):
+            delta = float(weight) * (prob - 0.5)
+            out.append(replace(c, score=float(c.score) + delta))
+        return out
 
 
 def load_ranker(model_path: str | Path, meta_path: str | Path | None = None, *,
                 deck: Sequence[str] | None = None,
-                providers: Sequence[str] | None = None) -> OnnxRanker:
-    return OnnxRanker(model_path, meta_path, deck=deck, providers=providers)
+                providers: Sequence[str] | None = None,
+                cache: bool = True) -> OnnxRanker:
+    mp = Path(model_path).resolve()
+    key = None
+    if cache and mp.exists():
+        try:
+            st = mp.stat()
+            key = (str(mp), st.st_mtime_ns, st.st_size, str(meta_path) if meta_path else None,
+                   tuple(deck) if deck is not None else None,
+                   tuple(providers) if providers is not None else None)
+        except OSError:
+            key = None
+    if key is not None:
+        with _RANKER_CACHE_LOCK:
+            cached = _RANKER_CACHE.get(key)
+            if cached is not None:
+                return cached
+    ranker = OnnxRanker(model_path, meta_path, deck=deck, providers=providers)
+    if key is not None:
+        with _RANKER_CACHE_LOCK:
+            _RANKER_CACHE[key] = ranker
+    return ranker
 
 
 def main(argv: list[str] | None = None) -> None:

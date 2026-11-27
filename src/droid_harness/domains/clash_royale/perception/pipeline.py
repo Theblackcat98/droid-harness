@@ -39,6 +39,20 @@ from .tracker import PlayEvent, SpawnGrouper, TileDetection, Track, Tracker
 TOWER_SIDE = {"me_left": "me", "me_right": "me", "me_king": "me",
               "opp_left": "opp", "opp_right": "opp", "opp_king": "opp"}
 
+# Standard Clash Royale Princess Tower max HP -> King Tower max HP by level (Lv 1..15).
+PRINCESS_TO_KING_HP = (
+    (1400, 2400), (1512, 2568), (1624, 2736), (1750, 2904), (1890, 3096),
+    (2030, 3312), (2184, 3528), (2352, 3768), (2534, 4008), (2786, 4392),
+    (3052, 4824), (3346, 5304), (3668, 5832), (4032, 6408), (4424, 7032),
+)
+
+
+def infer_king_max_hp(princess_max_hp: int) -> int:
+    best_p, best_k = min(PRINCESS_TO_KING_HP, key=lambda pk: abs(pk[0] - princess_max_hp))
+    if abs(best_p - princess_max_hp) <= 80:
+        return best_k
+    return int(round(princess_max_hp * 1.66))
+
 
 class CRPerception:
     def __init__(self, *, layout: Layout, tiles: TileMapper, cards: CardDB, arena: Arena, matcher: CardMatcher,
@@ -81,6 +95,8 @@ class CRPerception:
         self._slot_spent_ms: list[int] = [0] * len(self.layout.hand)
         self.next_card: str | None = None
         self.towers: dict[str, int] = {}
+        self.tower_max_hp: dict[str, int] = {}
+        self.last_detections: list[dict] = []
         self._tower_read_ms = -10**9
         self._clock_read_ms = -10**9
         self._clock_match_t_s: float | None = None
@@ -150,23 +166,25 @@ class CRPerception:
         if self.towers.get("me_king") == 0:
             crowns = (crowns[0], 3)
         match_t_s, clock_drift_s = self._read_clock(img, t_ms, warns)
+        effective_t_s = match_t_s if (self.layout.clock_countdown and match_t_s is not None and match_t_s >= 0) else t_s
         self.frame_i += 1
         for w in warns:
             self.warnings[w] += 1
         state = GameState(
             t_ms=t_ms, host_ns=frame.t_decoded_ns, frame_size=(img.shape[1], img.shape[0]),
-            phase=phase_at(t_s), my_elixir=self.elixir.value, opp_elixir=self.opp.elixir.interval(),
+            phase=phase_at(effective_t_s), my_elixir=self.elixir.value, opp_elixir=self.opp.elixir.interval(),
             hand=list(self.hand), hand_affordable=affordable, hand_fresh=list(self.hand_fresh),
             next_card=self.next_card, units=list(self.units),
             towers=dict(self.towers), crowns=crowns, opp_deck_seen=list(self.opp.cycle.deck_seen),
             opp_hand_possible=self.opp.cycle.possible_hand(), opp_last_four=self.opp.cycle.last_four,
             pocket_open={"left": self.towers.get("opp_left") == 0, "right": self.towers.get("opp_right") == 0},
             warnings=warns)
-        # GameState is the canonical state class; clock fields are attached here (rather
-        # than changing its schema) because only perception produces them.
+        # GameState is the canonical state class; clock & max-HP fields are attached here
+        # (rather than changing its schema) because only perception produces them.
         state.match_t_s = match_t_s
         state.clock_drift_s = clock_drift_s
         state.clock_activity = self.clock_activity
+        state.tower_max_hp = dict(self.tower_max_hp)
         return state
 
     # --- pieces ---------------------------------------------------------------
@@ -281,6 +299,7 @@ class CRPerception:
     def _ingest(self, raw_dets, img: np.ndarray, origin: tuple[int, int], t_ms: int) -> None:
         x0, y0 = origin
         dets = []
+        vis_dets: list[dict] = []
         for d in raw_dets:
             base, cls_side = split_side(d.cls)
             bx1, by1, bx2, by2 = (d.box[0] + x0, d.box[1] + y0, d.box[2] + x0, d.box[3] + y0)
@@ -314,6 +333,10 @@ class CRPerception:
                         continue
             key = f"{base}|{side}" if side else base  # never associate my knight with theirs
             dets.append(TileDetection(base, d.conf, tile, side, hp, key=key))
+            vis_dets.append({"cls": base, "side": side, "conf": round(float(d.conf), 3),
+                             "box": (round(bx1, 1), round(by1, 1), round(bx2, 1), round(by2, 1)),
+                             "tile": (round(tile[0], 2), round(tile[1], 2)), "hp": hp})
+        self.last_detections = vis_dets
         self._pre_reported_opp = [
             tr.tile for tr in self.tracker.tracks.values() if tr.spawn_reported and tr.side == "opp"
         ]
@@ -460,45 +483,69 @@ class CRPerception:
                 self._mark_destroyed(name)
         if self.digits is None:
             return
-        for name, roi in self.layout.towers.items():
+        hp_rois = self.layout.tower_hp or self.layout.towers
+        for name, roi in hp_rois.items():
             if name in self._destroyed:
                 continue  # destruction is permanent; don't let a digit misread revive it
             hp = self.digits.read(roi.crop(img))
-            if hp is None:
+            if hp is None or hp <= 0 or hp > 9999:
                 continue
             prev = self.towers.get(name)
+            if prev is None and self._last_t_ms <= 5000 and hp < 300:
+                continue  # ignore 1-2 digit intro/crown artifacts on undamaged start towers
             if prev is not None and hp > prev + 5:
                 warns.append("tower_hp_increase")
                 continue
             self.towers[name] = hp
+            self.tower_max_hp[name] = max(self.tower_max_hp.get(name, 0), hp)
+        # Seed unactivated King Tower baseline HP from observed Princess Tower max HP so
+        # engagements and emergency_defend know King HP before its bar appears on screen.
+        for side in ("me", "opp"):
+            king = f"{side}_king"
+            if king in self._destroyed or king in self.towers:
+                continue
+            p_max = max(self.tower_max_hp.get(f"{side}_left", 0), self.tower_max_hp.get(f"{side}_right", 0))
+            if p_max >= 1000:
+                inferred = infer_king_max_hp(p_max)
+                self.towers[king] = inferred
+                self.tower_max_hp[king] = inferred
 
     # --- match clock ------------------------------------------------------------
     def _read_clock(self, img: np.ndarray, t_ms: int, warns: list[str]) -> tuple[float | None, float | None]:
         """Read the clock ROI at most once per second, then compare it to frame time.
 
         With digit templates available the ``M:SS`` glyphs are parsed into seconds;
-        without them the crop mean is still refreshed as an activity signal (the HUD
-        clock is never blank while a battle is live).  Drift is ``frame_time - clock``;
-        more than a second means the captured stream and the game clock disagree.
+        when ``layout.clock_countdown`` is true (real Clash Royale HUD), remaining time
+        is converted to elapsed match seconds (``3:00 -> 0:00`` regulation, ``2:00 -> 0:00``
+        overtime). Without templates, the crop mean is refreshed as an activity signal.
         """
         if t_ms - self._clock_read_ms >= 1000:
             crop = self.layout.clock.crop(img)
             self._clock_read_ms = t_ms
             self.clock_activity = float(crop.mean()) if crop.size else None
-            self._clock_match_t_s = self._parse_clock(crop)
+            raw_s = self._parse_clock(crop, allow_red=self.layout.clock_countdown)
+            if raw_s is None:
+                self._clock_match_t_s = None
+            elif self.layout.clock_countdown:
+                t_s = t_ms / 1000.0
+                # Regulation counts down from 180s; overtime counts down from 120s.
+                self._clock_match_t_s = (180.0 - raw_s) if (t_s < 175.0 and raw_s <= 180.0) else (300.0 - raw_s)
+            else:
+                self._clock_match_t_s = raw_s
         match_t_s = self._clock_match_t_s
         drift = None if match_t_s is None else t_ms / 1000.0 - match_t_s
-        if drift is not None and drift > 1.0:
+        tol = 5.0 if self.layout.clock_countdown else 1.0  # allow 2-3s battle intro banner offset on real HUD
+        if drift is not None and (abs(drift) > tol if self.layout.clock_countdown else drift > tol):
             warns.append("clock_drift")
         return match_t_s, drift
 
-    def _parse_clock(self, crop: np.ndarray) -> float | None:
+    def _parse_clock(self, crop: np.ndarray, *, allow_red: bool = False) -> float | None:
         """Parse ``M:SS`` from a clock crop; ``None`` when digits are unavailable/unreadable."""
         if self.digits is None or not getattr(self.digits, "templates", None) or crop.size == 0:
             return None
         # Clock digits can be small on a downscaled capture; 0.3 matches the template
         # bootstrap in ``DigitReader.from_font`` and still drops the tiny colon dots.
-        glyphs = segment(binarize(crop), min_h_frac=0.3)
+        glyphs = segment(binarize(crop, allow_red=allow_red), min_h_frac=0.3)
         if not glyphs:
             return None
         chars = []

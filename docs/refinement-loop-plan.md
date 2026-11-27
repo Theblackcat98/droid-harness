@@ -21,29 +21,21 @@ The phone and GPU run headless without waiting on an LLM; deterministic code com
 
 ---
 
-## 2. Target architecture
+## 2. Locked-In 3-Speed Architecture (Agent-Harness Driven)
 
-```mermaid
-flowchart LR
-    P["Phone Farm<br/>50-100 matches<br/>(no LLM)"] --> R["Retention &amp; Analyze<br/>prune win H.264,<br/>DuckDB ingest"]
-    R --> D["droid-harness digest<br/>&lt; 30 KB JSON/MD +<br/>loss keyframes"]
-    D --> L["Single LLM Review<br/>propose 1-3 guarded<br/>patches + replay pct"]
-    L --> G1["Gate 1 &amp; 2:<br/>pytest + replay-diff +<br/>shadow value report"]
-    G1 -->|Pass| S["Gate 3:<br/>Paired SPRT (--test pairs)<br/>on phone"]
-    G1 -->|Fail| L
-    S -->|Accept / Reject| W["Ledger &amp; M8 Ranker<br/>50+ wins -> train_ranker"]
-    W --> P
-```
+Instead of generating a *batch* of LLM strategies to test on the phone (which hits multi-day SPRT wall-clock limits or small-sample Winner's Curse) or using an LLM to guess continuous floats, strategy optimization runs at **three decoupled speeds**:
 
-### Division of labor
-
-| Stage | Executor | Cost / latency | Artifact size |
-| --- | --- | --- | --- |
-| **Collect 50–100 games** | CLI (`run --matches 50`, no LLM) | 3–6 h unattended | 9–18 GB raw → **< 500 MB** after retention |
-| **Triage + DuckDB + Digest** | CLI (`analyze` + proposed `digest`) | `< 60 s` local CPU | **`15–30 KB` Markdown/JSON dossier** |
-| **Root-cause diagnosis + edit** | Single LLM turn | `< 3 min`, ~15k input tokens | 1 candidate YAML/rule patch + unit tests |
-| **Offline screening** | `pytest`, `replay-diff`, `shadow` | `< 30 s` local CPU | Exact diff count + engagement value delta |
-| **Live validation** | `run-experiment --test pairs` | Alternates champion/candidate | Paired SPRT verdict in [`STRATEGY_LEDGER.md`](../ledger/STRATEGY_LEDGER.md) |
+1. **Speed 1 — Offline Counterfactual Search (`droid-harness tune-offline` + `shadow`, CPU seconds, 0 Phone Games, 0 LLM):**
+   - Samples 100–500 continuous parameter candidates around the champion and scores each across all logged matches using true `Engagement.value` (now including calibrated `digits/phone-a/` tower HP deltas and post-fix `triage.py`).
+   - Enforces a `replay-diff` change guardrail (`1–18%`) and selects **only the single #1 candidate** that flips losing engagements without breaking winning ones.
+2. **Speed 2 — Persistent Two-Stage Live Paired Gate (`droid-harness experiment`, Phone hours, 0 LLM):**
+   - Runs inside **one persistent `BotRunner`** (cached ROCm `TorchDetector` weights + single `scrcpy` stream, hot-swapping `CRPolicy` per match) in randomized 2-game blocks (`--test pairs`) to cancel ladder trophy/level drift.
+   - **Stage A (Dense-Margin Futility Stop, `--futility-pairs 12`):** Scores all pairs (including `W–W` and `L–L`) by crown + `tower_hp_diff` + speed margin and aborts losing candidates early when `UCB95 < 0`.
+   - **Stage B (Paired SPRT Promotion):** Candidates surviving Stage A run to paired SPRT acceptance/rejection in [`ledger/STRATEGY_LEDGER.md`](../ledger/STRATEGY_LEDGER.md).
+3. **Speed 3 — On-Demand Structural Agent Handoff (`droid-harness digest`, 1 Agent Turn Only When Plateaued):**
+   - No internal LLM SDK loop is needed: `droid-harness digest --data data/matches --out data/agent_digest.md` emits a deterministic `< 30 KB` **Agent Handoff Artifact** (+ `.json`) for the external coding-agent harness (OpenCode / Antigravity) to add **1 structural rule + unit test** when failure clusters show a missing mechanic, then hands numerical tuning back to Speed 1.
+4. **Endgame Tie-Breaker — M8 v2 Board-Aware Residual Ranker (`learn/label_from_video.py --version 2` + `train_ranker.py`):**
+   - Encodes per-lane board value, threat ETA, and opponent cycle (`droid-harness-ranker/2`), trains with engagement-credit Advantage-Weighted / Filtered BC (`--cards ... --min-credit -0.5`), and blends via bounded residual (`ranker_mode: residual`) without overwriting safety/counter gates.
 
 ---
 

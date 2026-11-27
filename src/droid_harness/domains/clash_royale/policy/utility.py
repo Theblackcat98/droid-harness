@@ -83,7 +83,10 @@ class CRPolicy:
         cands = [c for r in self.rules for c in r.propose(s, self.p, self.ctx, intent)]
         cands = [c for c in cands if self.constraints.ok(s, c)]
         if self.ranker is not None:
-            cands = self.ranker.rescore(s, cands)
+            if self.p.ranker_mode == "residual" and hasattr(self.ranker, "rescore_residual"):
+                cands = self.ranker.rescore_residual(s, cands, weight=self.p.ranker_residual_weight)
+            else:
+                cands = self.ranker.rescore(s, cands)
         decision.candidates = cands
         if not cands:
             return decision

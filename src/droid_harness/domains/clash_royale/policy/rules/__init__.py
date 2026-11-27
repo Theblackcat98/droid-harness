@@ -36,8 +36,9 @@ def default_rules() -> list[Rule]:
     from .blind import BlindPush
     from .cycle import CheapCycle, OpeningSafeFirstPlay
     from .defend import DefendAirThreat, DefendLaneThreat
-    from .offense import CounterPush, GiantBackBuild, WinConditionWhenOppLow
+    from .offense import CounterPush, GiantBackBuild, OppositeLanePunish, WinConditionWhenOppLow
     from .spells import SpellTowerChip, SpellValue
 
     return [DefendLaneThreat(), DefendAirThreat(), WinConditionWhenOppLow(), CounterPush(), SpellValue(),
-            SpellTowerChip(), OpeningSafeFirstPlay(), CheapCycle(), BlindPush(), GiantBackBuild()]
+            SpellTowerChip(), OpeningSafeFirstPlay(), CheapCycle(), BlindPush(), GiantBackBuild(),
+            OppositeLanePunish()]

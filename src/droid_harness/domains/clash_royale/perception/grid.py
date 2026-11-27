@@ -45,6 +45,12 @@ class Layout:
     buttons: dict[str, Roi]
     elixir_hsv_lo: tuple[int, int, int] = (140, 80, 120)
     elixir_hsv_hi: tuple[int, int, int] = (170, 255, 255)
+    tower_hp: dict[str, Roi] | None = None
+    clock_countdown: bool = False
+
+    def __post_init__(self) -> None:
+        if self.tower_hp is None:
+            self.tower_hp = dict(self.towers)
 
     @classmethod
     def load(cls, path: str | Path) -> Layout:
@@ -53,11 +59,15 @@ class Layout:
         def r(v):
             return Roi(*v)
 
+        towers = {k: r(v) for k, v in d["towers"].items()}
+        raw_hp = d.get("tower_hp")
+        tower_hp = {k: r(v) for k, v in raw_hp.items()} if raw_hp else dict(towers)
         return cls(hand=[r(v) for v in d["hand"]], next_card=r(d["next_card"]), elixir_bar=r(d["elixir_bar"]),
-                   clock=r(d["clock"]), towers={k: r(v) for k, v in d["towers"].items()}, arena=r(d["arena"]),
+                   clock=r(d["clock"]), towers=towers, tower_hp=tower_hp, arena=r(d["arena"]),
                    buttons={k: r(v) for k, v in d.get("buttons", {}).items()},
                    elixir_hsv_lo=tuple(d.get("elixir_hsv_lo", (140, 80, 120))),
-                   elixir_hsv_hi=tuple(d.get("elixir_hsv_hi", (170, 255, 255))))
+                   elixir_hsv_hi=tuple(d.get("elixir_hsv_hi", (170, 255, 255))),
+                   clock_countdown=bool(d.get("clock_countdown", False)))
 
 
 class TileMapper:

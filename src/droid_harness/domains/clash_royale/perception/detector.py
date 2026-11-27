@@ -304,18 +304,72 @@ class TorchDetector:
         return dets
 
 
+_DETECTOR_CACHE: dict[tuple[Any, ...], OnnxDetector | TorchDetector] = {}
+_DETECTOR_CACHE_LOCK = threading.Lock()
+_WARMED_IDS: set[int] = set()
+
+
+def _cache_key(model_path: str | Path, class_names: list[str] | str | Path | None,
+               imgsz: int | tuple[int, int] | None, conf: float, iou: float,
+               agnostic_nms: bool, providers: list[str] | None, device: str | None) -> tuple[Any, ...]:
+    p = Path(model_path).resolve()
+    try:
+        st = p.stat()
+        sig = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        sig = (0, 0)
+    if class_names is None:
+        cls_sig: Any = None
+    elif isinstance(class_names, (str, Path)):
+        cp = Path(class_names).resolve()
+        try:
+            cst = cp.stat()
+            cls_sig = (str(cp), cst.st_mtime_ns, cst.st_size)
+        except OSError:
+            cls_sig = (str(cp), 0, 0)
+    else:
+        cls_sig = tuple(str(x) for x in class_names)
+    sz_sig = _hw(imgsz) if imgsz is not None else None
+    prov_sig = tuple(providers) if providers is not None else None
+    return (str(p), sig, cls_sig, sz_sig, float(conf), float(iou), bool(agnostic_nms), prov_sig, device)
+
+
 def load_detector(model_path: str | Path, class_names: list[str] | str | Path | None = None, *,
                   imgsz: int | tuple[int, int] | None = None, conf: float = 0.35, iou: float = 0.5,
                   agnostic_nms: bool = False, providers: list[str] | None = None,
-                  device: str | None = None) -> OnnxDetector | TorchDetector:
-    """Load an ONNX (``.onnx``) or PyTorch Ultralytics (``.pt``) detector."""
+                  device: str | None = None, cache: bool = True) -> OnnxDetector | TorchDetector:
+    """Load an ONNX (``.onnx``) or PyTorch Ultralytics (``.pt``) detector, caching weights by file signature."""
+    key = _cache_key(model_path, class_names, imgsz, conf, iou, agnostic_nms, providers, device) if cache else None
+    if key is not None:
+        with _DETECTOR_CACHE_LOCK:
+            cached = _DETECTOR_CACHE.get(key)
+            if cached is not None:
+                return cached
     if Path(model_path).suffix.lower() == ".pt":
-        return TorchDetector(
+        det: OnnxDetector | TorchDetector = TorchDetector(
             model_path, class_names, imgsz=(640, 384) if imgsz is None else imgsz,
             conf=conf, iou=iou, agnostic_nms=agnostic_nms, device=device,
         )
-    return OnnxDetector(model_path, class_names, imgsz=imgsz, conf=conf, iou=iou,
-                        agnostic_nms=agnostic_nms, providers=providers)
+    else:
+        det = OnnxDetector(model_path, class_names, imgsz=imgsz, conf=conf, iou=iou,
+                           agnostic_nms=agnostic_nms, providers=providers)
+    if key is not None:
+        with _DETECTOR_CACHE_LOCK:
+            _DETECTOR_CACHE[key] = det
+    return det
+
+
+def warmup_once(detector: Any, n: int = 3) -> bool:
+    """Run ``detector.warmup(n)`` only on first use of a cached detector instance."""
+    did = id(detector)
+    with _DETECTOR_CACHE_LOCK:
+        if did in _WARMED_IDS:
+            return False
+        _WARMED_IDS.add(did)
+    if hasattr(detector, "warmup"):
+        detector.warmup(n)
+        return True
+    return False
 
 
 class AsyncDetector:

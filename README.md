@@ -45,10 +45,32 @@ Optional dependencies live in extras (`[detector]`, `[rocm]`, `[onnx]`, `[tuning
 
 `phone-a` (OnePlus N10 `741be240`) already has checked-in configs under [`configs/`](configs/). Verify ADB sees the device (`adb devices`), unlock the screen onto Clash Royale's Home screen, and run:
 
-### Ladder or Training Camp with GPU detector (recommended)
+### One-command Ladder or Training Camp play (recommended)
+
+`--device phone-a` is the default preset and auto-resolves `profile`, `rois`, `tiles`, `arena`, `templates`, `screens`, `towers`, `digits`, `cards.json`, `models/yolo26n-cr.pt`, `models/classes.txt`, and `--async-detect` (short strategy aliases like `v6` or `v4` also resolve automatically):
 
 ```bash
-# Champion strategy (ladder-vision-v4, verified 9W-1L)
+# 1-second pre-flight check (calibration, 10/10 digits, 8/8 deck templates, ROCm GPU, ADB)
+.venv/bin/droid-harness doctor --live
+
+# Play 10 ladder matches with pro starter beatdown v6 + auto win-video pruning
+.venv/bin/droid-harness play --strategy v6 --mode ladder --matches 10 --prune-win-video
+
+# Persistent-session paired evaluation (v4 vs v6; loads GPU & scrcpy ONCE, Stage-A futility + SPRT)
+.venv/bin/droid-harness experiment --champion v4 --candidate v6 --mode ladder --prune-win-video \
+  --title "v6 pro rules + tower HP digits" --hypothesis "Eliminate opening throws and add cycle-lock/chip/punish"
+
+# 3-Speed Offline Flywheel commands (0 phone time, 0 LLM calls):
+.venv/bin/droid-harness tune-offline --champion v6 --data data/matches --trials 100 --out configs/strategies/ladder-vision-v7-opt.yaml
+.venv/bin/droid-harness shadow --champion v4 --candidate v6 --data data/matches
+.venv/bin/droid-harness digest --data data/matches --out data/agent_digest.md
+.venv/bin/droid-harness retain --data data/matches
+```
+
+Explicit paths (`droid-harness run --profile ... --layout ...`) remain supported for custom setups:
+
+```bash
+# Explicit-flag invocation (equivalent to `droid-harness play --strategy v4`)
 .venv/bin/droid-harness run \
   --profile configs/device_profiles/phone-a.yaml \
   --layout configs/domains/clash_royale/rois/phone-a.yaml \
@@ -57,6 +79,7 @@ Optional dependencies live in extras (`[detector]`, `[rocm]`, `[onnx]`, `[tuning
   --templates configs/domains/clash_royale/templates/phone-a \
   --screens configs/domains/clash_royale/screens/phone-a \
   --towers configs/domains/clash_royale/towers/phone-a \
+  --digits configs/domains/clash_royale/digits/phone-a \
   --cards configs/domains/clash_royale/cards.json \
   --strategy configs/strategies/ladder-vision-v4.yaml \
   --detector models/yolo26n-cr.pt \

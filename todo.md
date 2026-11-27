@@ -37,14 +37,31 @@ Still open for ladder: a trained detector (until then only `training-camp-blind-
   - **Next recommended step (paused):** Branch `ladder-vision-v6` from `ladder-vision-v4` (never back-build Giant during `OPENING` or while opponent elixir is near full) and run paired SPRT (`run-experiment --test pairs`) vs `ladder-vision-v4`.
 - **Tests & lint:** `pytest` **189 passed, 1 skipped**; `ruff check src/ tests/` clean.
 
-### Priority order (updated 2026-11-26)
+**Update 2026-11-26 (Tower HP digits, Triage blackout fix, 3-Speed Flywheel, Pro rules v6, M8 v2 Residual Ranker & One-Command CLI):**
+- **Tower HP & Countdown Clock Fixed (`grid.py`, `digits.py`, `rois/phone-a.yaml`, `digits/phone-a/0..9.png`, `pipeline.py`, `engagements.py`, `session.py`):** Separated `tower_hp` ROIs from `towers` rubble ROIs in `rois/phone-a.yaml`, upgraded `digits.py` with 3× bicubic HSV white+outline binarization + merged-pair splitting, calibrated `digits/phone-a/0.png`..`9.png` against real `phone-a` ladder video (`1750`, `1400`, `1335`, `1358`, `1196`, `1170`, `1128`, plus regulation/overtime/red countdown clock), seeded unactivated King Tower max HP (`infer_king_max_hp`), recorded `tower_hp_diff` in `summary.json`, and restored real tower-damage deltas in `Engagement.value`.
+- **89% Triage Blackout Fixed (`flywheel/triage.py`):** Ignored transient `hand_unreadable`/`affordability_mismatch` slot-transition warnings around confirmed plays while keeping `elixir_discrepancy`/`tower_hp_increase` strict; on the 39 recorded matches in `data/matches/`, `PERCEPTION` dropped from `88.9%` to `18.0%` (mostly legacy pre-calibration matches) and scored rule decisions jumped from `1` to `550+`.
+- **Intelligent Weight Caching & Persistent-Session `experiment` (`detector.py`, `train_ranker.py`, `app.py`, `cli.py`, `runner.py`):** Cached `TorchDetector`/`OnnxDetector` and `OnnxRanker` in-memory by file signature (`warmup_once` runs once), refactored `BotRunner.set_strategy` + `cmd_experiment` so one persistent `scrcpy` + GPU session runs all paired matches without reloading weights or reconnecting sockets, and added Stage-A dense-margin futility stopping (`--futility-pairs 12`).
+- **M8 v2 Board-Aware Residual Ranker (`train_ranker.py`, `label_from_video.py`, `utility.py`):** Added `droid-harness-ranker/2` (+10 per-lane board value, threat ETA, and opponent-cycle state features), bounded residual rescoring (`rule_score + w * (prob - 0.5)` so safety/counter gates are never overwritten), and engagement-credit Advantage-Weighted / Filtered BC in `label_from_video`.
+- **Pro Engine Mechanics & `ladder-vision-v6` (`offense.py`, `defend.py`, `placement.py`, `ladder-vision-v6.yaml`):** Landed `OPENING`/`x1` guard on `GiantBackBuild`, `opp_min_cycle_elixir_to_return` cycle-lock punish boost, healthy-tower chip filter (`ignore_chip_tower_hp_frac: 0.60`), `OppositeLanePunish` rule, anti-spell ranged defender offset (`3.2` tiles), cross-lane melee kite, and exact Lv1/Lv3 `spell_tower_damage` (`lethal_margin_hp: 0`, `fireball: 75`, `arrows: 30`).
+- **One-Command CLI & 3-Speed Flywheel (`cli.py`, `offline_study.py`, `digest.py`, `retention.py`):** Added `--device phone-a` auto-bundle resolution, short strategy aliases (`v6`), `droid-harness doctor`, `play`, `experiment`, `tune-offline` (Speed-1 CPU counterfactual parameter search), `shadow`, `retain`, and `digest` (`< 30 KB` Speed-3 Agent Handoff Artifact).
 
-1. **[data/you]** Real-frame labeling & detector fine-tuning: export arena crops (`droid-harness frames`) from recorded `data/ladder-verify` / `data/ladder-*` matches, label weak classes (`archer_opp`, `knight_opp`) and any under-recalled classes in real frames, and run `eval-detector` against the M3 per-class recall gate.
-2. **[you]** First real SPRT (`droid-harness run-experiment --test pairs`): champion `configs/strategies/ladder-vision-v4.yaml` vs a single controlled candidate change (e.g., `ladder-vision-v6` off `v4` with safer mid-game `giant_build_block_tiles`, placement tuning, or exact level-calibrated `tier0.spell_tower_damage`), bounds `[0.50, 0.58]`, with disk usage / retention checks.
-3. **[you]** Account & calibration refinements: upgrade deck cards (`Mini P.E.K.K.A` / `Giant` / `Musketeer` / `Knight`) and King Level (to unlock Arena 2+ past the Lv1 Bone Pit cap), fill exact in-game `tier0.spell_tower_damage`, calibrate placement tiles (`placement.building_pull`, `bridge_tiles`, `back_tiles`, `tier0.leak_tiles`), check `turn_display_off: true` & resolution sweep.
-4. **[code/data]** Remaining M2/M3 perception quality: crop tower-HP digits (`digits/phone-a/0.png`…`9.png`), commit 200+ golden frames (`tests/golden/phone-a/`), capture `RESULT_DRAW`/POPUP screen refs & optional selected-state card templates, reduce remaining transition `hand_unreadable` / `affordability_mismatch` warnings, and tune `flying_foot_frac` & HP-bar HSV ranges on real frames.
-5. **[code]** M5/M6 automation & strategy depth: retention job (~60 MB/min video pruning/transcoding), live `--shadow` CLI wiring, DuckDB warehouse hookup in `notebooks/dashboard.py`, `droid-harness coach` CLI + API client, Optuna `play_block` wiring, and E6/E7/E8 + projected-damage emergency defense.
-6. **[you/data]** M8 ranker & M7/M9/M10 stretch: collect 50+ wins (Training Camp + ladder) to train & SPRT-gate the M8 behavior-cloning ranker; test M9 live L2 advisor; M7 second phone / self-play; M10 DroidRun Portal.
+### Locked-in Roadmap & Priority Order (updated 2026-11-26)
+
+1. **[you/live]** **Account & Ladder Progression toward Hog EQ (`theblackcat99`):**
+   - Upgrade **1 cheap card right now** (`theblackcat99` is `8/9` XP to King Level 2 — +112 Princess HP, +168 King HP, +8% tower DPS, unlocks Arena 2+).
+   - **Gold & Wildcard Rule (Bridge to 2.6 Hog EQ):** Funnel gold/wildcards ONLY into permanent Hog EQ / cycle staples (`Musketeer`, `Knight`, `Fireball` until `Earthquake` in Arena 9, `Skeletons` [Arena 2], `Cannon` [Arena 3], `Fire Spirit` / `Ice Spirit` [Arena 4/8], `Hog Rider` [Arena 5], `The Log` / `Barbarian Barrel`). Keep `Giant`, `Mini P.E.K.K.A`, `Archers`, `Minions`, `Arrows` only at minimal survival floors until replaced. See [`docs/pro-strategy-research.md`](docs/pro-strategy-research.md).
+2. **[you/live]** **Speed-2 Live Paired Experiment (`v4` vs `v6` on Ladder):**
+   - Run pre-flight: `.venv/bin/droid-harness doctor --live`
+   - Run persistent paired evaluation: `.venv/bin/droid-harness experiment --champion v4 --candidate v6 --mode ladder --prune-win-video --title "v6 pro mechanics + digits"`
+3. **[data/you]** **Real-Frame Detector Fine-Tuning (`4.3`):**
+   - Export crops from existing `data/ladder-*` matches (`droid-harness frames`), clean up weak classes (`archer_opp`, `knight_opp`) + any newly unlocked Arena 2–5 cards (`skeleton`, `cannon`, `hog_rider`), fine-tune 15–20 epochs on `veritas`, and gate with `eval-detector`.
+4. **[code/agent]** **3-Speed Autonomous Refinement Loop (`3.1–3.4`):**
+   - **Speed 1 (CPU seconds, 0 LLM):** Run `droid-harness tune-offline --champion v6 --data data/matches --trials 100 --out configs/strategies/ladder-vision-v7-tuned.yaml` + `shadow` + `replay-diff` to pick the single best numerical candidate offline.
+   - **Speed 2 (Phone hours, 0 LLM):** Validate the single offline winner via `droid-harness experiment` (Stage-A dense-margin futility at 12 pairs → Stage-B paired SPRT promotion into `ledger/STRATEGY_LEDGER.md`).
+   - **Speed 3 (Agent Harness only on structural plateau):** Generate `droid-harness digest --data data/matches --out data/agent_digest.md` (`< 30 KB` dossier) for the coding agent to add 1 structural rule + unit test.
+   - **M8 v2 Residual Ranker:** Once 50–100+ post-digits ladder matches are banked, run `python -m droid_harness.learn.label_from_video --version 2 --cards configs/domains/clash_royale/cards.json --min-credit -0.5` → `train_ranker` → SPRT-gate `learned_ranker` in residual mode (`ranker_mode: residual`).
+5. **[deferred — GUI]** **Live Annotated GUI & Post-Match Replay Inspector (`droid-harness watch` / `--ui` & `inspect`):**
+   - *Deferred per operator instruction — see full specification and mandatory alignment question under **Deferred: Live GUI & Replay Studio** below.*
 
 Tags: **[you]** needs your hands, phone or account · **[code]** pure code work · **[data]** collecting or labeling.
 Each milestone ends with **Done when** — don't start the next one until it's true.
@@ -275,6 +292,29 @@ To fine-tune on newly labeled real frames from `data/ladder-verify` / `data/matc
 - [ ] At least one strategy change has been accepted or rejected by SPRT and recorded in the ledger.
 
 *Current standing (after `fc94e6b`): `loop_p99_ms` (`4.01–4.36 ms`) and `TorchDetector` latency (`9.83 ms p95`) satisfy the latency targets, and 10 unattended `--mode ladder` matches finished with 0 aborts/orphans (`9W–1L–0D`); remaining gates are multi-hour unattended stability + retention, 99.5% HUD golden-set test + weak-class detector recall, full warehouse ingestion, and the first live paired SPRT.*
+
+---
+
+## Deferred: Live GUI & Replay Studio (`--ui` / `watch` / `inspect`)
+
+> **MANDATORY ALIGNMENT QUESTION — ASK THE OPERATOR BEFORE IMPLEMENTING THE GUI:**
+> *"Before building the GUI: do you want **(A) the zero-build Local Browser Web Studio (`--ui` on `localhost:8765`)** — live annotated phone `<canvas>` on the left + live strategy/cycle scoreboard & offline `.h264` match scrubber on the right (works seamlessly with `opencv-python-headless` and over SSH to `veritas`), or **(B) a Native Desktop Window** (e.g., PySide6 / DearPyGui / non-headless OpenCV)?"*
+
+### Preserved GUI Architecture & Feature Spec (ready to build once aligned)
+
+1. **Zero-Latency Telemetry Tap (already pre-wired in `perception/pipeline.py`):**
+   - `CRPerception.last_detections` already records raw pixel boxes `(bx1, by1, bx2, by2)`, `cls`, `side`, `conf`, `tile`, and `hp` per frame at zero copy cost.
+   - Publish `(frame, state, last_detections, decision, experiment_state)` into a lock-free latest-snapshot slot sampled at `15–20 Hz` by a background UI publisher thread so `BrainLoop` stays at `~3–5 ms` (`0.0 ms` added latency).
+2. **Left Pane — Live Phone Video + Toggleable Overlays:**
+   - Live `scrcpy` frame with crisp vector overlays: `_me` (blue) / `_opp` (red) / spell bounding boxes, class + confidence + HP%, velocity vectors, `18×32` tile grid + river/bridges, `tower_hp` & `hand` ROIs, predicted intercept target vector, and animated touch/tap ripples when `Executor` dispatches touches.
+3. **Right Pane — Live Strategy Numbers & Opponent Model:**
+   - Dual Elixir bars (`My Elixir` vs `Opp Elixir [low, high]` + leaked elixir counter) and Tower HP readout (`me_*` vs `opp_*` + `tower_hp_diff`).
+   - **Opponent 8-Card Cycle Widget:** Live 4-card hand vs 4-card queue (`cards_until_back` + `min_cycle_elixir_to_return` + affordability badges).
+   - **Hand & Template Health:** Slots `0..3` + `next_card`, `fresh` vs `stale` flags, greyed check.
+   - **Live Candidate Scoreboard:** Ranked real-time table of *all* proposed candidates (`rule_id`, `card @ tile`, raw `score`, `weight × posture_mult = total`, `counter_factor`, `reserve_factor`, `ranker` residual delta, `act_threshold` cutoff line, and green highlight on the chosen action).
+   - Experiment & Latency strip: W–L–D record, active arm (`champion` vs `candidate`), paired dense margin, live SPRT LLR bar, and `decode / perceive / decide / p99 ms`.
+4. **Offline Match Replay Scrubber (`droid-harness inspect <match_dir>`):**
+   - Reuse the exact same two-pane UI to scrub frame-by-frame through any saved `stream.h264` + `decisions.jsonl` to visually inspect losses and counterfactual `shadow` choices.
 
 ---
 

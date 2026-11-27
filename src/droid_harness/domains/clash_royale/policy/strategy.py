@@ -37,6 +37,8 @@ class PlacementParams(BaseModel):
                                                                             "right": [14.5, 14.0]})
     back_tiles: dict[str, list[float]] = Field(default_factory=lambda: {"left": [4.5, 1.5],
                                                                           "right": [13.5, 1.5]})
+    anti_spell_tower_offset: float = 0.0  # >0 shifts ranged defenders away from our tower vs spells
+    melee_kite_center: bool = False       # pull melee threats slightly cross-center into dual-tower fire
 
 
 class StrategySpec(BaseModel):
@@ -106,6 +108,21 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "spell_aware": False,
     "kill_aware_spells": False,
     "save_counters_for_in_hand_threats": False,
+    # Pro macro/micro extensions (docs/pro-strategy-research.md; opt-in so v1-v5 stay unchanged)
+    "giant_back_build_allow_in_opening": True,
+    "giant_x1_min_elixir": 0.0,
+    "use_min_cycle_elixir": False,
+    "ignore_chip_tower_hp_frac": 1.0,
+    "ignore_chip_max_threat_value": 0.0,
+    "opposite_lane_punish": False,
+    "punish_min_enemy_cost": 5,
+    "punish_enemy_back_y": 23.5,
+    "punish_min_my_elixir": 5.0,
+    "punish_score": 0.68,
+    "punish_cards": [],  # empty = win_conditions + fast melee bridge threats
+    # M8 learned ranker blending ("residual" keeps rule safety gates intact; "replace" is legacy)
+    "ranker_mode": "residual",
+    "ranker_residual_weight": 0.25,
 }
 
 

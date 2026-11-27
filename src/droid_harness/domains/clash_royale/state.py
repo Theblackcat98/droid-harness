@@ -109,6 +109,24 @@ class GameState:
             return False
         return self.opp_elixir[1] >= cards.cost(card) - margin
 
+    def opp_min_cycle_elixir_to_return(self, card: str, cards: CardDB) -> float:
+        """Minimum elixir opponent must spend on OTHER plays before ``card`` returns to hand."""
+        n = self.opp_cards_until_back(card)
+        if n <= 0:
+            return 0.0
+        possible_hand = set(self.opp_deck_seen) - set(self.opp_last_four[-4:])
+        in_hand_costs = sorted(
+            cards.cost(k) if k in cards else 3.0
+            for k in possible_hand
+            if k != card
+        )
+        unknown_slots = max(0, 8 - len(self.opp_deck_seen))
+        costs = list(in_hand_costs) + [2.5] * unknown_slots
+        costs.sort()
+        if len(costs) < n:
+            costs.extend([2.5] * (n - len(costs)))
+        return float(sum(costs[:n]))
+
     def opp_elixir_advantage(self) -> float:
         return self.my_elixir - (self.opp_elixir[0] + self.opp_elixir[1]) / 2.0
 

@@ -209,13 +209,47 @@ def cmd_screen(a) -> None:
     print(f"registered screen {a.name} ({out / f'{a.name}__{i}.png'})")
 
 
-def cmd_run(a) -> None:
-    from .app import BotRunner, RunConfig
+def _fill_device_defaults(a, *, with_detector: bool = True, default_async: bool = False) -> None:
+    from .app import resolve_device_bundle, resolve_strategy_path
 
-    cfg = RunConfig(**{k: (Path(v) if isinstance(v, str) and k not in ("mode", "opponent_id", "balance_epoch",
-                                                                         "experiment_id", "arm") else v)
-                       for k, v in vars(a).items() if k in RunConfig.__dataclass_fields__ and v is not None})
-    BotRunner(cfg).run()
+    device = getattr(a, "device", None) or "phone-a"
+    use_det = with_detector and not getattr(a, "no_detector", False)
+    bundle = resolve_device_bundle(device, with_detector=use_det)
+    for k, v in bundle.items():
+        if hasattr(a, k) and getattr(a, k) is None and v is not None:
+            setattr(a, k, str(v))
+    for skey in ("strategy", "champion", "candidate"):
+        if hasattr(a, skey) and getattr(a, skey):
+            setattr(a, skey, str(resolve_strategy_path(getattr(a, skey))))
+    if default_async and getattr(a, "detector", None) and not getattr(a, "sync_detect", False):
+        a.async_detect = True
+
+
+def _build_run_config(a):
+    from .app import RunConfig
+
+    non_paths = {"mode", "opponent_id", "balance_epoch", "experiment_id", "arm", "pair_id"}
+    return RunConfig(**{
+        k: (Path(v) if isinstance(v, str) and k not in non_paths else v)
+        for k, v in vars(a).items()
+        if k in RunConfig.__dataclass_fields__ and v is not None
+    })
+
+
+def cmd_doctor(a) -> None:
+    from .app import run_doctor
+
+    rep = run_doctor(device=a.device, strategy=a.strategy, live=a.live)
+    print(json.dumps(rep, indent=1, default=str))
+    if not rep["ok"]:
+        raise SystemExit(1)
+
+
+def cmd_run(a) -> None:
+    from .app import BotRunner
+
+    _fill_device_defaults(a, with_detector=True, default_async=getattr(a, "cmd", "") == "play")
+    BotRunner(_build_run_config(a)).run()
 
 
 def cmd_sim(a) -> None:
@@ -231,7 +265,9 @@ def cmd_analyze(a) -> None:
     from .flywheel import warehouse
     from .flywheel.report import batch_report
 
-    cards, arena = CardDB.load(a.cards), Arena()
+    _fill_device_defaults(a, with_detector=False)
+    cards = CardDB.load(a.cards)
+    arena = Arena.load(a.arena) if getattr(a, "arena", None) else Arena()
     con = warehouse.connect(a.db)
     dirs = [d for d in sorted(Path(a.data).iterdir()) if (d / "summary.json").exists()]
     analyzed = []
@@ -242,6 +278,78 @@ def cmd_analyze(a) -> None:
     print(json.dumps(batch_report(analyzed), indent=1))
     for row in warehouse.win_rates(con, a.game_version):
         print(row)
+
+
+def cmd_digest(a) -> None:
+    from .domains.clash_royale.arena import Arena
+    from .domains.clash_royale.cards import CardDB
+    from .flywheel.digest import build_digest, render_agent_markdown
+
+    _fill_device_defaults(a, with_detector=False)
+    cards = CardDB.load(a.cards)
+    arena = Arena.load(a.arena) if getattr(a, "arena", None) else Arena()
+    dig = build_digest(a.data, cards, arena, ledger_path=a.store, max_loss_stories=a.max_stories)
+    md = render_agent_markdown(dig)
+    out = Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(md)
+    json_out = Path(a.json_out) if a.json_out else out.with_suffix(".json")
+    json_out.write_text(json.dumps(dig, indent=1, default=str))
+    print(f"wrote agent digest {out} ({len(md.encode())} bytes) + {json_out}")
+
+
+def cmd_retain(a) -> None:
+    from .flywheel.retention import retain_dir
+
+    rep = retain_dir(a.data, prune_loss_video=a.prune_loss_video, dry_run=a.dry_run)
+    print(json.dumps(rep, indent=1))
+
+
+def cmd_shadow(a) -> None:
+    from .domains.clash_royale.arena import Arena
+    from .domains.clash_royale.cards import CardDB
+    from .domains.clash_royale.policy.strategy import load_strategy
+    from .domains.clash_royale.policy.utility import CRPolicy
+    from .flywheel.shadow import ShadowRunner
+    from .flywheel.tuning.offline_study import load_valued_states
+
+    _fill_device_defaults(a, with_detector=False)
+    cards = CardDB.load(a.cards)
+    arena = Arena.load(a.arena) if getattr(a, "arena", None) else Arena()
+    champ = CRPolicy(cards, arena, load_strategy(a.champion)[1])
+    cand = CRPolicy(cards, arena, load_strategy(a.candidate)[1])
+    dirs = sorted(d for d in Path(a.data).iterdir() if (d / "decisions.jsonl").exists())
+    valued = load_valued_states(dirs, cards, arena)
+    sr = ShadowRunner(champ, cand)
+    recs = [sr.compare(st, value=val, reset=True) for st, val in valued]
+    ranked = sr.report(recs)
+    bad_flipped = sum(1 for r in recs if not r.agreement and r.value < -0.5)
+    good_broken = sum(1 for r in recs if not r.agreement and r.value > 0.5)
+    print(json.dumps({
+        "matches": len(dirs),
+        "states": len(recs),
+        "disagreements": sum(1 for r in recs if not r.agreement),
+        "bad_engagements_flipped": bad_flipped,
+        "good_engagements_changed": good_broken,
+        "by_rule": [{"rule": r, "count": n, "mean_engagement_value": round(v, 3)} for r, n, v in ranked],
+    }, indent=1))
+
+
+def cmd_tune_offline(a) -> None:
+    from .domains.clash_royale.arena import Arena
+    from .domains.clash_royale.cards import CardDB
+    from .flywheel.tuning.offline_study import search_offline
+
+    _fill_device_defaults(a, with_detector=False)
+    cards = CardDB.load(a.cards)
+    arena = Arena.load(a.arena) if getattr(a, "arena", None) else Arena()
+    dirs = sorted(d for d in Path(a.data).iterdir() if (d / "decisions.jsonl").exists())
+    res = search_offline(
+        a.champion, dirs, cards, arena,
+        n_trials=a.trials, out_yaml=a.out, seed=a.seed,
+        min_diff_pct=a.min_diff_pct, max_diff_pct=a.max_diff_pct,
+    )
+    print(json.dumps(res, indent=1, default=str))
 
 
 def cmd_sprt(a) -> None:
@@ -256,57 +364,47 @@ def cmd_sprt(a) -> None:
 
 
 def cmd_experiment(a) -> None:
-    """Alternate champion/candidate Training Camp matches until SPRT decides (M5)."""
-    from .app import BotRunner, RunConfig
+    """Persistent-session champion/candidate paired evaluation (M5 + Stage-A dense futility)."""
+    from .app import BotRunner
     from .domains.clash_royale.policy.strategy import load_strategy
     from .flywheel import warehouse
     from .flywheel.eval.runner import ExperimentConfig, ExperimentRunner
     from .flywheel.ledger import Ledger
 
+    _fill_device_defaults(a, with_detector=True, default_async=getattr(a, "cmd", "") == "experiment")
     _, _, champ_sid = load_strategy(a.champion)
     _, _, cand_sid = load_strategy(a.candidate)
     store = Ledger(a.store)
     exp_id = a.experiment_id or store.next_id()
-    # Detect the game version once before the loop; the runner voids on change.
-    probe = RunConfig(**{k: (Path(v) if isinstance(v, str) and k not in ("mode", "opponent_id",
-                         "balance_epoch", "experiment_id", "arm") else v)
-                         for k, v in vars(a).items()
-                         if k in RunConfig.__dataclass_fields__ and v is not None})
-    game_version = BotRunner(probe).client_version()
+
+    # Build ONE persistent BotRunner (loads GPU weights & connects scrcpy ONCE across all pairs).
+    a.strategy = a.champion
+    cfg = _build_run_config(a)
+    cfg.matches = a.max_games * 2
+    bot = BotRunner(cfg)
+    game_version = bot.client_version()
+    bot.game_version = game_version
+
     runner = ExperimentRunner(ExperimentConfig(
         experiment_id=exp_id, title=a.title, hypothesis=a.hypothesis, proposer=a.proposer,
         champion_id=champ_sid, candidate_id=cand_sid, test=a.test,
         p0=a.p0, p1=a.p1, alpha=a.alpha, beta=a.beta,
         game_version=game_version or "", balance_epoch=a.balance_epoch or "",
-        max_games=a.max_games))
-    seen: set[str] = set()
-    data_root = Path(a.data)
-    for _ in range(a.max_games * 2):  # headroom for replayed (aborted) slots
-        if runner.done:
-            break
-        arm, pair_id = runner.next_assignment()
-        strat = a.champion if arm == "champion" else a.candidate
-        cfg = RunConfig(**{k: (Path(v) if isinstance(v, str) and k not in ("mode", "opponent_id",
-                             "balance_epoch", "experiment_id", "arm") else v)
-                            for k, v in vars(a).items()
-                            if k in RunConfig.__dataclass_fields__ and v is not None})
-        cfg.strategy = Path(strat)
-        cfg.experiment_id, cfg.arm, cfg.pair_id, cfg.matches = exp_id, arm, pair_id, 1
-        BotRunner(cfg).run()
-        for p in sorted(data_root.glob("*/summary.json")):
-            if str(p) in seen:
-                continue
-            seen.add(str(p))
-            try:
-                s = json.loads(p.read_text())
-            except Exception:
-                continue
-            if s.get("experiment_id") != exp_id:
-                continue
-            r = runner.record(s)
-            print(json.dumps({"match": s.get("match_id"), "arm": arm, "pair": s.get("pair_id"),
-                              "result": s.get("result"), "sprt": r.decision, "llr": round(r.llr, 3),
-                              "notes": runner.notes()}))
+        max_games=a.max_games, futility_min_pairs=a.futility_pairs))
+
+    arm0, pid0 = runner.next_assignment()
+    bot.set_strategy(a.champion if arm0 == "champion" else a.candidate,
+                     experiment_id=exp_id, arm=arm0, pair_id=pid0)
+
+    def _on_match_done(s: dict) -> None:
+        if s.get("experiment_id") != exp_id:
+            return
+        r = runner.record(s)
+        print(json.dumps({
+            "match": s.get("match_id"), "arm": s.get("arm"), "pair": s.get("pair_id"),
+            "result": s.get("result"), "sprt": r.decision, "llr": round(r.llr, 3),
+            "notes": runner.notes(),
+        }))
         runner.write_ledger(a.store)
         try:
             con = warehouse.connect(a.db)
@@ -314,9 +412,17 @@ def cmd_experiment(a) -> None:
             con.close()
         except Exception as e:  # warehouse must never stop the loop
             print(f"warehouse write failed: {e}")
+        if not runner.done:
+            nxt_arm, nxt_pid = runner.next_assignment()
+            bot.set_strategy(a.champion if nxt_arm == "champion" else a.candidate,
+                             experiment_id=exp_id, arm=nxt_arm, pair_id=nxt_pid)
+
+    bot.run(stop_when=lambda: runner.done or len(runner.matches) >= a.max_games * 2,
+            on_summary=_on_match_done)
     print(json.dumps({"experiment_id": exp_id, "status": runner.status,
                       "matches": len(runner.matches), "decision": runner.decision.__dict__
-                      if runner.decision else None, "void": runner.void_reason}))
+                      if runner.decision else None, "void": runner.void_reason,
+                      "futility": runner.futility_reason}))
 
 
 def cmd_replay_diff(a) -> None:
@@ -327,6 +433,7 @@ def cmd_replay_diff(a) -> None:
     from .domains.clash_royale.policy.utility import CRPolicy
     from .flywheel.eval.replay_diff import gate, load_states, replay_diff
 
+    _fill_device_defaults(a, with_detector=False)
     cards = CardDB.load(a.cards)
     arena = Arena.load(a.arena) if a.arena else Arena()
     pols = [CRPolicy(cards, arena, load_strategy(p)[1]) for p in (a.champion, a.candidate)]
@@ -347,17 +454,18 @@ def cmd_replay(a) -> None:
     from .domains.clash_royale.arena import Arena
     from .domains.clash_royale.cards import CardDB
     from .domains.clash_royale.perception.cards import CardMatcher
-    from .domains.clash_royale.perception.detector import load_detector
+    from .domains.clash_royale.perception.detector import load_detector, warmup_once
     from .domains.clash_royale.perception.grid import Layout, TileMapper
     from .domains.clash_royale.perception.pipeline import CRPerception
     from .domains.clash_royale.perception.towers import TowerStateReader
     from .domains.clash_royale.replay import diff_runs, replay_match
 
+    _fill_device_defaults(a, with_detector=True)
     cards = CardDB.load(a.cards)
     detector = None
     if a.detector:
         detector = load_detector(a.detector, a.classes, conf=a.det_conf, iou=a.det_iou)
-        detector.warmup(2)
+        warmup_once(detector, 2)
 
     def make():
         return CRPerception(layout=Layout.load(a.layout), tiles=TileMapper.load(a.tiles), cards=cards,
@@ -456,10 +564,61 @@ def _iter_advise_states(data: str) -> list[tuple[str, dict]]:
     return out
 
 
+def _add_runtime_args(s, *, default_mode: str = "training_camp", require_strategy: bool = False,
+                      default_strategy: str | None = None) -> None:
+    s.add_argument("--device", default="phone-a",
+                   help="device preset under configs/ (auto-resolves profile, rois, tiles, templates, digits, detector)")
+    for k in ("profile", "layout", "tiles", "templates", "screens", "cards"):
+        s.add_argument(f"--{k}", default=None)
+    if require_strategy or default_strategy is not None:
+        s.add_argument("--strategy", default=default_strategy, required=require_strategy and default_strategy is None,
+                       help="strategy path or short alias (e.g. 'v6', 'v4', 'ladder-vision-v6')")
+    s.add_argument("--arena", default=None, help="calibrated arena geometry")
+    s.add_argument("--data", default="data/matches")
+    s.add_argument("--detector", default=None)
+    s.add_argument("--no-detector", dest="no_detector", action="store_true",
+                   help="disable auto-loading models/yolo26n-cr.pt (for blind strategies)")
+    s.add_argument("--classes", default=None, help="cross-check against the model's embedded names")
+    s.add_argument("--digits", default=None, help="tower-HP & clock digits dir")
+    s.add_argument("--towers", default=None, help="tower-state templates dir")
+    s.add_argument("--detect-every", dest="detect_every", type=int, default=1)
+    s.add_argument("--det-conf", dest="det_conf", type=float, default=0.35)
+    s.add_argument("--det-iou", dest="det_iou", type=float, default=0.5)
+    s.add_argument("--async-detect", dest="async_detect", action="store_true",
+                   help="run the detector on its own thread so HUD reads never wait for inference")
+    s.add_argument("--sync-detect", dest="sync_detect", action="store_true",
+                   help="force synchronous detection on `play`/`experiment`")
+    s.add_argument("--prune-win-video", dest="prune_win_video", action="store_true",
+                   help="delete raw stream.h264 on clean completed wins immediately after match end")
+    s.add_argument("--mode", default=default_mode, choices=["training_camp", "friendly", "ladder"])
+    s.add_argument("--opponent-id", dest="opponent_id")
+    s.add_argument("--balance-epoch", dest="balance_epoch", default="2026-11")
+
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] == "train-detector":
+        from .learn.train_detector import main as train_main
+
+        train_main(raw_argv[1:])
+        return
+
     ap = argparse.ArgumentParser(prog="droid-harness")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("doctor", help="pre-flight check of calibration, templates, digits, GPU detector & ADB")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--strategy", default="v6")
+    s.add_argument("--live", action="store_true", help="also probe connected ADB device state")
+    s.set_defaults(fn=cmd_doctor)
+
+    s = sub.add_parser("play", help="one-command live play with auto-resolved device, digits & async GPU detector")
+    _add_runtime_args(s, default_mode="ladder", default_strategy="v6")
+    s.add_argument("--matches", type=int, default=10)
+    s.add_argument("--experiment-id", dest="experiment_id")
+    s.add_argument("--arm")
+    s.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("stream", help="connect to a phone and report fps/decode time")
     s.add_argument("--profile", required=True)
@@ -567,25 +726,9 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--out", required=True)
     s.set_defaults(fn=cmd_screen)
 
-    s = sub.add_parser("run", help="play matches on a phone")
-    for k in ("profile", "layout", "tiles", "templates", "screens", "strategy", "cards"):
-        s.add_argument(f"--{k}", required=True)
-    s.add_argument("--arena", help="calibrated arena geometry (defaults to Arena())")
-    s.add_argument("--data", default="data/matches")
-    s.add_argument("--detector")
-    s.add_argument("--classes", help="cross-check against the model's embedded names (refuses on mismatch)")
-    s.add_argument("--digits")
-    s.add_argument("--towers", help="tower-state templates dir (droid-harness tower-template)")
-    s.add_argument("--detect-every", dest="detect_every", type=int, default=1,
-                   help="run the detector on every Nth battle frame (units are extrapolated between)")
-    s.add_argument("--det-conf", dest="det_conf", type=float, default=0.35)
-    s.add_argument("--det-iou", dest="det_iou", type=float, default=0.5)
-    s.add_argument("--async-detect", dest="async_detect", action="store_true",
-                   help="run the detector on its own thread so HUD reads never wait for inference")
-    s.add_argument("--mode", default="training_camp", choices=["training_camp", "friendly", "ladder"])
-    s.add_argument("--opponent-id", dest="opponent_id")
+    s = sub.add_parser("run", help="play matches on a phone (supports --device auto-resolution)")
+    _add_runtime_args(s, default_mode="training_camp", require_strategy=True)
     s.add_argument("--matches", type=int, default=10)
-    s.add_argument("--balance-epoch", dest="balance_epoch")
     s.add_argument("--experiment-id", dest="experiment_id")
     s.add_argument("--arm")
     s.set_defaults(fn=cmd_run)
@@ -596,11 +739,52 @@ def main(argv: list[str] | None = None) -> None:
     s.set_defaults(fn=cmd_sim)
 
     s = sub.add_parser("analyze", help="engagements, triage, report, and warehouse ingest")
+    s.add_argument("--device", default="phone-a")
     s.add_argument("--data", default="data/matches")
-    s.add_argument("--cards", required=True)
+    s.add_argument("--cards", default=None)
+    s.add_argument("--arena", default=None)
     s.add_argument("--db", default="data/warehouse.duckdb")
     s.add_argument("--game-version", dest="game_version")
     s.set_defaults(fn=cmd_analyze)
+
+    s = sub.add_parser("digest", help="generate <30 KB deterministic Agent Handoff Artifact (Speed-3)")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--data", default="data/matches")
+    s.add_argument("--cards", default=None)
+    s.add_argument("--arena", default=None)
+    s.add_argument("--store", default="ledger/experiments.jsonl")
+    s.add_argument("--max-stories", dest="max_stories", type=int, default=8)
+    s.add_argument("--out", default="data/agent_digest.md")
+    s.add_argument("--json-out", dest="json_out", default=None)
+    s.set_defaults(fn=cmd_digest)
+
+    s = sub.add_parser("retain", help="compact clean wins (delete stream.h264) while preserving loss keyframes")
+    s.add_argument("--data", default="data/matches")
+    s.add_argument("--prune-loss-video", dest="prune_loss_video", action="store_true")
+    s.add_argument("--dry-run", dest="dry_run", action="store_true")
+    s.set_defaults(fn=cmd_retain)
+
+    s = sub.add_parser("shadow", help="engagement-weighted counterfactual disagreement report")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--champion", required=True)
+    s.add_argument("--candidate", required=True)
+    s.add_argument("--data", default="data/matches")
+    s.add_argument("--cards", default=None)
+    s.add_argument("--arena", default=None)
+    s.set_defaults(fn=cmd_shadow)
+
+    s = sub.add_parser("tune-offline", help="Speed-1 CPU counterfactual parameter search over logged matches")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--champion", default="v6", help="base strategy YAML or alias")
+    s.add_argument("--data", default="data/matches")
+    s.add_argument("--cards", default=None)
+    s.add_argument("--arena", default=None)
+    s.add_argument("--trials", type=int, default=80)
+    s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--min-diff-pct", dest="min_diff_pct", type=float, default=1.0)
+    s.add_argument("--max-diff-pct", dest="max_diff_pct", type=float, default=18.0)
+    s.add_argument("--out", default=None, help="write single best candidate YAML here")
+    s.set_defaults(fn=cmd_tune_offline)
 
     s = sub.add_parser("sprt", help="SPRT decision, or the sample-size table with no results")
     s.add_argument("--wins", type=int)
@@ -611,54 +795,41 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--beta", type=float, default=0.05)
     s.set_defaults(fn=cmd_sprt)
 
-    s = sub.add_parser("run-experiment", help="alternate champion/candidate until SPRT decides")
-    for k in ("profile", "layout", "tiles", "templates", "screens", "cards"):
-        s.add_argument(f"--{k}", required=True)
-    s.add_argument("--champion", required=True, help="champion strategy YAML")
-    s.add_argument("--candidate", required=True, help="candidate strategy YAML")
-    s.add_argument("--arena", help="calibrated arena geometry")
-    s.add_argument("--data", default="data/matches")
-    s.add_argument("--detector")
-    s.add_argument("--classes", help="cross-check against the model's embedded names (refuses on mismatch)")
-    s.add_argument("--digits")
-    s.add_argument("--towers", help="tower-state templates dir (droid-harness tower-template)")
-    s.add_argument("--detect-every", dest="detect_every", type=int, default=1,
-                   help="run the detector on every Nth battle frame (units are extrapolated between)")
-    s.add_argument("--det-conf", dest="det_conf", type=float, default=0.35)
-    s.add_argument("--det-iou", dest="det_iou", type=float, default=0.5)
-    s.add_argument("--async-detect", dest="async_detect", action="store_true",
-                   help="run the detector on its own thread so HUD reads never wait for inference")
-    s.add_argument("--mode", default="training_camp", choices=["training_camp", "friendly", "ladder"])
-    s.add_argument("--opponent-id", dest="opponent_id")
-    s.add_argument("--balance-epoch", dest="balance_epoch")
-    s.add_argument("--experiment-id", dest="experiment_id")
-    s.add_argument("--title", default="")
-    s.add_argument("--hypothesis", default="")
-    s.add_argument("--proposer", default="human")
-    s.add_argument("--test", default="pairs", choices=["pairs", "h2h", "fixed", "sprt_h2h", "sprt_paired"],
-                   help="pairs: randomized matched blocks vs the champion (Training Camp); h2h: self-play; "
-                        "fixed: vs --p0 only, never for promotion")
-    s.add_argument("--p0", type=float, default=0.5)
-    s.add_argument("--p1", type=float, default=0.58)
-    s.add_argument("--alpha", type=float, default=0.05)
-    s.add_argument("--beta", type=float, default=0.05)
-    s.add_argument("--max-games", dest="max_games", type=int, default=400)
-    s.add_argument("--store", default="ledger/experiments.jsonl")
-    s.add_argument("--db", default="data/warehouse.duckdb")
-    s.set_defaults(fn=cmd_experiment)
+    for exp_cmd, def_mode, def_fut in (("run-experiment", "training_camp", 0), ("experiment", "ladder", 12)):
+        s = sub.add_parser(exp_cmd, help="persistent-session champion/candidate paired evaluation")
+        _add_runtime_args(s, default_mode=def_mode, require_strategy=False)
+        s.add_argument("--champion", required=True, help="champion strategy YAML or alias (e.g. 'v4')")
+        s.add_argument("--candidate", required=True, help="candidate strategy YAML or alias (e.g. 'v6')")
+        s.add_argument("--experiment-id", dest="experiment_id")
+        s.add_argument("--title", default="")
+        s.add_argument("--hypothesis", default="")
+        s.add_argument("--proposer", default="human")
+        s.add_argument("--test", default="pairs", choices=["pairs", "h2h", "fixed", "sprt_h2h", "sprt_paired"])
+        s.add_argument("--p0", type=float, default=0.5)
+        s.add_argument("--p1", type=float, default=0.58)
+        s.add_argument("--alpha", type=float, default=0.05)
+        s.add_argument("--beta", type=float, default=0.05)
+        s.add_argument("--max-games", dest="max_games", type=int, default=400)
+        s.add_argument("--futility-pairs", dest="futility_pairs", type=int, default=def_fut,
+                       help="Stage-A early futility stop when dense-margin UCB95 < 0 after N pairs (0 = off)")
+        s.add_argument("--store", default="ledger/experiments.jsonl")
+        s.add_argument("--db", default="data/warehouse.duckdb")
+        s.set_defaults(fn=cmd_experiment)
 
     s = sub.add_parser("replay", help="re-run recorded matches through perception and diff the events (M3)")
+    s.add_argument("--device", default="phone-a")
     for k in ("layout", "tiles", "templates", "cards"):
-        s.add_argument(f"--{k}", required=True)
+        s.add_argument(f"--{k}", default=None)
     s.add_argument("--data", default="data/matches")
-    s.add_argument("--arena")
-    s.add_argument("--detector")
-    s.add_argument("--classes")
+    s.add_argument("--arena", default=None)
+    s.add_argument("--detector", default=None)
+    s.add_argument("--no-detector", dest="no_detector", action="store_true")
+    s.add_argument("--classes", default=None)
     s.add_argument("--det-conf", dest="det_conf", type=float, default=0.35)
     s.add_argument("--det-iou", dest="det_iou", type=float, default=0.5)
     s.add_argument("--detect-every", dest="detect_every", type=int, default=1)
-    s.add_argument("--digits")
-    s.add_argument("--towers")
+    s.add_argument("--digits", default=None)
+    s.add_argument("--towers", default=None)
     s.add_argument("--limit", type=int, default=0, help="only the first N matches")
     s.add_argument("--out", required=True, help="events of this run, e.g. data/replay/detector-v2.json")
     s.add_argument("--baseline", help="a previous --out to diff against")
@@ -666,11 +837,12 @@ def main(argv: list[str] | None = None) -> None:
     s.set_defaults(fn=cmd_replay)
 
     s = sub.add_parser("replay-diff", help="candidate vs champion on logged states (promotion gate 2)")
+    s.add_argument("--device", default="phone-a")
     s.add_argument("--champion", required=True)
     s.add_argument("--candidate", required=True)
     s.add_argument("--data", default="data/matches")
-    s.add_argument("--cards", required=True)
-    s.add_argument("--arena")
+    s.add_argument("--cards", default=None)
+    s.add_argument("--arena", default=None)
     s.add_argument("--expected-pct", dest="expected_pct", type=float, required=True,
                    help="share of decisions the change is expected to alter")
     s.add_argument("--tolerance", type=float, default=3.0)
@@ -700,7 +872,7 @@ def main(argv: list[str] | None = None) -> None:
                    help="print prompts only, no network — fully offline")
     s.set_defaults(fn=cmd_advise)
 
-    a = ap.parse_args(argv)
+    a = ap.parse_args(raw_argv)
     a.fn(a)
 
 

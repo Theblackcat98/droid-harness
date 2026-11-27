@@ -51,6 +51,14 @@ def counter_factor(s, p, card_key: str, ctx: RuleContext | None = None, *,
         )
         return mult, f"; their {'/'.join(in_hand_ready)} may be in hand"
     deck_full = len(s.opp_deck_seen) >= 8
+    if p.use_min_cycle_elixir and ctx is not None and out_of_cycle and not in_hand_ready:
+        min_needed = min(
+            s.opp_min_cycle_elixir_to_return(c, ctx.cards) + (ctx.cards.cost(c) if c in ctx.cards else 3.0)
+            for c in out_of_cycle
+        )
+        if opp_hi + 1.5 < min_needed:
+            mult = max(p.counter_out_mult, 1.50) if deck_full else (1.0 + 0.75 * (p.counter_out_mult - 1.0))
+            return mult, f"; {'/'.join(out_of_cycle)} cycle-locked ({min_needed:.0f} elix to return)"
     if deck_full or (p.cycle_punish_partial_deck and len(s.opp_deck_seen) >= 5):
         if out_of_cycle and not in_hand_unaffordable:
             mult = p.counter_out_mult if deck_full else (1.0 + 0.5 * (p.counter_out_mult - 1.0))
@@ -172,6 +180,10 @@ class GiantBackBuild:
     def propose(self, s, p, ctx: RuleContext, intent):
         if not p.giant_back_build or s.my_elixir < p.giant_safe_build_elixir:
             return
+        if not p.giant_back_build_allow_in_opening and s.posture == "OPENING":
+            return
+        if s.phase == "x1" and s.my_elixir < p.giant_x1_min_elixir:
+            return
         block_tiles = p.defend_trigger_tiles if p.giant_build_block_tiles is None else p.giant_build_block_tiles
         if s.threats(ctx.arena, ctx.cards, max_tiles_to_tower=block_tiles):
             return  # defend first
@@ -185,3 +197,40 @@ class GiantBackBuild:
             fr, why_r = reserve_factor(s, p, card.cost)
             yield Candidate(self.id, key, slot, tile, score=_scale(p.giant_back_build_score, fc * fr),
                             reason=f"back-build {key} {lane} at {s.my_elixir:.1f} elixir{why_c}{why_r}")
+
+
+DEFAULT_PUNISH_FAST = ("hog_rider", "battle_ram", "ram_rider", "mini_pekka", "prince", "bandit", "wall_breakers")
+
+
+class OppositeLanePunish:
+    """Pressure the opposite bridge immediately when opponent invests >=5 elixir in the back."""
+
+    id = "offense.opposite_lane_punish"
+
+    def propose(self, s, p, ctx: RuleContext, intent):
+        if not p.opposite_lane_punish or s.my_elixir < p.punish_min_my_elixir or unanswered_threat(s, p, ctx):
+            return
+        heavy_back = []
+        for u in s.enemy_units():
+            if u.tile[1] < p.punish_enemy_back_y:
+                continue
+            c = ctx.cards.card_for_class(u.kind)
+            cost = c.cost if c is not None else 0
+            if cost >= p.punish_min_enemy_cost:
+                heavy_back.append((cost, u))
+        if not heavy_back:
+            return
+        inv_cost, inv_u = max(heavy_back, key=lambda pair: pair[0])
+        opp_lane = "right" if ctx.arena.lane_of(inv_u.tile[0]) == "left" else "left"
+        allowed = set(p.punish_cards) if p.punish_cards else (set(p.win_conditions) | set(DEFAULT_PUNISH_FAST))
+        for slot, key in s.affordable_hand(ctx.cards):
+            card = ctx.cards[key]
+            if key not in allowed or card.is_spell or card.kind == "building":
+                continue
+            tile = ctx.placement.snap(tuple(p.placement.bridge_tiles[opp_lane]), card, s)
+            fc, why_c = counter_factor(s, p, key, ctx)
+            fr, why_r = reserve_factor(s, p, card.cost)
+            yield Candidate(
+                self.id, key, slot, tile, score=_scale(p.punish_score, fc * fr),
+                reason=f"punish {inv_u.kind} ({inv_cost}e back) opposite {opp_lane}{why_c}{why_r}",
+            )

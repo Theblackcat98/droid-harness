@@ -207,9 +207,15 @@ class CRSession:
         else:
             my_crowns = s.crowns[0] if s else None
             opp_crowns = s.crowns[1] if s else None
+        tower_hp_diff = 0
+        if s and s.towers:
+            my_hp = sum(v for k, v in s.towers.items() if k.startswith("me_"))
+            opp_hp = sum(v for k, v in s.towers.items() if k.startswith("opp_"))
+            tower_hp_diff = int(my_hp - opp_hp)
         summary = {
             **self.match.__dict__, "status": status, "result": result,
             "my_crowns": my_crowns, "opp_crowns": opp_crowns,
+            "tower_hp_diff": tower_hp_diff,
             "duration_s": (s.t_ms / 1000) if s else None,
             "overtime": bool(s and s.phase.startswith("ot")),
             "elixir_leaked": round(self.perception.elixir.leaked, 2),

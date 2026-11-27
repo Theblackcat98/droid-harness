@@ -36,12 +36,16 @@ High win-rate competitive archetypes center on flexible Elixir/Cycle exploitatio
 | **Bridge Spam** | `battle_ram`, `ram_rider`, `bandit`, `prince` | Instant opposite-lane bridge punishment whenever opponent invests `>= 5` in the back | Heavy back-plant **Beatdown**, **Siege** | Cheap cycle & disciplined elixir reserves |
 | **Siege** | `x_bow`, `mortar` | Protect offensive building in your territory (`y ≈ 13.5`); spell-cycle remaining HP if blocked | **Control** without big tank answer | Heavy **Beatdown** tanks soaking building fire |
 
-### Starter deck → Arena 2–5 unlock upgrades (`theblackcat99`)
+### Starter deck → Arena 2–9 Directed Upgrade Path to **2.6 Hog EQ** (`theblackcat99`)
 
-Our starter 8 (`knight`, `archers`, `minions`, `arrows`, `fireball`, `giant`, `musketeer`, `mini_pekka`, avg cost `3.6`) already covers all Beatdown/Control essentials. As trophies unlock Arena 2–4 cards, high-value tactical upgrades include:
-- **Arena 2 (Bone Pit — 400+ trophies):** `skeletons` (1-elixir cycle/distraction), `bomber` (2-elixir ground splash behind Giant/counter-swarms), `valkyrie` (360° splash mini-tank vs swarms), `tombstone` (3-elixir building pull vs Giant/Prince), `balloon` (dual air win-con), `giant_skeleton`.
-- **Arena 3 (Barbarian Bowl — 800+ trophies):** `cannon` (3-elixir defense anchor), `barbarians` (anti-tank swarm), `battle_ram` (bridge-spam / split-lane punish), `rage`, `x_bow`.
-- **Arena 4 (Spell Valley — 1400+ trophies):** `fire_spirit` / `electro_spirit` (1-elixir cycle & reset), `inferno_tower` (anti-Beatdown tank melter), `bomb_tower`, `wizard`.
+Because ladder optimization climbs trophies into higher-level cards, **gold and wildcards must only go into cards that survive into the target Hog EQ cycle deck** (`hog_rider`, `earthquake` [Fireball until Arena 9], `the_log` / `barbarian_barrel` [Arrows until unlocked], `musketeer` / `firecracker`, `cannon`, `knight` / `ice_golem`, `skeletons`, `ice_spirit` / `fire_spirit`):
+
+1. **Immediate (Arena 1 -> King Lv2):** Perform 1 cheap upgrade (`8/9` XP on `theblackcat99`) to reach **King Level 2** (+112 Princess HP, +168 King HP, +8% tower DPS) and unlock Bone Pit. Upgrade **Musketeer**, **Knight**, and **Fireball** freely — all three carry directly into Hog Cycle/Control through Arena 9.
+2. **Arena 2 (Bone Pit — 400+ trophies):** Unlock & slot **`skeletons`** (1-elixir cycle/distraction staple of Hog EQ). Optional bridge card: `valkyrie` or `bomber` if swarm pressure spikes, without over-investing gold in `giant`/`minions`/`archers`.
+3. **Arena 3 (Barbarian Bowl — 800+ trophies):** Unlock & slot **`cannon`** (core 3-elixir defensive building of 2.6 Hog / Hog EQ) + `barbarian_barrel` (small-spell upgrade over `arrows`).
+4. **Arena 4 (Spell Valley — 1400+ trophies):** Unlock & slot **`fire_spirit`** / **`electro_spirit`** (1-elixir cycle slot).
+5. **Arena 5 (Builder's Workshop — 1600+ trophies):** Unlock **`hog_rider`** — pivot strategy from `ladder-vision-v6` (Giant Beatdown) to **Blueprint 2 (`pro-hog-cycle-blueprint`)** (`[hog_rider, knight, cannon, musketeer, skeletons, fire_spirit, fireball, barbarian_barrel]`, avg cost `2.8`!).
+6. **Arena 8–9 (Frozen Peak / Jungle Arena):** Swap `ice_spirit` / `ice_golem` (Arena 8) and **`earthquake`** (Arena 9) to complete full **Hog EQ**!
 
 > **Operational prerequisite for swapping cards:** Before putting a newly unlocked card into `deck:`, capture both `affordable` and `greyed` templates via `droid-harness template`, add counter rows to `counters/*.csv`, and add `<unit>_me` / `<unit>_opp` labels to `models/classes.txt` if not already in the 31-class detector.
 
