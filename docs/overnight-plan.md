@@ -7,60 +7,27 @@ without an LLM in the control loop.
 An LLM (coach) is optional and offline only. It is not required for capture, perception,
 policy, touch injection, recording, triage or SPRT.
 
-## Current status (2026-11-26)
+## Current status (2026-11-26, post-`fc94e6b`)
 
 ### Works on the real phone
 
 - OnePlus N10 `741be240`, Android 11, 1080×2400, 90 Hz mode.
-- Throwaway account `theblackcat99`, 0 trophies, Training Camp unlocked.
-- Real deck: Knight, Princess, Minions, Arrows, Fireball, Giant, Musketeer,
-  Mini P.E.K.K.A (3.6 avg elixir).
-- scrcpy-server **v2.4** pinned. Stream: 464×1024 H.264, ~58 fps, decode p50 ≈ 3.8 ms,
-  p99 ≈ 15 ms.
-- Calibrated per-phone files:
-  - `configs/domains/clash_royale/rois/phone-a.yaml`
-  - `configs/domains/clash_royale/tiles/phone-a.yaml`
-  - `configs/domains/clash_royale/arena/phone-a.yaml`
-  - `configs/domains/clash_royale/templates/phone-a/`
-  - `configs/domains/clash_royale/screens/phone-a/`
-  - `configs/domains/clash_royale/cards.json`
-  - `configs/strategies/training-camp-v1.yaml`
-- Menu path verified: HOME → hamburger → Training Camp → confirm → battle.
-- Card matcher is exact (1.00 NCC) on saved hand/next frames.
-- `droid-harness run` supports `--arena` and real-device matches.
-- **Genuine win once:** bootstrap controller won **3–1** vs Trainer Jonas
-  (`screens/phone-a/RESULT_WIN__0.png`).
-- Full-policy run reached loop p50 **45 ms**, p99 **97 ms** over 176 s.
+- Throwaway account `theblackcat99` (King Level 1, Archers Lv3, Arena 1), `--mode ladder` approved & working end-to-end.
+- Real deck: Knight, Archers, Minions, Arrows, Fireball, Giant, Musketeer, Mini P.E.K.K.A.
+- `scrcpy-server-v2.4` pinned. Stream: `464×1024` H.264, ~58 fps moving, decode p50 ≈ 3.8 ms, p99 ≈ 15 ms.
+- Tracked per-phone calibration: `device_profiles/phone-a.yaml`, `rois/phone-a.yaml` (incl. `battle`, `dismiss`, `trophy_ok`), `tiles/phone-a.yaml`, `arena/phone-a.yaml`, rebuilt 18-PNG `templates/phone-a/`, 10 `towers/phone-a/` alive/rubble templates, and `screens/phone-a/` (`HOME`, `MENU`, `TRAINING_CONFIRM`, `LOADING`, `MATCHMAKING`, `TROPHY_ROAD`, `IN_BATTLE`, `RESULT_WIN`, `RESULT_LOSS`). Local `cards.json` (118 cards, `arrows` patched).
+- Strategies: `configs/strategies/ladder-vision-v2.yaml` and `ladder-vision-v3.yaml` (plus `training-camp-v3` and `training-camp-blind-v1`).
+- Trained M3 detector: epoch-40 YOLO26-n (`best.pt` epoch 36 `mAP50=0.797` / `mAP50-95=0.514`; local gitignored `models/yolo26n-cr.pt` & static `640×384` `models/yolo26n-cr.onnx`). On `veritas` (RX 7900 XT), `TorchDetector` PyTorch-ROCm runs **`7.90 ms p50 / 9.83 ms p95`** vs CPU `OnnxDetector` `26.78 ms p50 / 53.40 ms p95`.
+- Perception/session reliability: `CardMatcher` `local_znorm` + mask, `read_result_detail()` left+right banner checks, `battle_evidence` battle-lock & timeout invariants, match-start elixir sync, low-conf generic tower-skin FP suppression, and `MENU`/`TROPHY_ROAD` recovery.
+- **Verified live ladder run (`ladder-verify`, `ladder-vision-v3` + PyTorch-ROCm):** **9W–1L–0D (90.0%, 95% CI `[0.596, 0.982]`)**, `loop_p50_ms` **`2.48–2.77 ms`**, `loop_p99_ms` **`4.01–4.36 ms`**, `0` aborts, `0` orphaned match dirs, `0–1` `elixir_discrepancy`/match. Test suite: **179 passed, 1 skipped**.
 
 ### Known issues
 
-1. **Result settling is fixed in code, live re-validation pending.** The verifier
-   used to catch an intermediate crown-reveal frame (Trainer Jonas 2 – 1 logged as a
-   win). Now `read_result_detail()` returns the full `(outcome, opp_crowns, my_crowns)`
-   triple, `CRSession` requires the triple to repeat (`result_stable_frames` plus
-   ~1.2 s settle, 20-frame fallback) before ending the match, and summaries carry the
-   real crown counts instead of 0/0. A live check then found a second hole: the
-   classifier's unverified `RESULT_*` label could still end a match during the
-   victory animation (banners below threshold). Mid-match unverified labels are now
-   ignored entirely. Covered by
-   `test_result_settling_ignores_intermediate_crowns` and
-   `test_unverified_result_label_does_not_end_match`; live-validated 2026-11-26
-   (match `cdcaa1835b09`: summary `loss` 0–3 matches the final screen, crowns from
-   the settled triple).
-2. **No detector.** The bot cannot see units, so it cannot defend. This is the gating
-   item for a repeatable win.
-3. **No tower-HP digits**, so mid-match tower HP still comes from the tracker only;
-   final `my_crowns`/`opp_crowns` now fall back to the settled crown counts.
-4. **High perception warnings** (`hand_unreadable`, `affordability_mismatch`) during
-   intro/selected/greyed states.
-5. **Recovery is mostly fixed in code.** The liveness `recover_ui` path no longer sends
-   BACK on result screens (it opened the exit-match confirmation), `UNKNOWN` screens
-   fall back to the `close` button, and a 60 s stuck screen still force-stops and
-   relaunches the game. Needs an overnight soak to prove it.
-6. **Experiment runner is implemented, not yet run live.** `flywheel/eval/runner.py`
-   plus `droid-harness run-experiment` alternate champion/candidate, tag
-   `experiment_id`/`arm`, void on game-version change, stop on SPRT, and write the
-   ledger + warehouse `experiments` table (unit-tested, no live SPRT yet).
+1. **Detector weak/untested enemy classes.** On `data/katacr-real/data.yaml` val, `archer_opp` (`R=0.27`) and `knight_opp` (`R=0.43`) lag, and `giant_opp`, `mini_pekka_opp`, `minion_opp`, and `arrows_effect` have `n=0` in KataCR val. Needs real-frame labeling via `droid-harness frames` + fine-tuning.
+2. **No tower-HP digits yet** (`digits/phone-a/`), so mid-match tower HP stays inferred except destroyed-tower zeroing from `TowerStateReader` (`towers/phone-a/`); `my_crowns`/`opp_crowns` in summaries come reliably from `read_result_detail()`.
+3. **Transition-window `hand_unreadable` / `affordability_mismatch` warnings** remain (still the bulk of `PERCEPTION` triage entries; no `RESULT_DRAW`/POPUP refs yet, and selected-state card templates missing).
+4. **Loopback / display-off / thermals unverified overnight.** OxygenOS hides synthetic `show_touches` dots (50/50 loopback timeout; kept `exec_latency_ms: 40`), and `turn_display_off: true` thermal behavior over hours hasn't been tested.
+5. **No live SPRT or video retention job yet.** `ExperimentRunner` (`run-experiment --test pairs`) is implemented and unit-tested, but hasn't run live; raw `.h264` recordings (~60 MB/min) still need automated M5 pruning/transcoding before multi-hour unattended runs.
 
 ## Architecture of the overnight loop
 
@@ -252,8 +219,6 @@ evaluation funnel.
 
 ## Recommended next three steps
 
-1. Fix result settling + re-read, then rerun one match and confirm the summary matches
-   the final screen.
-2. Add result/popup recovery so the process cannot hang overnight.
-3. Start M3 detector work. It is the gating item for a consistently winning,
-   self-improving bot.
+1. Export & label real frames (`droid-harness frames --data data/ladder-verify ...`) and fine-tune YOLO26-n on `veritas` (with shorter epochs / faster settings) so weak and missing `*_opp` classes pass `eval-detector`.
+2. Test `turn_display_off: true` / thermal stability over longer batches and implement M5 video retention/pruning before multi-hour unattended runs.
+3. Run the first live paired SPRT (`droid-harness run-experiment --test pairs`) comparing `configs/strategies/ladder-vision-v3.yaml` against a single controlled candidate change (placement tuning, exact level-calibrated `spell_tower_damage`, or cycle gating).

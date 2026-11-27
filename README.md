@@ -13,20 +13,20 @@ The full design is in [`docs/plan.md`](docs/plan.md); why it looks this way is i
 
 ## Status
 
-| Works now (tested in CI, no phone needed) | Needs your phone / data |
+| Works now (verified CI + live `phone-a`) | Still open / next |
 |---|---|
-| scrcpy wire protocol, client, low-delay decoder, executor, recorder, liveness, loopback test (all against a fake scrcpy server streaming real H.264) | Pin a scrcpy server jar and verify the structs against its `doc/develop.md` |
-| HUD readers, card matching (greyed/compressed), digits, HP-bar ownership, tracker, spawn grouping, screen IDs, ONNX detector decoding | Calibrate ROIs, tile landmarks, card/digit templates and reference screens per phone |
-| Elixir + opponent models, cycle tracking, lead targeting, Tier 0, postures, rules, constraints, policy | Train the YOLO26 detector (synthetic sprites + KataCR data + your frames) |
-| Closed loop: synthetic scene → H.264 → bot → touches → scene reacts | Tune the counter table and parameters on real games |
-| Engagements, triage, loss stories, reports, DuckDB warehouse, SPRT, self-play schedule, inclusion rule, replay diff, ledger, coach guardrails | MIGraphX vs PyTorch-ROCm benchmark on your RX 7900 XT; DroidRun Portal on your phones |
+| `scrcpy-server-v2.4` client, low-delay PyAV decode (`3.8 ms` p50), touch executor, pre-roll H.264/PTS recorder, liveness + watchdog | Real-frame labeling (`droid-harness frames`) & fine-tuning for weak/missing `*_opp` classes |
+| Tracked `phone-a` calibration (`configs/device_profiles/phone-a.yaml`, `rois/`, `tiles/`, `arena/`, `templates/`, `screens/`, `towers/`) | Tower-HP digits (`digits/phone-a/`), 200+ HUD golden frames, `RESULT_DRAW`/POPUP refs, display-off thermal check |
+| `CardMatcher` (`local_znorm` + mask), HP-bar ownership + tracker, spawn grouping, `TowerStateReader`, match clock, `TorchDetector` PyTorch-ROCm (`7.90 ms` p50 / `9.83 ms` p95) | First live paired SPRT (`run-experiment --test pairs`), retention/transcoding job, live `--shadow` CLI wiring |
+| M3 data pipeline (`fetch_katacr`, `synth`, `convert-katacr`, `dataset`, `eval-detector`, `replay`) + trained epoch-40 YOLO26-n (`best.pt` epoch 36 `mAP50=0.797`) | Strategy E6/E7/E8, `coach` CLI + API client, Optuna `play_block` wiring |
+| Live `--mode ladder` verified (`ladder-vision-v3` + PyTorch-ROCm): **9W–1L–0D** (`4.01–4.36 ms` loop p99, `179 passed, 1 skipped`) | M8 ranker training on 50+ wins, M9 live advisor test, M7 two-phone self-play, M10 DroidRun Portal |
 
 ## Quick start (no phone)
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest -q                           # ~80 tests, ~10 s
+pytest -q                           # 179 passed, 1 skipped (~14 s)
 droid-harness sim --seconds 10      # synthetic closed loop; prints plays and loop latency
 droid-harness analyze --data data/sim --cards tests/fixtures/cards_min.json
 droid-harness sprt                  # sample-size table for strategy tests
@@ -56,15 +56,18 @@ droid-harness sprt                  # sample-size table for strategy tests
 5. **Run.**
    ```bash
    droid-harness run --profile configs/device_profiles/phone-a.yaml \
-     --layout configs/domains/clash_royale/rois/phone-a.yaml --tiles configs/domains/clash_royale/tiles/phone-a.yaml \
-     --templates configs/domains/clash_royale/templates/phone-a --screens configs/domains/clash_royale/screens/phone-a \
-     --strategy configs/strategies/hog-cycle-v1.yaml --cards configs/domains/clash_royale/cards.json \
-     --detector models/detector.onnx --classes models/classes.txt --matches 20 --balance-epoch 2026-11
+     --layout configs/domains/clash_royale/rois/phone-a.yaml \
+     --tiles configs/domains/clash_royale/tiles/phone-a.yaml \
+     --arena configs/domains/clash_royale/arena/phone-a.yaml \
+     --templates configs/domains/clash_royale/templates/phone-a \
+     --screens configs/domains/clash_royale/screens/phone-a \
+     --towers configs/domains/clash_royale/towers/phone-a \
+     --strategy configs/strategies/ladder-vision-v3.yaml \
+     --cards configs/domains/clash_royale/cards.json \
+     --detector models/yolo26n-cr.pt --classes models/classes.txt \
+     --async-detect --mode ladder --matches 15 --balance-epoch 2026-11
    ```
-   Without `--detector` the bot sees the HUD but no units. Vision strategies can't attack blind (they never see the
-   opponent spend elixir), so play `configs/strategies/training-camp-blind-v1.yaml` until a detector exists: it
-   pushes on elixir, hand and match phase alone. With a detector, add `--detect-every N` and/or `--async-detect`
-   to keep the loop under budget; units are extrapolated between detections.
+   Pass a `.pt` checkpoint to run `TorchDetector` (PyTorch-ROCm GPU on AMD) or `.onnx` for `OnnxDetector`. Without `--detector`, the bot sees the HUD but no units: vision strategies can't track opponent elixir without vision, so play a blind strategy such as `configs/strategies/training-camp-blind-v1.yaml`. With a detector, `--async-detect` (and optionally `--detect-every N`) keeps the battle loop at ~2.5 ms p50 / ~4.3 ms p99; units are extrapolated between detections.
 6. **Train the detector (M3, no phone needed).**
    ```bash
    python tools/fetch_katacr.py --out data/katacr --part2        # sprites (named + catch-alls), bars, arenas, real frames
@@ -118,4 +121,4 @@ docs/              plan.md, review.md
 ## Notes
 
 - **License:** Ultralytics YOLO is AGPL-3.0. Keeping this repo private is fine; before publishing it or hosting it as a service, switch the detector to an Apache-2.0 model such as RF-DETR.
-- **AMD GPU:** ONNX Runtime's ROCm EP was removed upstream; `OnnxDetector` prefers `MIGraphXExecutionProvider` when installed and falls back to CPU. Benchmark it against PyTorch-ROCm.
+- **AMD GPU:** ONNX Runtime's ROCm EP was removed upstream; pass `.pt` to use `TorchDetector` directly on PyTorch-ROCm (measured on RX 7900 XT at `640×384`: **`7.90 ms p50 / 9.83 ms p95`** vs CPU `OnnxDetector` **`26.78 ms p50 / 53.40 ms p95`**). `OnnxDetector` prefers `MIGraphXExecutionProvider` when built/installed and otherwise falls back to CPU.
