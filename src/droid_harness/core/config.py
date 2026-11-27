@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class DeviceProfile(BaseModel):
@@ -25,6 +26,19 @@ class DeviceProfile(BaseModel):
     turn_display_off: bool = False
     exec_latency_ms: float = 40.0  # measured p50 from the loopback test; used for lead targeting
     rois: str | None = None
+
+    @model_validator(mode="after")
+    def _serial_env_override(self) -> "DeviceProfile":
+        """Let the rig's ADB serial move without editing the tracked profile.
+
+        The phone drops off USB between sessions and is picked up over
+        adb-over-TCP instead (``192.168.1.190:5555``); every construction path
+        goes through this model, so the override lives here.
+        """
+        override = os.environ.get("DROID_HARNESS_SERIAL")
+        if override and self.serial != "sim":
+            self.serial = override
+        return self
 
 
 def load_profile(path: str | Path) -> DeviceProfile:

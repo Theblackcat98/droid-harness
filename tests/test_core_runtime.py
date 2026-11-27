@@ -212,3 +212,14 @@ def test_replay_diff_cli_gates_on_logged_states(tmp_path, capsys):
     assert out["states"] == 2 and out["changed"] >= 1 and out["gate"] == "fail"
     main([*args, "--expected-pct", "50"])
     assert json.loads(capsys.readouterr().out)["gate"] == "pass"
+
+
+def test_profile_serial_env_override(monkeypatch):
+    base = dict(local_port=27183, scrcpy_server_version="2.4")
+    # tracked profile value wins when no override is set
+    assert DeviceProfile(name="phone-a", serial="741be240", **base).serial == "741be240"
+    monkeypatch.setenv("DROID_HARNESS_SERIAL", "192.168.1.190:5555")
+    # every construction path (yaml load, app bundle, cli) lands here
+    assert DeviceProfile(name="phone-a", serial="741be240", **base).serial == "192.168.1.190:5555"
+    # the simulator must never be pointed at a real phone
+    assert DeviceProfile(name="sim", serial="sim", **base).serial == "sim"
