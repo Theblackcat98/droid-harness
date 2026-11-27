@@ -506,6 +506,52 @@ def cmd_tune_offline(a) -> None:
     print(json.dumps(res, indent=1, default=str))
 
 
+def cmd_autopilot(a) -> None:
+    """Farm -> diagnose -> propose -> gate -> test -> promote -> report, unattended (README §5)."""
+    from .flywheel.autopilot import Autopilot, AutopilotConfig, BotPlayer, config_dict
+
+    _fill_device_defaults(a, with_detector=True, default_async=True)
+    cfg = AutopilotConfig(
+        device=a.device, champion=a.champion, farm_mode=a.farm_mode, farm_matches=a.farm_matches,
+        testbed=a.testbed, test=a.test, max_games=a.max_games, futility_pairs=a.futility_pairs,
+        data_root=Path(a.data_root), store=Path(a.store), reports_dir=Path(a.reports),
+        value_model=Path(a.value), trials=a.trials, min_removed=a.min_removed,
+        max_collateral_pct=a.max_collateral, cycles=a.cycles, rest_s=a.rest_s,
+        notify_url=a.notify_url, publish_git=a.publish_git, publish_branch=a.publish_branch,
+        cards=Path(a.cards) if a.cards else None, arena=Path(a.arena) if a.arena else None)
+    tap = None
+    if a.ui:
+        from .ui.telemetry import TelemetryTap
+
+        tap = TelemetryTap()
+    player = BotPlayer(vars(a), store=cfg.store, db=Path(a.db), test=cfg.test, max_games=cfg.max_games,
+                       futility_pairs=cfg.futility_pairs, ui=tap)
+    pilot = Autopilot(cfg, player, log_fn=lambda m: print(f"autopilot: {m}", flush=True))
+    print(json.dumps({"autopilot": config_dict(cfg)}, default=str), flush=True)
+
+    def work() -> None:
+        for rep in pilot.run():
+            print(json.dumps({k: rep.get(k) for k in ("stamp", "champion", "farm", "experiment", "promoted")},
+                             default=str), flush=True)
+
+    if tap is None:
+        work()
+        return
+    from .domains.clash_royale.arena import Arena
+    from .domains.clash_royale.perception.grid import Layout, TileMapper
+    from .ui.launch import run_with_window, serve_live
+
+    server = serve_live(tap, player.ui_context, layout=Layout.load(a.layout), tiles=TileMapper.load(a.tiles),
+                        arena=Arena.load(a.arena) if a.arena else Arena(), replay_roots=[cfg.data_root],
+                        title="droid-harness Studio: autopilot", host=a.ui_host, port=a.ui_port, fps=a.ui_fps)
+    try:
+        run_with_window(work, server.url, native=a.native, open_browser=a.open, title=server.studio.title,
+                        on_close=lambda: (cfg.data_root.mkdir(parents=True, exist_ok=True),
+                                          (cfg.data_root / "STOP").touch()))
+    finally:
+        server.stop()
+
+
 def cmd_tune_targeted(a) -> None:
     """Speed-1, targeted: remove one failure pattern with a one- or two-knob change (todo R5)."""
     from .domains.clash_royale.arena import Arena
@@ -1015,6 +1061,33 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--max-diff-pct", dest="max_diff_pct", type=float, default=18.0)
     s.add_argument("--out", default=None, help="write single best candidate YAML here")
     s.set_defaults(fn=cmd_tune_offline)
+
+    s = sub.add_parser("autopilot", help="unattended farm -> diagnose -> propose -> test -> promote -> report loop")
+    _add_runtime_args(s, default_mode="ladder")
+    s.add_argument("--champion", default="v4", help="starting champion if configs/strategies/CHAMPION is missing")
+    s.add_argument("--farm-mode", dest="farm_mode", default="ladder")
+    s.add_argument("--farm-matches", dest="farm_matches", type=int, default=20)
+    s.add_argument("--testbed", default="ladder", help="mode for experiments: training_camp | practice | ladder")
+    s.add_argument("--test", default="pairs", choices=["pairs", "dense"])
+    s.add_argument("--max-games", dest="max_games", type=int, default=60)
+    s.add_argument("--futility-pairs", dest="futility_pairs", type=int, default=8)
+    s.add_argument("--data-root", dest="data_root", default="data/autopilot")
+    s.add_argument("--store", default="ledger/experiments.jsonl")
+    s.add_argument("--db", default="data/warehouse.duckdb")
+    s.add_argument("--reports", default="reports")
+    s.add_argument("--value", default="models/value.json")
+    s.add_argument("--trials", type=int, default=40)
+    s.add_argument("--min-removed", dest="min_removed", type=float, default=0.5)
+    s.add_argument("--max-collateral", dest="max_collateral", type=float, default=3.0)
+    s.add_argument("--cycles", type=int, default=1, help="0 = run until data-root/STOP exists")
+    s.add_argument("--rest-s", dest="rest_s", type=float, default=60.0)
+    s.add_argument("--notify-url", dest="notify_url", default=None,
+                   help="POST a one-line summary here each cycle (e.g. https://ntfy.sh/<topic>)")
+    s.add_argument("--publish-git", dest="publish_git", action="store_true",
+                   help="commit reports to --publish-branch and push (for the weekly agent job)")
+    s.add_argument("--publish-branch", dest="publish_branch", default="autopilot/reports")
+    _add_ui_args(s)
+    s.set_defaults(fn=cmd_autopilot)
 
     s = sub.add_parser("tune-targeted", help="Speed-1: remove one failure pattern with a 1-2 knob change (R5)")
     s.add_argument("--device", default="phone-a")

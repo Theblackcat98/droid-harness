@@ -377,14 +377,20 @@ class BotPlayer:
         self.base, self.store, self.db = base_args, store, db
         self.test, self.max_games, self.futility_pairs = test, max_games, futility_pairs
         self.ui = ui
+        self.current = None  # the BotRunner playing right now (the Studio follows it)
 
     def _bot(self, strategy: Path, data: Path, mode: str, matches: int):
         from ..app import BotRunner, RunConfig
 
         fields = RunConfig.__dataclass_fields__
-        kw = {k: v for k, v in self.base.items() if k in fields and v is not None}
+        kw = {k: (Path(v) if isinstance(v, str) and k not in _NON_PATHS else v)
+              for k, v in self.base.items() if k in fields and v is not None}
         kw.update(strategy=Path(strategy), data=Path(data), mode=mode, matches=matches)
-        return BotRunner(RunConfig(**kw), ui=self.ui)
+        self.current = BotRunner(RunConfig(**kw), ui=self.ui)
+        return self.current
+
+    def ui_context(self) -> dict:
+        return self.current.ui_context() if self.current is not None else {"screen": "STARTING"}
 
     def play(self, strategy: Path, matches: int, data: Path, mode: str) -> list[dict]:
         bot = self._bot(strategy, data, mode, matches)
@@ -415,6 +421,9 @@ class BotPlayer:
         run_paired(bot, runner, champion, candidate, store=self.store, db=self.db)
         return {"experiment_id": exp_id, "status": runner.status, "matches": len(runner.matches),
                 "notes": runner.notes(), "void": runner.void_reason}
+
+
+_NON_PATHS = {"mode", "opponent_id", "balance_epoch", "experiment_id", "arm", "pair_id"}
 
 
 def config_dict(cfg: AutopilotConfig) -> dict:
