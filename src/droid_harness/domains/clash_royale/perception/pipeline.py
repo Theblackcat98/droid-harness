@@ -25,12 +25,13 @@ from ..arena import Arena
 from ..cards import CardDB
 from ..elixir import ElixirModel, phase_at
 from ..opponent_model import OpponentModel
+from ..policy.levels import king_level_from_princess_hp
 from ..state import GameState, Unit
 from .cards import CardMatcher
 from .classes import flying_of, is_effect, is_generic, is_tower, split_side
 from .detector import AsyncDetector, Detector
-from .digits import DigitReader, binarize, segment
-from .grid import Layout, TileMapper
+from .digits import DigitReader, binarize, locate_number, segment
+from .grid import Layout, Roi, TileMapper
 from .hud import is_greyed, read_elixir
 from .ownership import ownership_and_hp, strong_bar_side
 from .towers import TowerStateReader
@@ -61,13 +62,14 @@ class CRPerception:
                  on_event: Callable[[dict], None] | None = None,
                  flying_foot_frac: float = 0.15, async_detect: bool = False,
                  tower_states: TowerStateReader | None = None, my_spell_window_ms: int = 3500,
-                 extrapolate_max_ms: int = 500) -> None:
+                 extrapolate_max_ms: int = 500, harvest=None) -> None:
         self.layout, self.tiles, self.cards, self.arena = layout, tiles, cards, arena
         self.matcher, self.digits, self.detector = matcher, digits, detector
         self.detect_every, self.tower_every_ms = max(1, detect_every), tower_every_ms
         self.on_my_play, self.on_event = on_my_play, on_event
         self.flying_foot_frac = flying_foot_frac  # air units: box bottom is not the ground point
         self.tower_states = tower_states
+        self.harvest = harvest  # TemplateHarvester (opt-in): crops of cards the matcher can't read yet
         self.my_spell_window_ms = my_spell_window_ms  # my spell play -> its effect on screen
         self.extrapolate_max_ms = extrapolate_max_ms
         self.async_detector: AsyncDetector | None = None
@@ -75,6 +77,7 @@ class CRPerception:
             self.async_detector = detector if isinstance(detector, AsyncDetector) else AsyncDetector(detector)
         self.start_pts_us: int | None = None
         self._generation = 0
+        self.hp_offsets: dict[str, tuple[float, float]] = {}  # learned HP-label offsets, kept across matches
         self.reset()
 
     # --- match lifecycle ----------------------------------------------------
@@ -88,6 +91,8 @@ class CRPerception:
         self._generation = getattr(self, "_generation", 0) + 1  # drops async results from a past match
         if self.tower_states is not None:
             self.tower_states.reset()
+        if getattr(self, "harvest", None) is not None:
+            self.harvest.reset()
         self.grouper = SpawnGrouper(self.cards.card_for_class)
         self.hand: list[str | None] = [None] * 4
         self.hand_fresh: list[bool] = []
@@ -96,8 +101,14 @@ class CRPerception:
         self.next_card: str | None = None
         self.towers: dict[str, int] = {}
         self.tower_max_hp: dict[str, int] = {}
+        self.tower_read_counts: Counter = Counter()  # successful HP reads per tower (coverage)
+        self._hp_fails: Counter = Counter()  # consecutive failed reads per tower
+        self._hp_search_ms: dict[str, int] = {}
+        self._hp_search_misses: Counter = Counter()
+        self._hp_rises: dict[str, list[int]] = {}
         self.last_detections: list[dict] = []
         self._tower_read_ms = -10**9
+        self._tower_reads = 0  # tower read cycles this match
         self._clock_read_ms = -10**9
         self._clock_match_t_s: float | None = None
         self.clock_activity: float | None = None
@@ -185,6 +196,10 @@ class CRPerception:
         state.clock_drift_s = clock_drift_s
         state.clock_activity = self.clock_activity
         state.tower_max_hp = dict(self.tower_max_hp)
+        state.my_king_level = king_level_from_princess_hp(
+            max(self.tower_max_hp.get("me_left", 0), self.tower_max_hp.get("me_right", 0)))
+        state.opp_king_level = king_level_from_princess_hp(
+            max(self.tower_max_hp.get("opp_left", 0), self.tower_max_hp.get("opp_right", 0)))
         return state
 
     # --- pieces ---------------------------------------------------------------
@@ -199,6 +214,8 @@ class CRPerception:
         for i, roi in enumerate(self.layout.hand):
             crop = roi.crop(img)
             r = self.matcher.match(crop)
+            if self.harvest is not None:
+                self.harvest.observe(i, crop, r.card if r.accepted else None, t_ms, is_greyed(crop))
             if not r.accepted:
                 unreadable.append(i)
                 continue
@@ -234,6 +251,8 @@ class CRPerception:
             if best is None:
                 break
             _, slot_i, old_card = best
+            if self.harvest is not None:
+                self.harvest.expect(slot_i, self.next_card, t_ms)  # the next card refills this slot
             self._my_play(old_card, slot_i, t_ms, hud=hud)
             self._slot_spent[slot_i] = True
             self._slot_spent_ms[slot_i] = t_ms
@@ -484,19 +503,61 @@ class CRPerception:
         if self.digits is None:
             return
         hp_rois = self.layout.tower_hp or self.layout.towers
+        self._tower_reads += 1
+        searched = False
         for name, roi in hp_rois.items():
             if name in self._destroyed:
                 continue  # destruction is permanent; don't let a digit misread revive it
-            hp = self.digits.read(roi.crop(img))
+            off = self.hp_offsets.get(name)
+            use = roi if off is None else Roi(roi.x0 + off[0], roi.y0 + off[1], roi.x1 + off[0], roi.y1 + off[1])
+            hp = self.digits.read(use.crop(img))
             if hp is None or hp <= 0 or hp > 9999:
-                continue
+                self._hp_fails[name] += 1
+                # The calibrated region can sit a few pixels off the label (labels move between
+                # arenas/modes; the opponent's were ~10 px low on phone-a). After two misses, search
+                # a band around it once per 2 s and lock the offset that reads cleanly.
+                # Back off when a label simply isn't there (an unactivated King Tower): 2 s, 4 s, ... 20 s.
+                wait_ms = min(20_000, 2000 * 2 ** self._hp_search_misses[name])
+                if (not searched and self._hp_fails[name] >= 2
+                        and self._last_t_ms - self._hp_search_ms.get(name, -10**9) >= wait_ms):
+                    searched = True  # at most one ~15 ms search per tower read cycle
+                    self._hp_search_ms[name] = self._last_t_ms
+                    mx = self.tower_max_hp.get(name)
+                    v, offset, _ = locate_number(img, roi, self.digits,
+                                                 plausible=lambda x, mx=mx: 100 <= x <= (mx + 5 if mx else 9999))
+                    if v is not None:
+                        self._hp_search_misses[name] = 0
+                        self.hp_offsets[name] = offset
+                        # Princess labels on one side share a row: give the twin the same vertical offset.
+                        side, _, pos = name.partition("_")
+                        twin = f"{side}_{'right' if pos == 'left' else 'left'}" if pos in ("left", "right") else None
+                        if twin and twin not in self.hp_offsets:
+                            self.hp_offsets[twin] = (0.0, offset[1])
+                        hp = v
+                    else:
+                        self._hp_search_misses[name] += 1
+                if hp is None or hp <= 0 or hp > 9999:
+                    continue
+            self._hp_fails[name] = 0
             prev = self.towers.get(name)
             if prev is None and self._last_t_ms <= 5000 and hp < 300:
                 continue  # ignore 1-2 digit intro/crown artifacts on undamaged start towers
             if prev is not None and hp > prev + 5:
-                warns.append("tower_hp_increase")
-                continue
+                # HP never rises. Either this read is wrong, or an earlier low read was: if the
+                # same higher value repeats three times, the earlier one was the misread.
+                rises = (self._hp_rises.get(name, []) + [hp])[-3:]
+                self._hp_rises[name] = rises
+                if len(rises) == 3 and max(rises) - min(rises) <= 10:
+                    self._hp_rises[name] = []
+                    self.events.append({"kind": "tower_hp_corrected", "tower": name, "from": prev, "to": hp,
+                                        "t_ms": self._last_t_ms})
+                else:
+                    warns.append("tower_hp_increase")
+                    continue
+            else:
+                self._hp_rises.pop(name, None)
             self.towers[name] = hp
+            self.tower_read_counts[name] += 1
             self.tower_max_hp[name] = max(self.tower_max_hp.get(name, 0), hp)
         # Seed unactivated King Tower baseline HP from observed Princess Tower max HP so
         # engagements and emergency_defend know King HP before its bar appears on screen.

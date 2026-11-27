@@ -244,6 +244,73 @@ def cmd_recover(a) -> None:
         raise SystemExit(f"did not reach HOME within {a.timeout:.0f}s")
 
 
+def cmd_train_value(a) -> None:
+    from .learn.value_model import train
+
+    m = train([Path(p) for p in a.data], l2=a.l2, every=a.every)
+    out = Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(m, indent=1))
+    print(json.dumps({"out": str(out), "matches": m["matches"], "base_rate": m["base_rate"],
+                      "val": {k: v for k, v in m["metrics"]["val"].items() if k != "calibration"},
+                      "top_weights": m["top_weights"]}, indent=1))
+
+
+def cmd_check_classes(a) -> None:
+    from .domains.clash_royale.cards import CardDB
+    from .domains.clash_royale.perception.classes import load_class_names
+    from .learn.unseen_eval import check_classes
+
+    _fill_device_defaults(a, with_detector=False)
+    rep = check_classes(load_class_names(a.classes), CardDB.load(a.cards))
+    print(json.dumps(rep, indent=1))
+    if rep["unresolved"]:
+        raise SystemExit(1)
+
+
+def cmd_eval_unseen(a) -> None:
+    from .domains.clash_royale.perception.classes import load_class_names
+    from .domains.clash_royale.perception.detector import load_detector
+    from .learn.unseen_eval import unseen_report
+
+    det = load_detector(a.model, a.classes, conf=a.conf)
+    names = load_class_names(a.classes) if a.classes else list(det.class_names)
+    rep = unseen_report(det, a.part2, names, alias_path=a.alias, generic_path=a.generic, limit=a.limit)
+    print(json.dumps(rep, indent=1))
+
+
+def cmd_promote_templates(a) -> None:
+    from .app import resolve_device_bundle
+    from .domains.clash_royale.perception.harvest import promote
+
+    to = a.to or resolve_device_bundle(a.device, with_detector=False)["templates"]
+    rep = promote(a.source, to, min_crops=a.min_crops, min_agreement=a.min_agreement, dry_run=a.dry_run)
+    print(json.dumps(rep, indent=1))
+
+
+def cmd_hp_audit(a) -> None:
+    """Tower-HP label coverage on recorded video, fixed regions vs the offset search."""
+    from .app import load_digits, resolve_device_bundle
+    from .domains.clash_royale.hp_audit import audit_match, suggest_rois
+    from .domains.clash_royale.perception.grid import Layout
+
+    bundle = resolve_device_bundle(a.device, with_detector=False)
+    layout = Layout.load(a.layout or bundle["layout"])
+    digits = load_digits(Path(a.digits) if a.digits else bundle["digits"])
+    if digits is None:
+        raise SystemExit("need 0.png..9.png digit templates (--digits)")
+    root = Path(a.data)
+    dirs = [root] if (root / "stream.h264").exists() else sorted(d for d in root.iterdir() if (d / "stream.h264").exists())
+    if a.limit:
+        dirs = dirs[: a.limit]
+    reports = []
+    for d in dirs:
+        r = audit_match(d, layout, digits, every_ms=a.every_ms, crops_out=Path(a.crops) if a.crops else None)
+        reports.append(r)
+        print(json.dumps(r))
+    print(json.dumps({"matches": len(reports), "suggested_tower_hp_rois": suggest_rois(reports, layout)}, indent=1))
+
+
 def _fill_device_defaults(a, *, with_detector: bool = True, default_async: bool = False) -> None:
     from .app import resolve_device_bundle, resolve_strategy_path
 
@@ -274,7 +341,7 @@ def _build_run_config(a):
 def cmd_doctor(a) -> None:
     from .app import run_doctor
 
-    rep = run_doctor(device=a.device, strategy=a.strategy, live=a.live)
+    rep = run_doctor(device=a.device, strategy=a.strategy, live=a.live, mode=a.mode)
     print(json.dumps(rep, indent=1, default=str))
     if not rep["ok"]:
         raise SystemExit(1)
@@ -322,7 +389,8 @@ def cmd_inspect(a) -> None:
     if missing:
         raise SystemExit(f"no such directory: {', '.join(missing)}")
     server = start_replay_studio(roots, host=a.ui_host, port=a.ui_port, cards=Path(cards) if cards else None,
-                                 strategies=Path(a.strategies), ledger=Path(a.store), initial_match=a.match)
+                                 strategies=Path(a.strategies), ledger=Path(a.store), initial_match=a.match,
+                                 value=Path(a.value) if a.value else None)
     n = len(server.studio.library.refresh())
     print(f"inspect: {n} recorded matches under {', '.join(map(str, roots))}", flush=True)
     try:
@@ -369,7 +437,12 @@ def cmd_digest(a) -> None:
     _fill_device_defaults(a, with_detector=False)
     cards = CardDB.load(a.cards)
     arena = Arena.load(a.arena) if getattr(a, "arena", None) else Arena()
-    dig = build_digest(a.data, cards, arena, ledger_path=a.store, max_loss_stories=a.max_stories)
+    vm = None
+    if getattr(a, "value", None) and Path(a.value).exists():
+        from .learn.value_model import ValueModel
+
+        vm = ValueModel.load(a.value)
+    dig = build_digest(a.data, cards, arena, ledger_path=a.store, max_loss_stories=a.max_stories, value_model=vm)
     md = render_agent_markdown(dig)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -433,6 +506,28 @@ def cmd_tune_offline(a) -> None:
     print(json.dumps(res, indent=1, default=str))
 
 
+def cmd_tune_targeted(a) -> None:
+    """Speed-1, targeted: remove one failure pattern with a one- or two-knob change (todo R5)."""
+    from .domains.clash_royale.arena import Arena
+    from .domains.clash_royale.cards import CardDB
+    from .flywheel.tuning.targeted import scan_patterns, search_targeted
+
+    _fill_device_defaults(a, with_detector=False)
+    cards = CardDB.load(a.cards)
+    arena = Arena.load(a.arena) if getattr(a, "arena", None) else Arena()
+    root = Path(a.data)
+    dirs = sorted({p.parent for p in root.rglob("decisions.jsonl")})
+    if a.scan:
+        print(json.dumps(scan_patterns(a.champion, dirs, cards, arena, max_states=a.max_states), indent=1))
+        return
+    res = search_targeted(a.champion, dirs, cards, arena, pattern=a.pattern, trials=a.trials, seed=a.seed,
+                          min_removed=a.min_removed, max_collateral_pct=a.max_collateral, max_states=a.max_states,
+                          out_yaml=a.out)
+    print(json.dumps(res, indent=1, default=str))
+    if a.out and not res.get("candidate_yaml"):
+        raise SystemExit(2)  # nothing passed: no candidate written
+
+
 def cmd_sprt(a) -> None:
     from .flywheel.eval import sprt as S
 
@@ -448,7 +543,6 @@ def cmd_experiment(a) -> None:
     """Persistent-session champion/candidate paired evaluation (M5 + Stage-A dense futility)."""
     from .app import BotRunner
     from .domains.clash_royale.policy.strategy import load_strategy
-    from .flywheel import warehouse
     from .flywheel.eval.runner import ExperimentConfig, ExperimentRunner
     from .flywheel.ledger import Ledger
 
@@ -476,36 +570,13 @@ def cmd_experiment(a) -> None:
         champion_id=champ_sid, candidate_id=cand_sid, test=a.test,
         p0=a.p0, p1=a.p1, alpha=a.alpha, beta=a.beta,
         game_version=game_version or "", balance_epoch=a.balance_epoch or "",
-        max_games=a.max_games, futility_min_pairs=a.futility_pairs))
+        max_games=a.max_games, futility_min_pairs=a.futility_pairs, dense_tau=a.dense_tau,
+        account_levels_id=bot.account.levels_id if bot.account else ""))
 
-    arm0, pid0 = runner.next_assignment()
-    bot.set_strategy(a.champion if arm0 == "champion" else a.candidate,
-                     experiment_id=exp_id, arm=arm0, pair_id=pid0)
-
-    def _on_match_done(s: dict) -> None:
-        if s.get("experiment_id") != exp_id:
-            return
-        r = runner.record(s)
-        print(json.dumps({
-            "match": s.get("match_id"), "arm": s.get("arm"), "pair": s.get("pair_id"),
-            "result": s.get("result"), "sprt": r.decision, "llr": round(r.llr, 3),
-            "notes": runner.notes(),
-        }))
-        runner.write_ledger(a.store)
-        try:
-            con = warehouse.connect(a.db)
-            runner.write_warehouse(con)
-            con.close()
-        except Exception as e:  # warehouse must never stop the loop
-            print(f"warehouse write failed: {e}")
-        if not runner.done:
-            nxt_arm, nxt_pid = runner.next_assignment()
-            bot.set_strategy(a.champion if nxt_arm == "champion" else a.candidate,
-                             experiment_id=exp_id, arm=nxt_arm, pair_id=nxt_pid)
+    from .flywheel.eval.live import run_paired
 
     def _play(stop_when=lambda: False) -> None:
-        bot.run(stop_when=lambda: stop_when() or runner.done or len(runner.matches) >= a.max_games * 2,
-                on_summary=_on_match_done)
+        run_paired(bot, runner, a.champion, a.candidate, store=a.store, db=a.db, stop=stop_when)
 
     if tap is None:
         _play()
@@ -707,9 +778,12 @@ def _add_runtime_args(s, *, default_mode: str = "training_camp", require_strateg
                    help="force synchronous detection on `play`/`experiment`")
     s.add_argument("--prune-win-video", dest="prune_win_video", action="store_true",
                    help="delete raw stream.h264 on clean completed wins immediately after match end")
-    s.add_argument("--mode", default=default_mode, choices=["training_camp", "friendly", "ladder"])
+    s.add_argument("--mode", default=default_mode,
+                   choices=["training_camp", "ladder", "practice", "friendly", "friendly_host", "friendly_guest"])
     s.add_argument("--opponent-id", dest="opponent_id")
     s.add_argument("--balance-epoch", dest="balance_epoch", default="2026-11")
+    s.add_argument("--harvest-templates", dest="harvest_templates", default=None,
+                   help="save hand crops of cards the matcher can't read yet (then: promote-templates)")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -728,6 +802,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--device", default="phone-a")
     s.add_argument("--strategy", default="v6")
     s.add_argument("--live", action="store_true", help="also probe connected ADB device state")
+    s.add_argument("--mode", default=None, help="also check the buttons/screens a mode's menu flow needs")
     s.set_defaults(fn=cmd_doctor)
 
     s = sub.add_parser("recover", help="click any Clash Royale screen back to HOME (stuck loss/popup recovery)")
@@ -767,6 +842,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--device", default="phone-a")
     s.add_argument("--cards", default=None, help="card DB for costs (default: the device bundle's cards.json)")
     s.add_argument("--strategies", default="configs/strategies", help="resolves strategy ids to names/params")
+    s.add_argument("--value", default="models/value.json", help="win-probability model (train-value) for the tape")
     s.add_argument("--store", default="ledger/experiments.jsonl")
     _add_ui_args(s, always_on=True)
     s.set_defaults(fn=cmd_inspect)
@@ -909,6 +985,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--max-stories", dest="max_stories", type=int, default=8)
     s.add_argument("--out", default="data/agent_digest.md")
     s.add_argument("--json-out", dest="json_out", default=None)
+    s.add_argument("--value", default="models/value.json", help="win-probability model (adds swing moments)")
     s.set_defaults(fn=cmd_digest)
 
     s = sub.add_parser("retain", help="compact clean wins (delete stream.h264) while preserving loss keyframes")
@@ -939,6 +1016,24 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--out", default=None, help="write single best candidate YAML here")
     s.set_defaults(fn=cmd_tune_offline)
 
+    s = sub.add_parser("tune-targeted", help="Speed-1: remove one failure pattern with a 1-2 knob change (R5)")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--champion", default="v6")
+    s.add_argument("--data", default="data/matches", help="searched recursively for decisions.jsonl")
+    s.add_argument("--cards", default=None)
+    s.add_argument("--arena", default=None)
+    s.add_argument("--pattern", default="auto", help="auto (the champion's most frequent) or one of: opening_throw, "
+                   "bad_counter_timing, over_defend_bleed, wincon_starved, spell_inefficiency")
+    s.add_argument("--scan", action="store_true", help="only count the champion's hits per pattern")
+    s.add_argument("--trials", type=int, default=40)
+    s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--min-removed", dest="min_removed", type=float, default=0.5)
+    s.add_argument("--max-collateral", dest="max_collateral", type=float, default=3.0,
+                   help="max %% of other states whose decision may change")
+    s.add_argument("--max-states", dest="max_states", type=int, default=6000)
+    s.add_argument("--out", default=None, help="write the best passing candidate here (a new file)")
+    s.set_defaults(fn=cmd_tune_targeted)
+
     s = sub.add_parser("sprt", help="SPRT decision, or the sample-size table with no results")
     s.add_argument("--wins", type=int)
     s.add_argument("--losses", type=int)
@@ -957,7 +1052,10 @@ def main(argv: list[str] | None = None) -> None:
         s.add_argument("--title", default="")
         s.add_argument("--hypothesis", default="")
         s.add_argument("--proposer", default="human")
-        s.add_argument("--test", default="pairs", choices=["pairs", "h2h", "fixed", "sprt_h2h", "sprt_paired"])
+        s.add_argument("--test", default="pairs", choices=["pairs", "dense", "h2h", "fixed", "sprt_h2h", "sprt_paired"],
+                       help="pairs: SPRT on discordant pairs; dense: always-valid test on the paired dense margin")
+        s.add_argument("--dense-tau", dest="dense_tau", type=float, default=0.5,
+                       help="dense test: the paired margin difference you care about (mixture scale)")
         s.add_argument("--p0", type=float, default=0.5)
         s.add_argument("--p1", type=float, default=0.58)
         s.add_argument("--alpha", type=float, default=0.05)
@@ -989,6 +1087,48 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--baseline", help="a previous --out to diff against")
     s.add_argument("--tol-ms", dest="tol_ms", type=int, default=600)
     s.set_defaults(fn=cmd_replay)
+
+    s = sub.add_parser("train-value", help="win-probability model from finished matches (Studio line, digest swings)")
+    s.add_argument("data", nargs="*", default=["data"], help="folders searched for matches")
+    s.add_argument("--out", default="models/value.json")
+    s.add_argument("--l2", type=float, default=1.0)
+    s.add_argument("--every", type=int, default=4, help="use every Nth logged state")
+    s.set_defaults(fn=cmd_train_value)
+
+    s = sub.add_parser("check-classes", help="detector classes that don't map to a card in cards.json")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--classes", default="models/classes.txt")
+    s.add_argument("--cards", default=None)
+    s.set_defaults(fn=cmd_check_classes)
+
+    s = sub.add_parser("eval-unseen", help="what the detector does with cards it has no name for (R6)")
+    s.add_argument("--model", required=True)
+    s.add_argument("--classes", default=None)
+    s.add_argument("--part2", required=True, help="KataCR labeled frames: data/katacr/_repo/images/part2")
+    s.add_argument("--alias", default="models/katacr_alias.json", help="named cards of THIS model")
+    s.add_argument("--generic", default="models/katacr_generic.json")
+    s.add_argument("--conf", type=float, default=0.35)
+    s.add_argument("--limit", type=int, default=0, help="stop after N frames with unseen units")
+    s.set_defaults(fn=cmd_eval_unseen)
+
+    s = sub.add_parser("promote-templates", help="turn harvested hand crops into card templates (after a look)")
+    s.add_argument("--from", dest="source", default="data/harvest")
+    s.add_argument("--to", default=None, help="templates dir (default: the device bundle's)")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--min-crops", dest="min_crops", type=int, default=3)
+    s.add_argument("--min-agreement", dest="min_agreement", type=float, default=0.6)
+    s.add_argument("--dry-run", dest="dry_run", action="store_true")
+    s.set_defaults(fn=cmd_promote_templates)
+
+    s = sub.add_parser("hp-audit", help="tower-HP label coverage on recorded video (fixed regions vs search)")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--data", default="data/matches", help="a match dir or a folder of matches with stream.h264")
+    s.add_argument("--layout", default=None)
+    s.add_argument("--digits", default=None)
+    s.add_argument("--every-ms", dest="every_ms", type=int, default=1000)
+    s.add_argument("--limit", type=int, default=0)
+    s.add_argument("--crops", default=None, help="save a few matched label crops here")
+    s.set_defaults(fn=cmd_hp_audit)
 
     s = sub.add_parser("replay-diff", help="candidate vs champion on logged states (promotion gate 2)")
     s.add_argument("--device", default="phone-a")

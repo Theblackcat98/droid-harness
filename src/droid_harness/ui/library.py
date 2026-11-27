@@ -148,12 +148,14 @@ class VideoCache:
 
 class MatchLibrary:
     def __init__(self, roots: list[str | Path], *, strategies: StrategyIndex | None = None,
-                 costs: CostBook | None = None, root: Path = Path("."), max_videos: int = 2) -> None:
+                 costs: CostBook | None = None, root: Path = Path("."), max_videos: int = 2,
+                 value_model=None) -> None:
         self.roots = [Path(r) for r in roots]
         self.strategies = strategies or StrategyIndex(root / "configs/strategies")
         self.costs = costs or CostBook(None)
         self.root = root
         self.max_videos = max_videos
+        self.value_model = value_model  # learn.value_model.ValueModel: adds win_prob per moment
         self._index: dict[str, Path] = {}
         self._videos: OrderedDict[str, VideoCache] = OrderedDict()
         self._lock = threading.Lock()
@@ -180,7 +182,7 @@ class MatchLibrary:
         s = _read_json(d / "summary.json")
         m = _read_json(d / "meta.json")
         info = {**m, **s}
-        strat = self.strategies.get(info.get("strategy_id"))
+        strat = self.strategies.get(info.get("strategy_id"), info.get("strategy_name"))
         return {
             "id": mid, "group": mid.rsplit("/", 1)[0] if "/" in mid else "", "match_id": info.get("match_id") or d.name,
             "result": info.get("result"), "status": info.get("status"),
@@ -211,11 +213,26 @@ class MatchLibrary:
         meta = _read_json(d / "meta.json")
         info = {**meta, **summary}
         records = sorted(_read_jsonl(d / "decisions.jsonl"), key=lambda r: r.get("t_ms") or 0)
-        strat = self.strategies.get(info.get("strategy_id"))
+        strat = self.strategies.get(info.get("strategy_id"), info.get("strategy_name"))
         params = strat[1] if strat else None
         maxes = running_tower_max(records)
         timeline = [snapshot_from_record(r, params=params, costs=self.costs, tower_max=mx)
                     for r, mx in zip(records, maxes, strict=True)]
+        if self.value_model is not None:
+            probs = self.value_model.predict_many([r.get("state") or {"t_ms": r.get("t_ms", 0)} for r in records])
+            # Per-state predictions jitter with every unit that appears; show a 2 s centered mean.
+            times = [s["t_ms"] for s in timeline]
+            lo = 0
+            csum = [0.0]
+            for p in probs:
+                csum.append(csum[-1] + p)
+            hi = 0
+            for i, snap in enumerate(timeline):
+                while times[lo] < times[i] - 1000:
+                    lo += 1
+                while hi < len(times) and times[hi] <= times[i] + 1000:
+                    hi += 1
+                snap["win_prob"] = round((csum[hi] - csum[lo]) / max(1, hi - lo), 3)
         events = list(summary.get("events") or [])
         summary_out = {k: v for k, v in summary.items() if k != "events"}
         return {

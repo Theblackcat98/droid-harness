@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..candidate import Candidate
+from ..counter_prior import effectiveness
 from . import RuleContext
 
 SERIOUS_SOLO_THREATS = {
@@ -47,7 +48,7 @@ class DefendLaneThreat:
                 card = ctx.cards[key]
                 if not card.can_hit(th.unit.flying):
                     continue
-                eff = p.counters.get((key, th.kind), 0.0)
+                eff = effectiveness(p, key, th.kind, ctx.cards, flying=th.unit.flying)
                 if eff <= 0:
                     continue
                 t_exec = ctx.placement.timing(card, th, s)

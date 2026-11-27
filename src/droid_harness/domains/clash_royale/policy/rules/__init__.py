@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from .....core.runtime.intent_bus import Intent
@@ -11,6 +11,7 @@ from ...arena import Arena
 from ...cards import CardDB
 from ...state import GameState
 from ..candidate import Candidate
+from ..levels import Levels
 from ..placement import Placement
 from ..strategy import Params
 
@@ -20,6 +21,7 @@ class RuleContext:
     cards: CardDB
     arena: Arena
     placement: Placement
+    levels: Levels = field(default_factory=Levels)  # your card levels (account file)
 
 
 class Rule(Protocol):

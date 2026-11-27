@@ -66,7 +66,7 @@ def run_study(base_strategy: str | Path, play_block: Callable[[Path], list[dict]
         results = play_block(path)  # list of match summaries
         score = 0.0
         for i, m in enumerate(results):
-            score += (m.get("my_crowns", 0) - m.get("opp_crowns", 0)) + m.get("tower_hp_diff", 0) / 1000
+            score += (m.get("my_crowns", 0) - m.get("opp_crowns", 0)) + (m.get("tower_hp_diff") or 0) / 1000
             trial.report(score / (i + 1), i)
             if trial.should_prune():
                 raise optuna.TrialPruned()

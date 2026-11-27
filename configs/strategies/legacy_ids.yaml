@@ -1,0 +1,19 @@
+# Strategy IDs hash the policy source, so every policy change gives every strategy a new ID.
+# Matches recorded under older policy code keep their old ID; this maps the ones we know back
+# to the strategy file, so the Studio and reports can name them. New matches also record
+# `strategy_name` in meta.json, which makes this unnecessary going forward.
+# Policy source as of d1afe00 (2026-11-27, before the levels/counter-prior release):
+639c09fe0c3a: ladder-vision-v4
+ab2d9564c216: ladder-vision-v6
+983615fec397: ladder-vision-v5
+e07b0d038d29: ladder-vision-v3
+e329b8693b7b: ladder-vision-v2
+46701e965a6a: ladder-vision-v1
+d718599b3b13: hog-cycle-v1
+468f42756278: training-camp-blind-v1
+35dd6d83cb61: training-camp-v1
+787acb46f8c8: training-camp-v2
+98b3214bd603: training-camp-v3
+3e41671ff61b: training-camp-v3-e3-tank-ahead
+d3ed5cb61098: training-camp-v3-e4-cycle-gate
+4aa74971971a: training-camp-v3-e5-reserve

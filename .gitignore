@@ -11,6 +11,9 @@ models/*
 !models/classes.txt
 !models/katacr_alias.json
 !models/katacr_generic.json
+!models/classes-next.txt
+!models/katacr_alias-next.json
+!models/katacr_generic-next.json
 *.onnx
 *.h264
 # per-phone and locally built config

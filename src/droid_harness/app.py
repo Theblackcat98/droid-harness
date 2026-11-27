@@ -23,6 +23,7 @@ from .core.runtime.orchestrator import BrainLoop
 from .core.runtime.watchdog import AppWatchdog
 from .core.telemetry.recorder import Recorder
 from .core.transport.scrcpy_bridge import ScrcpyClient
+from .domains.clash_royale.account import check_strategy, load_account
 from .domains.clash_royale.actions import CRActionMapper
 from .domains.clash_royale.arena import Arena
 from .domains.clash_royale.cards import CardDB
@@ -32,6 +33,7 @@ from .domains.clash_royale.perception.classes import missing_unit_classes
 from .domains.clash_royale.perception.detector import load_detector, warmup_once
 from .domains.clash_royale.perception.digits import DigitReader
 from .domains.clash_royale.perception.grid import Layout, Roi, TileMapper
+from .domains.clash_royale.perception.harvest import TemplateHarvester
 from .domains.clash_royale.perception.pipeline import CRPerception
 from .domains.clash_royale.perception.screens import ScreenClassifier
 from .domains.clash_royale.perception.towers import TowerStateReader
@@ -76,6 +78,7 @@ class RunConfig:
     # `droid-harness watch`: perceive and decide, but never touch the phone (no taps, no BACK,
     # no app restarts). You play; the Studio shows what the bot sees and would do.
     observe_only: bool = False
+    harvest_templates: Path | None = None  # save crops of unreadable new cards here (promote-templates)
 
 
 def resolve_strategy_path(strategy: str | Path, root: Path = Path(".")) -> Path:
@@ -85,6 +88,10 @@ def resolve_strategy_path(strategy: str | Path, root: Path = Path(".")) -> Path:
         return p
     s = str(strategy).strip()
     strat_dir = root / "configs/strategies"
+    if s == "champion" and (strat_dir / "CHAMPION").exists():  # the autopilot's current best
+        s = (strat_dir / "CHAMPION").read_text().strip()
+        if (strat_dir / s).exists():
+            return strat_dir / s
     candidates = [
         strat_dir / f"{s}.yaml",
         strat_dir / f"ladder-vision-{s}.yaml",
@@ -128,7 +135,7 @@ def resolve_device_bundle(device: str = "phone-a", root: Path = Path("."), *,
 
 
 def run_doctor(*, device: str = "phone-a", strategy: str | Path = "v6",
-               root: Path = Path("."), live: bool = False) -> dict[str, Any]:
+               root: Path = Path("."), live: bool = False, mode: str | None = None) -> dict[str, Any]:
     """Pre-flight verification of calibration, templates, digits, detector, disk, and ADB."""
     bundle = resolve_device_bundle(device, root=root, with_detector=True)
     strat_path = resolve_strategy_path(strategy, root=root)
@@ -141,6 +148,27 @@ def run_doctor(*, device: str = "phone-a", strategy: str | Path = "v6",
         checks[key] = str(p) if ok else f"MISSING ({p})"
         if not ok:
             problems.append(f"missing required {key}: {p}")
+
+    if mode:
+        from .domains.clash_royale.menus import required_for
+
+        layout_p = bundle["layout"]
+        raw = yaml.safe_load(layout_p.read_text()) if layout_p and layout_p.exists() else {}
+        flows = {mode: {**DEFAULT_FLOWS.get(mode, {}), **((raw.get("flows") or {}).get(mode) or {})}}
+        need_buttons, need_screens = required_for(mode, flows)
+        have_buttons = set((raw.get("buttons") or {}).keys())
+        sdir = bundle["screens"]
+        have_screens = {p.stem.split("__")[0] for p in sdir.glob("*.png")} if sdir and sdir.exists() else set()
+        slots = {b for b in need_buttons if b.startswith("practice_slot_")}
+        miss_b = sorted((need_buttons - slots) - have_buttons)
+        if slots and not slots & have_buttons:
+            miss_b.append("practice_slot_0 (at least one battle-log entry)")
+        miss_s = sorted(need_screens - have_screens)
+        checks["mode"] = {"mode": mode, "missing_buttons": miss_b, "missing_screens": miss_s}
+        if mode not in DEFAULT_FLOWS:
+            problems.append(f"unknown mode {mode!r}")
+        elif miss_b or miss_s:
+            problems.append(f"mode {mode}: calibrate buttons {miss_b} and screens {miss_s}")
 
     for opt_key in ("arena", "towers", "digits"):
         p = bundle[opt_key]
@@ -157,6 +185,12 @@ def run_doctor(*, device: str = "phone-a", strategy: str | Path = "v6",
     if strat_path.exists():
         spec, params, sid = load_strategy(strat_path)
         checks["strategy"] = {"name": spec.strategy, "id": sid, "path": str(strat_path), "deck": params.deck}
+        if bundle["profile"] and bundle["profile"].exists():
+            account = yaml.safe_load(bundle["profile"].read_text()).get("account")
+            cards_db = CardDB.load(bundle["cards"]) if bundle["cards"] and bundle["cards"].exists() else None
+            acct = load_account(account, root)
+            checks["account"] = check_strategy(params, cards_db, acct)
+            problems += [f"account: {p}" for p in checks["account"]["problems"]]
         tdir = bundle["templates"]
         if tdir and tdir.exists():
             matcher = CardMatcher.load(tdir)
@@ -234,6 +268,9 @@ class BotRunner:
         self.ui_experiment: Callable[[], dict | None] | None = None
         self.profile = DeviceProfile(**{**yaml.safe_load(cfg.profile.read_text()), "name": cfg.profile.stem})
         self.cards = CardDB.load(cfg.cards)
+        # Your card/King levels (configs/accounts/<account>.yaml): recorded on every match and used by
+        # strategies that set level_aware. Missing file = levels unknown (nothing changes).
+        self.account = load_account(self.profile.account)
         self.arena = Arena.load(cfg.arena) if cfg.arena else Arena()
         self.layout = Layout.load(cfg.layout)
         self.tiles = TileMapper.load(cfg.tiles)
@@ -255,16 +292,26 @@ class BotRunner:
                                        matcher=CardMatcher.load(cfg.templates), digits=load_digits(cfg.digits),
                                        detector=self.detector, on_my_play=self._on_my_play,
                                        detect_every=cfg.detect_every, async_detect=cfg.async_detect,
-                                       tower_states=TowerStateReader.load(cfg.towers) if cfg.towers else None)
+                                       tower_states=TowerStateReader.load(cfg.towers) if cfg.towers else None,
+                                       harvest=TemplateHarvester(cfg.harvest_templates)
+                                       if cfg.harvest_templates else None)
         self.completed = 0
         self._match_summaries: list[dict] = []
         self._on_summary_hook: Callable[[dict], None] | None = None
         self.findings: queue.Queue[Finding] = queue.Queue()
         self.game_version = None
         self.session = CRSession(
-            screens=self.screens, menus=MenuNavigator(self.layout.buttons, dict(DEFAULT_FLOWS[cfg.mode])),
+            screens=self.screens, menus=MenuNavigator(self.layout.buttons, self._flow(cfg)),
             perception=self.perception, policy=self.policy, mapper=CRActionMapper(self.layout, self.tiles),
             recorder=self.recorder, meta_factory=self._meta, on_match_end=self._on_end)
+
+    @staticmethod
+    def _flow(cfg: RunConfig) -> dict[str, list[str]]:
+        """The mode's default flow, overridden per screen by a ``flows:`` block in the layout YAML."""
+        flow = dict(DEFAULT_FLOWS[cfg.mode])
+        raw = yaml.safe_load(Path(cfg.layout).read_text()) or {}
+        flow.update((raw.get("flows") or {}).get(cfg.mode) or {})
+        return flow
 
     def _on_my_play(self, card: str, t_ms: int) -> None:
         self.session.policy.confirm_played(card, t_ms)
@@ -292,7 +339,8 @@ class BotRunner:
             log.warning("no detector and strategy %s is not blind: the policy can't see units and will "
                         "rarely attack; use configs/strategies/training-camp-blind-v1.yaml", sp.name)
         pol = CRPolicy(self.cards, self.arena, params,
-                       exec_latency_s=self.profile.exec_latency_ms / 1000, ranker=ranker)
+                       exec_latency_s=self.profile.exec_latency_ms / 1000, ranker=ranker,
+                       levels=self.account.policy_levels() if self.account else None)
         self._policy_cache[sp] = (pol, sid, params)
         return pol, sid, params
 
@@ -304,6 +352,12 @@ class BotRunner:
         self.cfg.experiment_id = experiment_id
         self.cfg.arm = arm
         self.cfg.pair_id = pair_id
+        if pair_id:
+            # Practice gauntlet: both arms of a pair face the same battle-log opponent.
+            digits = "".join(ch for ch in pair_id.rsplit("-p", 1)[-1] if ch.isdigit())
+            self.session.menus.slot_index = int(digits) if digits else 0
+            if self.cfg.mode == "practice":
+                self.cfg.opponent_id = f"practice:slot{self.session.menus.slot_index}"
         self.policy, self.strategy_id, self.params = pol, sid, params
         self.session.policy = pol
         return sid
@@ -311,7 +365,9 @@ class BotRunner:
     def _meta(self) -> MatchMeta:
         return MatchMeta(uuid.uuid4().hex[:12], self.profile.name, self.profile.account, self.strategy_id,
                          self.game_version, self.cfg.balance_epoch, self.cfg.mode, self.cfg.experiment_id,
-                         self.cfg.arm, self.cfg.opponent_id, self.cfg.pair_id)
+                         self.cfg.arm, self.cfg.opponent_id, self.cfg.pair_id,
+                         account_levels=self.account.to_meta() if self.account else None,
+                         strategy_name=self.params.spec.strategy)
 
     def _on_end(self, summary: dict) -> None:
         if summary.get("status") == "completed":

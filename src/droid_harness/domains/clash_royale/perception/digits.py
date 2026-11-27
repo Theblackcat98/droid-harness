@@ -96,16 +96,22 @@ class DigitReader:
         return (best, score) if score >= self.min_score else (None, score)
 
     def read(self, crop_bgr: np.ndarray, white_text: bool = True, *, allow_red: bool = False) -> int | None:
+        return self.read_scored(crop_bgr, white_text, allow_red=allow_red)[0]
+
+    def read_scored(self, crop_bgr: np.ndarray, white_text: bool = True, *,
+                    allow_red: bool = False) -> tuple[int | None, float]:
+        """(value, weakest glyph score); value is None when any glyph fails."""
         glyphs = segment(binarize(crop_bgr, white_text, allow_red=allow_red))
         if not glyphs:
-            return None
-        chars = []
+            return None, 0.0
+        chars, worst = [], 1.0
         for g in glyphs:
-            d, _ = self.classify(g)
+            d, sc = self.classify(g)
             if d is None:
-                return None
+                return None, sc
             chars.append(d)
-        return int("".join(chars))
+            worst = min(worst, sc)
+        return int("".join(chars)), worst
 
     @classmethod
     def from_font(cls, font=cv2.FONT_HERSHEY_SIMPLEX, scale: float = 1.0, thickness: int = 2) -> DigitReader:
@@ -120,3 +126,57 @@ class DigitReader:
             raise ValueError(f"font produced {len(glyphs)} glyphs; adjust scale/thickness")
         r.templates = dict(zip("0123456789", glyphs, strict=True))
         return r
+
+
+def locate_number(img: np.ndarray, roi, reader: DigitReader, *, dy_frac: float = 0.03, dx_px: int = 6,
+                  step_px: int = 2, plausible=lambda v: 0 < v <= 9999) -> tuple[int | None, tuple[float, float], float]:
+    """Slide ``roi`` around its calibrated spot and return the read it agrees on most.
+
+    Returns ``(value, (dx, dy) in frame fractions, score)``. Used when a fixed HUD region misses
+    its text (labels sit a few pixels differently between arenas and modes); the caller locks the
+    offset, so this runs rarely. Vertical sweep first, then a small horizontal refinement; among
+    plausible reads it prefers the most digits (a shifted window can drop one), then the value
+    read at the most offsets, and returns the middle of that run so small drifts stay inside it.
+    ~30 reads, a few ms.
+    """
+    h, w = img.shape[:2]
+
+    def read_at(dx: float, dy: float):
+        x0, y0, x1, y1 = roi.x0 + dx, roi.y0 + dy, roi.x1 + dx, roi.y1 + dy
+        if x0 < 0 or y0 < 0 or x1 > 1 or y1 > 1:
+            return None, 0.0
+        crop = img[int(round(y0 * h)):int(round(y1 * h)), int(round(x0 * w)):int(round(x1 * w))]
+        v, sc = reader.read_scored(crop)
+        return (v, sc) if v is not None and plausible(v) else (None, 0.0)
+
+    def pick(hits: list[tuple[float, int, float]]):
+        if not hits:
+            return None
+        by_val: dict[int, list[tuple[float, float]]] = {}
+        for off, v, sc in hits:
+            by_val.setdefault(v, []).append((off, sc))
+        v = max(by_val, key=lambda k: (len(str(k)), len(by_val[k]), sum(s for _, s in by_val[k])))
+        offs = sorted(o for o, _ in by_val[v])
+        return v, offs[len(offs) // 2], max(s for _, s in by_val[v])
+
+    ny = max(1, int(round(dy_frac * h / step_px)))
+    vert = []
+    for iy in range(-ny, ny + 1):
+        dy = iy * step_px / h
+        v, sc = read_at(0.0, dy)
+        if v is not None:
+            vert.append((dy, v, sc))
+    best_y = pick(vert)
+    if best_y is None:  # nothing at dx=0: try the band again a few pixels to each side
+        for dx_p in (-dx_px, dx_px):
+            row = [(iy * step_px / h, *read_at(dx_p / w, iy * step_px / h)) for iy in range(-ny, ny + 1)]
+            hits = [(dy, v, sc) for dy, v, sc in row if v is not None]
+            got = pick(hits)
+            if got is not None:
+                return got[0], (dx_p / w, got[1]), got[2]
+        return None, (0.0, 0.0), 0.0
+    v, dy, sc = best_y
+    horiz = [(dx_p / w, *read_at(dx_p / w, dy)) for dx_p in range(-dx_px, dx_px + 1, step_px)]
+    got = pick([(dx, vv, s) for dx, vv, s in horiz if vv == v])
+    dx = got[1] if got is not None else 0.0
+    return v, (dx, dy), sc

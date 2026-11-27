@@ -11,6 +11,7 @@ from ..state import GameState
 from . import posture as posture_mod
 from .candidate import Candidate, Decision
 from .constraints import Constraints
+from .levels import Levels, level_gap
 from .placement import Placement
 from .rules import Rule, RuleContext, default_rules
 from .strategy import Params
@@ -20,11 +21,13 @@ from .tier0 import Tier0
 class CRPolicy:
     def __init__(self, cards: CardDB, arena: Arena, params: Params, *, exec_latency_s: float = 0.04,
                  rules: list[Rule] | None = None, ranker=None, pending_timeout_ms: int = 700,
-                 retry_after_ms: int | None = 400) -> None:
+                 retry_after_ms: int | None = 400, levels: Levels | None = None) -> None:
         self.cards, self.arena, self.p = cards, arena, params
+        self.levels = levels or Levels()
         self.placement = Placement(arena, cards, params.placement, exec_latency_s)
-        self.ctx = RuleContext(cards, arena, self.placement)
-        self.tier0 = Tier0(cards, arena, self.placement)
+        self.ctx = RuleContext(cards, arena, self.placement, self.levels)
+        self.tier0 = Tier0(cards, arena, self.placement, self.levels)
+        self._gap = 0
         self.constraints = Constraints(arena, cards, params.min_action_gap_ms)
         self.rules = rules if rules is not None else default_rules()
         self.ranker = ranker
@@ -53,10 +56,14 @@ class CRPolicy:
 
     def total(self, c: Candidate, posture: str) -> float:
         mult = self.p.posture_multipliers.get(posture, {}).get(c.family, 1.0)
+        if self._gap and self.p.level_aware and self.p.level_gap_respect:
+            k = 1.0 + self.p.level_gap_respect * self._gap  # under-leveled: defend more, push less
+            mult *= k if c.family == "defend" else (1.0 / k if c.family == "offense" else 1.0)
         return c.score * self.p.weight(c.rule_id) * mult
 
     def decide(self, s: GameState, intent: Intent | None = None) -> Decision:
         s.last_action_ms = max(s.last_action_ms, self.last_action_ms)
+        self._gap = level_gap(s) if self.p.level_aware else 0
         s.posture = posture_mod.classify(s, self.p, self.cards, self.tier0.spell_tower_damage, intent)
         intent_rec = intent.__dict__ if intent is not None else None
         decision = Decision(s.t_ms, s.host_ns, s.posture, None, state_digest=s.digest(), intent=intent_rec)

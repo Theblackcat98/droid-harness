@@ -149,10 +149,27 @@ class StrategyIndex:
             out[sid] = (spec.strategy, params, str(p))
         return out
 
-    def get(self, sid: str | None) -> tuple[str, Any, str] | None:
+    def get(self, sid: str | None, name: str | None = None) -> tuple[str, Any, str] | None:
+        """By current ID; else by the recorded ``strategy_name``; else via ``legacy_ids.yaml``."""
         if self._by_id is None:
             self._by_id = self._build()
-        return self._by_id.get(sid) if sid else None
+        hit = self._by_id.get(sid) if sid else None
+        if hit is None and not name and sid:
+            name = self._legacy().get(sid)
+        if hit is None and name:
+            hit = next((v for v in self._by_id.values() if v[0] == name), None)
+        return hit
+
+    def _legacy(self) -> dict[str, str]:
+        if not hasattr(self, "_legacy_map"):
+            import yaml
+
+            p = self.directory / "legacy_ids.yaml"
+            try:
+                self._legacy_map = {str(k): str(v) for k, v in (yaml.safe_load(p.read_text()) or {}).items()}
+            except (OSError, ValueError, AttributeError):
+                self._legacy_map = {}
+        return self._legacy_map
 
     def add(self, sid: str, name: str, params: Any, path: str = "") -> None:
         if self._by_id is None:

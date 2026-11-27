@@ -123,6 +123,14 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # M8 learned ranker blending ("residual" keeps rule safety gates intact; "replace" is legacy)
     "ranker_mode": "residual",
     "ranker_residual_weight": 0.25,
+    # Levels (README §7, todo R3; opt-in). Uses configs/accounts/<account>.yaml and the opponent's
+    # King Level read from their tower HP: kill-aware spell math and derived spell tower damage
+    # scale ~10 %/level; level_gap_respect leans toward defense when under-leveled.
+    "level_aware": False,
+    "level_gap_respect": 0.0,  # per level of gap: defend ×(1+r·gap), offense ÷(1+r·gap)
+    # Counter prior (todo R7; opt-in): a missing counters-CSV row falls back to card attributes.
+    "counter_prior": False,
+    "counter_prior_scale": 1.0,
 }
 
 
