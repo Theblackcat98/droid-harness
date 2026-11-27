@@ -54,6 +54,11 @@ Optional dependencies live in extras (`[detector]`, `[rocm]`, `[onnx]`, `[tuning
 # 1-second pre-flight check (calibration, 10/10 digits, 8/8 deck templates, ROCm GPU, ADB)
 .venv/bin/droid-harness doctor --live
 
+# Stuck on a loss/result screen or any menu? Walk it back to HOME (taps -> visual
+# buttons -> BACK -> app restart). Safe to run while the harness is stopped.
+.venv/bin/droid-harness recover --dry-run   # preview the plan
+.venv/bin/droid-harness recover             # do it
+
 # Play 10 ladder matches with pro starter beatdown v6 + auto win-video pruning
 .venv/bin/droid-harness play --strategy v6 --mode ladder --matches 10 --prune-win-video
 
@@ -93,6 +98,30 @@ Explicit paths (`droid-harness run --profile ... --layout ...`) remain supported
 ```
 
 Switch `--mode ladder` to `--mode training_camp` to farm against Trainer bots instead of ladder opponents.
+
+### Stuck-screen recovery (automatic)
+
+A result screen that does not change for **8 s**, or any other non-battle menu/overlay
+for **15 s**, arms a deterministic HOME walk inside the live loop:
+
+1. the calibrated buttons for that screen (the normal flow, again),
+2. wide saturated buttons found **visually** in the lower frame, rightmost first — this
+   is what recovers a mis-calibrated `ok` (a ladder loss with a reward chest adds
+   "Play Again" and shifts "OK" right, so the calibrated centre lands between them),
+3. BACK through scrcpy,
+4. force-stop + relaunch after the plan is exhausted (or 60 s of liveness findings).
+
+A battle whose clock, hand and elixir all stop changing for **30 s** is also treated as
+over: the purple post-match chest animation reads as a full elixir bar, so the session
+would otherwise stay "in battle" forever. That case is recorded as
+`aborted:battle_no_progress` and handed to the same ladder.
+
+Recovery keeps acting on each new screen until HOME, where it disarms. A finished batch
+walks itself back to HOME before disconnecting, using only this ladder — the normal menu
+flow (including HOME→Battle) is suspended, so the settle cannot queue a new game. The
+same ladder is available as a standalone command:
+`droid-harness recover` (add `--dry-run` to print the taps without sending them,
+`--stuck-after` to shorten the wait).
 
 ### Key runtime flags
 
@@ -337,6 +366,7 @@ When you unlock new cards or promote a frequent enemy unit out of `other_ground_
 ## 7. Troubleshooting & operational limits
 
 - **Phone sleeps or drops ADB:** Verify Developer Options *Stay awake* is enabled while plugged into USB; re-check `adb devices`. If `scrcpy-server` is busy after a crash, wait ~3 s for the previous socket on `local_port` to close or kill stray `adb`/`droid-harness` processes.
+- **Stuck on a loss/result screen or a popup:** run `droid-harness recover` (or wait 8–15 s for the live loop to arm the same ladder). `recover --dry-run` prints the taps first. If the calibrated `ok` keeps missing, re-capture the result screen with `droid-harness screen` or recalibrate the `buttons:` block; recovery finds the real button visually either way.
 - **Deck changed in Clash Royale:** Capture new `affordable` and `greyed` templates via `droid-harness template` into a clean directory, update `deck:` in your strategy YAML, and re-run `replay` / `pytest` — stale hand templates produce `hand_unreadable` / wrong card plays.
 - **Disk usage on long runs:** Raw H.264 video grows at **~60 MB/min** (~2–4 GB per 10 matches). After running `analyze` and exporting any frames you want via `droid-harness frames`, keep only `meta.json`, `summary.json`, and `decisions.jsonl` (~1.5 MB/match) for completed matches whose video you no longer need.
 - **AMD GPU vs CPU ONNX:** ONNX Runtime removed its ROCm EP upstream. Pass `--detector models/yolo26n-cr.pt` for GPU inference via PyTorch-ROCm (`~4.14 ms p50` at `640×384` on RX 7900 XT); `.onnx` runs via `MIGraphXExecutionProvider` if built, or falls back to CPU (`~26.8 ms p50`).

@@ -21,6 +21,7 @@ from .perception.pipeline import CRPerception
 from .perception.screens import ScreenClassifier, read_result_detail
 from .policy.candidate import Decision
 from .policy.utility import CRPolicy
+from .recovery import HomeRecovery
 from .state import GameState
 
 
@@ -64,7 +65,9 @@ class CRSession:
                  meta_factory: Callable[[], MatchMeta], on_match_end: Callable[[dict], None] | None = None,
                  screen_every: int = 3, result_stable_frames: int = 3,
                  result_settle_s: float = 1.2, unknown_battle_timeout_s: float = 25.0,
-                 left_battle_timeout_s: float = 5.0) -> None:
+                 left_battle_timeout_s: float = 5.0, battle_no_progress_s: float = 30.0,
+                 recovery: HomeRecovery | None = None,
+                 send_key: Callable[[int], None] | None = None) -> None:
         self.screens, self.menus = screens, menus
         self.perception, self.policy, self.mapper = perception, policy, mapper
         self.recorder = recorder
@@ -75,6 +78,18 @@ class CRSession:
         self.result_settle_s = result_settle_s
         self.unknown_battle_timeout_s = unknown_battle_timeout_s
         self.left_battle_timeout_s = left_battle_timeout_s
+        # A post-match chest/reward animation is purple, so the elixir-bar fallback
+        # reads it as a full bar and the session would stay "in battle" forever. If
+        # the clock, hand and elixir stop changing, the battle is over (or frozen).
+        self.battle_no_progress_s = battle_no_progress_s
+        self._progress_clock: float | None = None
+        self._progress_elixir: float | None = None
+        self._progress_since = time.monotonic()
+        # Stuck-screen fallback: when a menu/result screen refuses to change, walk it
+        # back to HOME with calibrated taps, visual button taps, BACK, then a restart.
+        self.recovery = recovery or HomeRecovery(menus.buttons)
+        self.send_key = send_key
+        self.suspend_menu = False  # batch-end settle drives the UI directly
         self.screen = "UNKNOWN"
         self.screen_since = time.monotonic()
         self.match: MatchMeta | None = None
@@ -164,17 +179,45 @@ class CRSession:
                     self._candidate, self._candidate_n = name, 1
                 if self._candidate_n >= 1:
                     self._set_screen(name, frame)
+        self.recovery.observe(self.screen, time.monotonic())
         self._n += 1
+        if self.suspend_menu:
+            return Observation(self.screen, frame)
         if self.screen in BATTLE_SCREENS:
             state = self.perception.process(frame)
             self.last_state = state
             if any(state.hand_fresh):
                 self._unknown_since = None
+            now = time.monotonic()
+            clock_t = getattr(state, "match_t_s", None)
+            elixir = round(state.my_elixir, 1)
+            advanced = any(state.hand_fresh)
+            if clock_t is not None and (self._progress_clock is None
+                                        or abs(clock_t - self._progress_clock) >= 0.5):
+                advanced = True
+            if self._progress_elixir is None or abs(elixir - self._progress_elixir) >= 0.1:
+                advanced = True
+            if advanced:
+                self._progress_clock = clock_t if clock_t is not None else self._progress_clock
+                self._progress_elixir = elixir
+                self._progress_since = now
+            elif now - self._progress_since >= self.battle_no_progress_s:
+                # Clock, hand and elixir are frozen: the chest/reward animation is
+                # not a battle. Record the abort and let menu recovery take over.
+                self.abort_match("battle_no_progress")
+                self._set_screen("UNKNOWN", frame)
+                self._unknown_since = None
+                return Observation(self.screen, frame)
             return Observation(self.screen, frame, state)
         return Observation(self.screen, frame)
 
     def _set_screen(self, name: str, frame: Frame) -> None:
         if name == self.screen:
+            return
+        if self.suspend_menu:
+            # Batch-end settle: track the name but never start/end a match on a
+            # transient frame (a HOME animation can hash as IN_BATTLE).
+            self.screen, self.screen_since = name, time.monotonic()
             return
         prev, self.screen, self.screen_since = self.screen, name, time.monotonic()
         if name in BATTLE_SCREENS and prev not in BATTLE_SCREENS:
@@ -197,6 +240,10 @@ class CRSession:
         self._pending_key, self._pending_n = None, 0
         self._result_crowns = None
         self._unknown_since = None
+        self._progress_clock = None
+        self._progress_elixir = None
+        self._progress_since = time.monotonic()
+        self.recovery.reset()
         if self.recorder is not None:
             self.recorder.start_match(self.match.match_id, self.match.__dict__)
 
@@ -244,8 +291,25 @@ class CRSession:
     def decide(self, obs: Observation, intent: Intent | None):
         if obs.state is not None:
             return self.policy.decide(obs.state, intent)
+        if self.suspend_menu:
+            return MenuDecision(obs.screen)
+        now = time.monotonic()
+        action = self.recovery.next_action(self.screen, obs.frame.img, now)
+        if action is not None:
+            if action.kind == "tap":
+                return MenuDecision(obs.screen, action.events(time.perf_counter_ns()))
+            if action.kind == "key" and self.send_key is not None:
+                self.send_key(action.keycode)
+                return MenuDecision(obs.screen)
+        if self.recovery.is_stuck(self.screen, now):
+            # Recovery owns this screen; the normal flow is what failed to leave it.
+            return MenuDecision(obs.screen)
         return MenuDecision(obs.screen, self.menus.events_for(obs.screen, obs.frame.img.shape,
                                                                time.perf_counter_ns()))
+
+    def take_restart_request(self) -> bool:
+        """True once recovery has exhausted its taps and BACK and wants a fresh app."""
+        return self.recovery.take_restart_request()
 
     # --- ActionMapper -----------------------------------------------------------
     def to_events(self, decision, obs: Observation, now_ns: int) -> list[TouchEvent]:

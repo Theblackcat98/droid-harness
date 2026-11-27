@@ -213,6 +213,9 @@ class ExperimentRunner:
             return "void"
         if self.decision is None:
             return "running"
+        if self.decision.decision == "continue":
+            # Ran out of scheduled games without crossing an SPRT boundary.
+            return "inconclusive" if self.done else "running"
         return {"accept_H1": "accepted", "accept_H0": "rejected"}.get(self.decision.decision, "running")
 
     @property
@@ -235,7 +238,8 @@ class ExperimentRunner:
                 "champion_id": self.cfg.champion_id, "candidate_id": self.cfg.candidate_id,
                 "test": self.cfg.test, "p0": self.cfg.p0, "p1": self.cfg.p1,
                 "game_version": self.cfg.game_version, "balance_epoch": self.cfg.balance_epoch,
-                "status": self.status, "wins": t.wins, "losses": t.losses, "draws": t.draws,
+                "status": self.status, "matches": len(self.matches),
+                "wins": t.wins, "losses": t.losses, "draws": t.draws,
                 "llr": self.decision.llr if self.decision else 0.0,
                 "decided_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if self.done else "",
                 "notes": self.notes()}

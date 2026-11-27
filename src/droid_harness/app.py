@@ -37,13 +37,13 @@ from .domains.clash_royale.perception.screens import ScreenClassifier
 from .domains.clash_royale.perception.towers import TowerStateReader
 from .domains.clash_royale.policy.strategy import load_strategy
 from .domains.clash_royale.policy.utility import CRPolicy
+from .domains.clash_royale.recovery import walk_to_home
 from .domains.clash_royale.session import CRSession, MatchMeta
 from .flywheel.retention import retain_match
 from .learn.train_ranker import load_ranker
 
 log = logging.getLogger(__name__)
 PACKAGE = "com.supercell.clashroyale"
-KEYCODE_BACK = 4
 
 
 @dataclass
@@ -187,7 +187,7 @@ def run_doctor(*, device: str = "phone-a", strategy: str | Path = "v6",
 
         prof = DeviceProfile(**{**yaml.safe_load(bundle["profile"].read_text()), "name": device})
         try:
-            out = Adb(prof.serial).run("get-state", check=False).stdout.strip()
+            out = Adb(prof.serial).run("get-state", check=False).strip()
             checks["adb_state"] = out or "offline"
             if out != "device":
                 problems.append(f"adb serial {prof.serial} not ready (got {out!r})")
@@ -321,6 +321,9 @@ class BotRunner:
     def _connect(self) -> None:
         self.client = ScrcpyClient(self.profile, on_packet=self.recorder.on_packet)
         self.client.start()
+        # Stuck-screen recovery sends BACK through scrcpy's control channel, not ADB.
+        self.session.send_key = self.client.keycode
+        self.session.recovery.reset()
         self.executor = Executor(self.client.touch).start()
         self.brain = BrainLoop(self.client.slot, self.session, self.session, self.session, self.executor,
                                logger=self.recorder, on_timing=lambda d: self.session.match_latency.add_many(d))
@@ -333,7 +336,25 @@ class BotRunner:
             obj = getattr(self, part, None)
             if obj is not None:
                 obj.stop()
+        self.session.send_key = None
         self.client.stop()
+
+    def _settle_home(self, timeout_s: float = 25.0) -> bool:
+        """Walk a finished batch back to HOME so the next run can queue immediately."""
+        if self.session.screen == "HOME":
+            return True
+        log.info("settle-home: leaving %s for HOME", self.session.screen)
+        # The brain keeps running; suspend its menu decisions so the HOME flow cannot
+        # queue a fresh battle while we are trying to stop.
+        self.session.suspend_menu = True
+        try:
+            ok = walk_to_home(
+                self.client, self.screens, self.layout,
+                timeout_s=timeout_s, stable_s=1.5, stuck_after=1.5, battle_stuck_after=5.0,
+                restart_after=15.0, log=lambda fmt, *args: log.info("settle-home: " + fmt, *args))
+        finally:
+            self.session.suspend_menu = False
+        return ok
 
     def run(self, *, stop_when: Callable[[], bool] | None = None,
             on_summary: Callable[[dict], None] | None = None) -> None:
@@ -342,6 +363,7 @@ class BotRunner:
             self.game_version = self.client_version()
         self._connect()
         stuck_since = None
+        last_screen = self.session.screen
         watchdog = AppWatchdog(self.client.adb, PACKAGE)
         try:
             while self.completed < self.cfg.matches and not (stop_when and stop_when()):
@@ -353,6 +375,17 @@ class BotRunner:
                     self.client.adb.launch(PACKAGE)
                     self.session.screen_since = time.monotonic()
                     stuck_since = None
+                # Recovery already walked every tap and BACK; a fresh app is the next rung.
+                if self.session.take_restart_request():
+                    log.warning("stuck-screen recovery exhausted taps; restarting %s", PACKAGE)
+                    self.session.abort_match("stuck_screen")
+                    self.client.adb.force_stop(PACKAGE)
+                    self.client.adb.launch(PACKAGE)
+                    self.session.recovery.reset()
+                    self.session.screen_since = time.monotonic()
+                    stuck_since = None
+                if self.session.screen != last_screen:
+                    last_screen, stuck_since = self.session.screen, None
                 try:
                     f = self.findings.get(timeout=0.5)
                 except queue.Empty:
@@ -366,20 +399,25 @@ class BotRunner:
                     time.sleep(1.0)
                     self._connect()
                 elif f.action == "recover_ui":
+                    # Arm the deterministic HOME walk: calibrated taps, then buttons
+                    # found visually (a mis-calibrated `ok` is the common stall), then
+                    # BACK. The session's menu decisions carry it out; the 60 s cap below
+                    # is the last resort.
+                    self.session.recovery.force()
                     stuck_since = stuck_since or time.monotonic()
                     if time.monotonic() - stuck_since > 60:
+                        log.warning("still stuck after 60s; restarting %s", PACKAGE)
+                        self.session.abort_match("stuck_screen")
                         self.client.adb.force_stop(PACKAGE)
                         self.client.adb.launch(PACKAGE)
+                        self.session.recovery.reset()
                         stuck_since = None
-                    elif self.session.screen in ("RESULT_WIN", "RESULT_LOSS", "RESULT_DRAW"):
-                        # BACK on the result screen opens the "Return to the Main Menu?"
-                        # confirmation and stalls the run. The normal menu flow already
-                        # taps `ok` on result screens, so just let it work.
-                        pass
-                    else:
-                        self.client.keycode(KEYCODE_BACK)
                     self.session.screen_since = time.monotonic()
                 # battle frame gaps are logged by the recorder via the brain's frame log
+            # Batch finished (or a graceful stop_when): leave the phone on HOME, not on
+            # a result screen, so the next run can queue without a manual tap.
+            if self.client.running and self.client.error is None:
+                self._settle_home()
         finally:
             self._disconnect()
             self.recorder.close()

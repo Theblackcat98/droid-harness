@@ -286,6 +286,25 @@ def test_experiment_runner_pairs_randomized_blocks_and_accepts_a_better_candidat
     con.close()
 
 
+def test_an_exhausted_undecided_experiment_is_inconclusive(tmp_path):
+    """A run that hits max_games without an SPRT boundary must not look 'running' forever."""
+    from droid_harness.flywheel.eval.runner import ExperimentConfig, ExperimentRunner
+
+    cfg = ExperimentConfig(experiment_id="EXP-0002", game_version="9.x", max_games=2, seed=1)
+    r = ExperimentRunner(cfg)
+    for i in range(2):
+        arm, pid = r.next_assignment()
+        r.record({"match_id": f"m{i}", "arm": arm, "pair_id": pid, "game_version": "9.x",
+                  "status": "completed", "result": "win" if arm == "champion" else "loss"})
+    assert r.done and r.status == "inconclusive"
+    kw = r.to_ledger_kwargs()
+    assert kw["status"] == "inconclusive" and kw["matches"] == 2
+    led = Ledger(tmp_path / "exp.jsonl")
+    led.upsert(Experiment(**kw))
+    md = led.render_markdown(tmp_path / "L.md")
+    assert "INCONCLUSIVE" in md and "2 matches · candidate 0–1–0" in md
+
+
 def test_a_worse_candidate_is_never_promoted_even_above_fifty_percent():
     """The review's counterexample: champion 80%, candidate 65%. The old candidate-vs-50%
     test accepted it; comparing against the champion must not."""

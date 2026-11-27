@@ -21,7 +21,8 @@ class Experiment:
     p1: float
     game_version: str
     balance_epoch: str
-    status: str = "running"  # running | accepted | rejected | void
+    status: str = "running"  # running | accepted | rejected | inconclusive | void
+    matches: int = 0
     wins: int = 0
     losses: int = 0
     draws: int = 0
@@ -80,7 +81,8 @@ class Ledger:
                       f"**{e.title}** — proposed by {e.proposer}",
                       f"Hypothesis: {e.hypothesis}",
                       f"Candidate `{e.candidate_id}` vs champion `{e.champion_id}` · {e.test} [{e.p0:.2f}, {e.p1:.2f}]"
-                      f" · {e.wins + e.losses + e.draws} games · {e.wins}–{e.losses}–{e.draws} · LLR {e.llr:+.2f}"]
+                      f" · {e.matches or (e.wins + e.losses + e.draws)} matches · candidate "
+                      f"{e.wins}–{e.losses}–{e.draws} · LLR {e.llr:+.2f}"]
             if e.notes:
                 parts.append(f"Note: {e.notes}")
             parts.append("")

@@ -209,6 +209,41 @@ def cmd_screen(a) -> None:
     print(f"registered screen {a.name} ({out / f'{a.name}__{i}.png'})")
 
 
+def cmd_recover(a) -> None:
+    """Walk any Clash Royale screen back to HOME with deterministic taps.
+
+    The same escalation the live loop uses: normal flow -> calibrated recovery taps ->
+    visually found buttons -> BACK -> app restart. Safe to run while the harness is
+    stopped, e.g. when a phone was left on a loss screen.
+    """
+    from .app import load_screens, resolve_device_bundle
+    from .core.transport.scrcpy_bridge import ScrcpyClient
+    from .domains.clash_royale.perception.grid import Layout, Roi
+    from .domains.clash_royale.recovery import walk_to_home
+
+    bundle = resolve_device_bundle(a.device, with_detector=False)
+    for key in ("profile", "layout", "screens"):
+        if bundle[key] is None or not Path(bundle[key]).exists():
+            raise SystemExit(f"missing {key}: {bundle[key]}")
+    layout = Layout.load(bundle["layout"])
+    raw = yaml.safe_load(Path(bundle["layout"]).read_text())
+    regions = [Roi(*r) for r in raw.get("screen_regions", [[0, 0, 1, 0.5], [0, 0.5, 1, 1]])]
+    screens = load_screens(bundle["screens"], regions, battle_roi=layout.elixir_bar,
+                           battle_hsv=(layout.elixir_hsv_lo, layout.elixir_hsv_hi))
+
+    client = ScrcpyClient(_profile(bundle["profile"]))
+    client.start()
+    try:
+        ok = walk_to_home(client, screens, layout, timeout_s=a.timeout, stable_s=a.stable_s,
+                          stuck_after=a.stuck_after, battle_stuck_after=a.battle_stuck_after,
+                          restart_after=a.restart_after,
+                          dry_run=a.dry_run, log=lambda fmt, *args: print(fmt % args))
+    finally:
+        client.stop()
+    if not ok:
+        raise SystemExit(f"did not reach HOME within {a.timeout:.0f}s")
+
+
 def _fill_device_defaults(a, *, with_detector: bool = True, default_async: bool = False) -> None:
     from .app import resolve_device_bundle, resolve_strategy_path
 
@@ -612,6 +647,21 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--strategy", default="v6")
     s.add_argument("--live", action="store_true", help="also probe connected ADB device state")
     s.set_defaults(fn=cmd_doctor)
+
+    s = sub.add_parser("recover", help="click any Clash Royale screen back to HOME (stuck loss/popup recovery)")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--timeout", type=float, default=120.0)
+    s.add_argument("--stuck-after", dest="stuck_after", type=float, default=3.0,
+                   help="seconds on an unchanged screen before recovery taps start")
+    s.add_argument("--battle-stuck-after", dest="battle_stuck_after", type=float, default=20.0,
+                   help="seconds of frozen clock+elixir before an IN_BATTLE screen is treated as stuck")
+    s.add_argument("--stable-s", dest="stable_s", type=float, default=2.0,
+                   help="seconds HOME must hold before declaring success")
+    s.add_argument("--restart-after", dest="restart_after", type=float, default=45.0,
+                   help="force-stop + relaunch after this many seconds stuck")
+    s.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="print the taps and keycodes without sending them")
+    s.set_defaults(fn=cmd_recover)
 
     s = sub.add_parser("play", help="one-command live play with auto-resolved device, digits & async GPU detector")
     _add_runtime_args(s, default_mode="ladder", default_strategy="v6")
