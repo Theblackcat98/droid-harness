@@ -15,8 +15,9 @@ Every strategy parameter, threshold, counter table, and rule lives in versioned 
 | **Transport & loop** | `scrcpy-server-v2.4` over USB + PyAV H.264 decode; battle loop `2.51–4.76 ms` `p50` / `3.95–12.38 ms` `p99` with `--async-detect` |
 | **31-class YOLO26-n v2 detector** | Trained across 31 classes ([`models/classes.txt`](models/classes.txt)): `mAP50=0.728`, `mAP50-95=0.474`, `P=0.742`, `R=0.632`; PyTorch-ROCm `TorchDetector` `4.14 ms` `p50` (`4.23 ms` mean) on RX 7900 XT |
 | **Opponent & crown perception** | Card/cost/cycle tracker locks 8-card opponent decks across Arena 1–3 (`10/10` matches in both recent batches); Arena 2 golden-sand false crown bug fixed in [`perception/screens.py`](src/droid_harness/domains/clash_royale/perception/screens.py) |
+| **Perception additions** | Tower HP digits (`digits/phone-a/`), countdown clock, King HP seeding; triage `PERCEPTION` share ~89% → ~18% on recorded matches |
 | **Verified live batches (`phone-a`)** | [`ladder-vision-v4.yaml`](configs/strategies/ladder-vision-v4.yaml) **9W–1L–0D (90.0%)** (champion); [`ladder-vision-v5.yaml`](configs/strategies/ladder-vision-v5.yaml) **5W–5L–0D (50.0%)** (rejected candidate — compacted telemetry in [`data/matches/`](data/matches/)) |
-| **Unit tests & lint** | `pytest -ra` **189 passed, 1 skipped**; `ruff check src/ tests/` clean |
+| **Unit tests & lint** | `pytest -ra` all passing (incl. `tests/test_three_speed_flywheel.py`); `ruff check src/ tests/` clean |
 
 ---
 
@@ -104,6 +105,54 @@ Switch `--mode ladder` to `--mode training_camp` to farm against Trainer bots in
 | `--det-conf` / `--det-iou` | Detection confidence threshold (`0.35`) and NMS IoU (`0.5`). |
 | `--matches N` | Plays `N` completed matches unattended (menu navigation, battle queue, end screen OK dismissal, Trophy Road popups). Press `Ctrl+C` to stop cleanly. |
 | `--data <dir>` | Output directory. Each match creates `<dir>/<match_id>/` with `meta.json`, `summary.json`, `decisions.jsonl`, `frames.jsonl`, and `stream.h264` + `stream.pts`. |
+
+---
+
+## Improvement loop (what you do to keep improving the bot)
+
+Three speeds: seconds on CPU, hours on the phone, and an agent only when plateaued. No LLM runs inside the harness.
+
+```bash
+# 0. Pre-flight before every session (phone plugged in, unlocked, on Clash Royale home)
+.venv/bin/droid-harness doctor --live
+
+# 1. Collect games (champion = v4 until v6 is proven)
+.venv/bin/droid-harness play --strategy v4 --mode ladder --matches 30 --prune-win-video
+
+# 2. Paired live test: candidate vs champion (randomized pairs cancel ladder drift;
+#    clearly worse candidates stop early via dense-margin futility; result -> ledger/)
+.venv/bin/droid-harness experiment --champion v4 --candidate v6 --mode ladder --prune-win-video \
+  --title "v6 pro rules" --hypothesis "fewer opening throws"
+.venv/bin/droid-harness ledger        # renders ledger/STRATEGY_LEDGER.md
+
+# 3. Speed 1 - offline, between phone runs (seconds, no phone, no LLM)
+.venv/bin/droid-harness analyze --data data/matches
+.venv/bin/droid-harness tune-offline --champion v6 --trials 200 --out configs/strategies/ladder-vision-v7.yaml
+.venv/bin/droid-harness shadow --champion v6 --candidate v7
+.venv/bin/droid-harness replay-diff --champion v6 --candidate v7 --expected-pct 5
+# then repeat step 2 with --champion v6 --candidate v7
+
+# 4. Speed 3 - when progress plateaus: hand an artifact to your coding agent
+.venv/bin/droid-harness digest --data data/matches --out data/agent_digest.md
+# The agent adds ONE structural rule + unit test in a NEW strategy file (never edit a strategy that has played matches).
+
+# 5. Housekeeping
+.venv/bin/droid-harness retain --data data/matches   # prune old win videos
+```
+
+Notes:
+- `tune-offline` enforces a replay-diff guardrail (`--min-diff-pct`, `--max-diff-pct`); if it finds nothing, raise `--trials`, lower `--min-diff-pct`, or collect more matches.
+- Use a new `--balance-epoch` after a game update; experiments are voided across updates.
+- Short names resolve automatically (`v6` → `configs/strategies/ladder-vision-v6.yaml`).
+
+**Things only you can do**
+- **Card levels:** upgrade cards that survive into the Hog EQ deck (Musketeer, Knight, Fireball); keep Giant/Mini P.E.K.K.A/Archers/Minions/Arrows at minimum. Reach King Level 2 early.
+- **New cards after arena unlocks:** capture `affordable` + `greyed` hand templates (`droid-harness template`); `doctor` flags missing deck templates. Then fine-tune the detector (section 6).
+- **Hog Rider (Arena 5):** switch to the Hog EQ blueprint in [`docs/pro-strategy-research.md`](docs/pro-strategy-research.md).
+- **M8 ranker (after ~50+ post-digit ladder matches):** `python -m droid_harness.learn.label_from_video --version 2 --cards configs/domains/clash_royale/cards.json`, then `train_ranker`, then test it with `experiment` like any candidate.
+- Ladder botting can get the account banned; that risk is yours.
+
+Deferred: live GUI / replay inspector (spec and alignment question in [`todo.md`](todo.md)).
 
 ---
 
