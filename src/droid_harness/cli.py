@@ -347,6 +347,40 @@ def cmd_doctor(a) -> None:
         raise SystemExit(1)
 
 
+def cmd_upgrade(a) -> None:
+    """Automatically upgrade ready Battle Deck cards & Tower Princess using Gold (never Gems)."""
+    from dataclasses import asdict
+
+    from .app import load_screens, resolve_device_bundle
+    from .core.transport.scrcpy_bridge import ScrcpyClient
+    from .domains.clash_royale.account import load_account
+    from .domains.clash_royale.perception.cards import CardMatcher
+    from .domains.clash_royale.perception.grid import Layout, Roi
+    from .domains.clash_royale.upgrader import run_auto_upgrade
+
+    bundle = resolve_device_bundle(a.device, with_detector=False)
+    prof = _profile(str(bundle["profile"]))
+    layout_p = Path(bundle["layout"])
+    layout = Layout.load(layout_p)
+    regions = [Roi(*r) for r in yaml.safe_load(layout_p.read_text()).get("screen_regions",
+                                                                         [[0, 0, 1, 0.5], [0, 0.5, 1, 1]])]
+    screens = load_screens(Path(bundle["screens"]), regions, battle_roi=layout.elixir_bar,
+                           battle_hsv=(layout.elixir_hsv_lo, layout.elixir_hsv_hi))
+    matcher = CardMatcher.load(Path(bundle["templates"])) if bundle["templates"] else None
+    account = load_account(prof.account)
+    client = ScrcpyClient(prof)
+    client.start()
+    try:
+        rep = run_auto_upgrade(
+            client, screens, layout, matcher=matcher, account=account,
+            max_upgrades=a.max_upgrades, dry_run=a.dry_run,
+            log=lambda fmt, *args: print(fmt % args if args else fmt, flush=True),
+        )
+    finally:
+        client.stop()
+    print(json.dumps(asdict(rep), indent=1))
+
+
 def cmd_run(a) -> None:
     from .app import BotRunner
 
@@ -517,6 +551,7 @@ def cmd_autopilot(a) -> None:
         data_root=Path(a.data_root), store=Path(a.store), reports_dir=Path(a.reports),
         value_model=Path(a.value), trials=a.trials, min_removed=a.min_removed,
         max_collateral_pct=a.max_collateral, cycles=a.cycles, rest_s=a.rest_s,
+        auto_upgrade=not a.no_auto_upgrade, auto_upgrade_every=a.auto_upgrade_every,
         notify_url=a.notify_url, publish_git=a.publish_git, publish_branch=a.publish_branch,
         cards=Path(a.cards) if a.cards else None, arena=Path(a.arena) if a.arena else None)
     tap = None
@@ -525,7 +560,8 @@ def cmd_autopilot(a) -> None:
 
         tap = TelemetryTap()
     player = BotPlayer(vars(a), store=cfg.store, db=Path(a.db), test=cfg.test, max_games=cfg.max_games,
-                       futility_pairs=cfg.futility_pairs, ui=tap)
+                       futility_pairs=cfg.futility_pairs, ui=tap,
+                       auto_upgrade=cfg.auto_upgrade, auto_upgrade_every=cfg.auto_upgrade_every)
     pilot = Autopilot(cfg, player, log_fn=lambda m: print(f"autopilot: {m}", flush=True))
     print(json.dumps({"autopilot": config_dict(cfg)}, default=str), flush=True)
 
@@ -831,6 +867,10 @@ def _add_runtime_args(s, *, default_mode: str = "training_camp", require_strateg
     s.add_argument("--balance-epoch", dest="balance_epoch", default="2026-11")
     s.add_argument("--harvest-templates", dest="harvest_templates", default=None,
                    help="save hand crops of cards the matcher can't read yet (then: promote-templates)")
+    s.add_argument("--auto-upgrade", dest="auto_upgrade", action="store_true",
+                   help="upgrade ready Battle Deck cards & Tower Princess between farm matches (gold only)")
+    s.add_argument("--auto-upgrade-every", dest="auto_upgrade_every", type=int, default=4,
+                   help="matches between mid-batch upgrade passes (0 = start of batch only)")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -866,6 +906,13 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="print the taps and keycodes without sending them")
     s.set_defaults(fn=cmd_recover)
+
+    s = sub.add_parser("upgrade", help="upgrade ready Battle Deck cards & Tower Princess using Gold (never Gems)")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--max-upgrades", dest="max_upgrades", type=int, default=10)
+    s.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="inspect ready upgrades without tapping Confirm")
+    s.set_defaults(fn=cmd_upgrade)
 
     s = sub.add_parser("play", help="one-command live play with auto-resolved device, digits & async GPU detector")
     _add_runtime_args(s, default_mode="ladder", default_strategy="v6")
@@ -1082,6 +1129,8 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--max-collateral", dest="max_collateral", type=float, default=3.0)
     s.add_argument("--cycles", type=int, default=1, help="0 = run until data-root/STOP exists")
     s.add_argument("--rest-s", dest="rest_s", type=float, default=60.0)
+    s.add_argument("--no-auto-upgrade", dest="no_auto_upgrade", action="store_true",
+                   help="disable automatic Battle Deck & Tower Princess upgrades during farm batches")
     s.add_argument("--notify-url", dest="notify_url", default=None,
                    help="POST a one-line summary here each cycle (e.g. https://ntfy.sh/<topic>)")
     s.add_argument("--publish-git", dest="publish_git", action="store_true",

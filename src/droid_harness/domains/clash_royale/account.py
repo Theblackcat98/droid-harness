@@ -8,6 +8,7 @@ Princess Tower HP gives your King Level) and with each strategy's ``tier0.spell_
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -43,6 +44,44 @@ class AccountLevels:
 
     def policy_levels(self) -> Levels:
         return Levels(king_level=self.king_level, cards=self.known_cards)
+
+    def record_upgrade(self, card_or_tower: str) -> bool:
+        """Bump a card level (or King Level when Tower Princess upgrades) in memory."""
+        if card_or_tower == "tower_princess":
+            self.king_level = (self.king_level or 1) + 1
+            self.updated = dt.date.today().isoformat()
+            return True
+        if card_or_tower in self.cards:
+            self.cards[card_or_tower] = (self.cards[card_or_tower] or 1) + 1
+            self.updated = dt.date.today().isoformat()
+            return True
+        return False
+
+    def sync_king_level(self, observed_king_level: int | None) -> bool:
+        """Advance stored King Level if perception observed a higher Princess Tower level."""
+        if observed_king_level is None or observed_king_level <= (self.king_level or 0):
+            return False
+        self.king_level = int(observed_king_level)
+        self.updated = dt.date.today().isoformat()
+        return True
+
+    def save(self, path: str | Path | None = None) -> Path | None:
+        """Persist updated levels back to ``configs/accounts/<account>.yaml``."""
+        target = Path(path or self.path) if (path or self.path) else None
+        if target is None:
+            return None
+        doc: dict = {
+            "account": self.account,
+            "king_level": self.king_level,
+            "updated": self.updated or dt.date.today().isoformat(),
+            "cards": dict(self.cards),
+        }
+        if self.spell_tower_damage:
+            doc["spell_tower_damage"] = dict(self.spell_tower_damage)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(yaml.safe_dump(doc, sort_keys=False))
+        self.path = str(target)
+        return target
 
     @classmethod
     def load(cls, path: str | Path) -> AccountLevels:

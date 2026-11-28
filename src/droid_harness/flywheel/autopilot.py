@@ -61,6 +61,8 @@ class AutopilotConfig:
     patterns_to_try: int = 3
     cycles: int = 1  # 0 = forever
     rest_s: float = 60.0  # pause between cycles
+    auto_upgrade: bool = True  # upgrade ready Battle Deck cards & Tower Princess during farm batches
+    auto_upgrade_every: int = 4  # also check for upgrades every N farm matches
     notify_url: str | None = None  # e.g. https://ntfy.sh/<your-topic>
     publish_git: bool = False
     publish_branch: str = "autopilot/reports"
@@ -387,19 +389,24 @@ class BotPlayer:
     """Plays through ``BotRunner`` (one runner per phase; detector weights stay cached)."""
 
     def __init__(self, base_args: dict[str, Any], *, store: Path, db: Path | None = Path("data/warehouse.duckdb"),
-                 test: str = "pairs", max_games: int = 60, futility_pairs: int = 8, ui=None) -> None:
+                 test: str = "pairs", max_games: int = 60, futility_pairs: int = 8, ui=None,
+                 auto_upgrade: bool = True, auto_upgrade_every: int = 4) -> None:
         self.base, self.store, self.db = base_args, store, db
         self.test, self.max_games, self.futility_pairs = test, max_games, futility_pairs
         self.ui = ui
+        self.auto_upgrade = auto_upgrade
+        self.auto_upgrade_every = auto_upgrade_every
         self.current = None  # the BotRunner playing right now (the Studio follows it)
 
-    def _bot(self, strategy: Path, data: Path, mode: str, matches: int):
+    def _bot(self, strategy: Path, data: Path, mode: str, matches: int, *,
+             auto_upgrade: bool = False, auto_upgrade_every: int = 4):
         from ..app import BotRunner, RunConfig
 
         fields = RunConfig.__dataclass_fields__
         kw = {k: (Path(v) if isinstance(v, str) and k not in _NON_PATHS else v)
               for k, v in self.base.items() if k in fields and v is not None}
-        kw.update(strategy=Path(strategy), data=Path(data), mode=mode, matches=matches)
+        kw.update(strategy=Path(strategy), data=Path(data), mode=mode, matches=matches,
+                  auto_upgrade=auto_upgrade, auto_upgrade_every=auto_upgrade_every)
         self.current = BotRunner(RunConfig(**kw), ui=self.ui)
         return self.current
 
@@ -407,7 +414,8 @@ class BotPlayer:
         return self.current.ui_context() if self.current is not None else {"screen": "STARTING"}
 
     def play(self, strategy: Path, matches: int, data: Path, mode: str) -> list[dict]:
-        bot = self._bot(strategy, data, mode, matches)
+        bot = self._bot(strategy, data, mode, matches,
+                        auto_upgrade=self.auto_upgrade, auto_upgrade_every=self.auto_upgrade_every)
         bot.game_version = bot.client_version()
         bot.run()
         return list(bot._match_summaries)
@@ -419,7 +427,8 @@ class BotPlayer:
         from .eval.live import run_paired
         from .eval.runner import ExperimentConfig, ExperimentRunner
 
-        bot = self._bot(champion, data, mode, self.max_games * 2)
+        # Never auto-upgrade during a paired experiment (changing levels mid-run voids SPRT).
+        bot = self._bot(champion, data, mode, self.max_games * 2, auto_upgrade=False)
         bot.game_version = bot.client_version()
         exp_id = Ledger(self.store).next_id()
         runner = ExperimentRunner(ExperimentConfig(

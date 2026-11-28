@@ -38,6 +38,9 @@ buttons:
   battle_log: [0.395, 0.075, 0.803, 0.127]
   practice_slot_0: [0.518, 0.492, 0.721, 0.525]
   practice_slot_1: [0.518, 0.735, 0.721, 0.767]
+  # Bottom navigation tabs for automatic card & Tower Princess upgrades:
+  collection_tab: [0.180, 0.920, 0.330, 0.990]
+  battle_tab: [0.400, 0.920, 0.600, 0.990]
 # Top 18% is the stable HUD (clock/opponent/name). The bottom half changes with the
 # hand, so including it made the screen classifier miss real IN_BATTLE frames.
 screen_regions:

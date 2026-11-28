@@ -41,6 +41,7 @@ from .domains.clash_royale.policy.strategy import load_strategy
 from .domains.clash_royale.policy.utility import CRPolicy
 from .domains.clash_royale.recovery import walk_to_home
 from .domains.clash_royale.session import CRSession, MatchMeta
+from .domains.clash_royale.upgrader import run_auto_upgrade
 from .flywheel.retention import retain_match
 from .learn.train_ranker import load_ranker
 
@@ -79,6 +80,9 @@ class RunConfig:
     # no app restarts). You play; the Studio shows what the bot sees and would do.
     observe_only: bool = False
     harvest_templates: Path | None = None  # save crops of unreadable new cards here (promote-templates)
+    auto_upgrade: bool = False  # upgrade ready Battle Deck cards & Tower Princess between farm matches
+    auto_upgrade_every: int = 4  # matches between mid-batch upgrade passes (0 = start of batch only)
+    auto_upgrade_max: int = 10  # max upgrades per pass
 
 
 def resolve_strategy_path(strategy: str | Path, root: Path = Path(".")) -> Path:
@@ -304,6 +308,7 @@ class BotRunner:
                                        if cfg.harvest_templates else None,
                                        my_deck=self.params.deck)
         self.completed = 0
+        self._upgrade_requested = False
         self._match_summaries: list[dict] = []
         self._on_summary_hook: Callable[[dict], None] | None = None
         self.findings: queue.Queue[Finding] = queue.Queue()
@@ -382,11 +387,55 @@ class BotRunner:
         if summary.get("status") == "completed":
             self.completed += 1
         log.info("match %s: %s (%d/%d)", summary["match_id"], summary["result"], self.completed, self.cfg.matches)
+        if self.account is not None and self.cfg.experiment_id is None and not self.cfg.observe_only:
+            if self.account.sync_king_level(summary.get("my_king_level_seen")):
+                self.account.save()
+                self._sync_policy_levels()
+        if (self.cfg.auto_upgrade and self.cfg.experiment_id is None and not self.cfg.observe_only
+                and self.cfg.auto_upgrade_every > 0 and self.completed > 0
+                and self.completed % self.cfg.auto_upgrade_every == 0
+                and self.completed < self.cfg.matches):
+            self._upgrade_requested = True
+            self.session.suspend_menu = True  # hold menu taps until the upgrade pass runs
         if self.cfg.prune_win_video and summary.get("match_id"):
             retain_match(self.cfg.data / str(summary["match_id"]))
         self._match_summaries.append(summary)
         if self._on_summary_hook is not None:
             self._on_summary_hook(summary)
+
+    def _sync_policy_levels(self) -> None:
+        if self.account is None:
+            return
+        levels = self.account.policy_levels()
+        self.policy.levels = levels
+        self.policy.ctx.levels = levels
+        self.policy.tier0.levels = levels
+        for pol, _, _ in self._policy_cache.values():
+            pol.levels = levels
+            pol.ctx.levels = levels
+            pol.tier0.levels = levels
+
+    def _run_auto_upgrade(self) -> None:
+        """Upgrade ready Battle Deck cards & Tower Princess between farm matches."""
+        self.session.suspend_menu = True
+        try:
+            rep = run_auto_upgrade(
+                self.client, self.screens, self.layout,
+                matcher=self.perception.matcher, account=self.account,
+                max_upgrades=self.cfg.auto_upgrade_max,
+                log=lambda fmt, *args: log.info("auto-upgrade: " + fmt, *args),
+            )
+            if rep.upgraded:
+                log.info("auto-upgrade completed %d upgrades: %s", len(rep.upgraded), rep.upgraded)
+                self._sync_policy_levels()
+            else:
+                log.info("auto-upgrade: no affordable upgrades ready (deck=%s, home=%s)",
+                         rep.reached_deck, rep.returned_home)
+        except Exception:
+            log.exception("auto-upgrade pass failed; continuing farming")
+        finally:
+            self._upgrade_requested = False
+            self.session.suspend_menu = False
 
     def _connect(self) -> None:
         self.client = ScrcpyClient(self.profile, on_packet=self.recorder.on_packet)
@@ -467,12 +516,21 @@ class BotRunner:
         self._on_summary_hook = on_summary
         if self.game_version is None:
             self.game_version = self.client_version()
+        run_start_upgrade = bool(self.cfg.auto_upgrade and self.cfg.experiment_id is None and not self.cfg.observe_only)
+        if run_start_upgrade:
+            self.session.suspend_menu = True
         self._connect()
         stuck_since = None
         last_screen = self.session.screen
         watchdog = AppWatchdog(self.client.adb, PACKAGE)
         try:
+            if run_start_upgrade:
+                self._run_auto_upgrade()
             while self.completed < self.cfg.matches and not (stop_when and stop_when()):
+                if self._upgrade_requested and self.session.match is None:
+                    self._run_auto_upgrade()
+                    self.session.screen_since = time.monotonic()
+                    stuck_since = None
                 # Checked every pass, not only when liveness is quiet: a dead game shows a
                 # stuck launcher, whose findings would otherwise starve this check.
                 if not self.cfg.observe_only and watchdog.due() and watchdog.died():
