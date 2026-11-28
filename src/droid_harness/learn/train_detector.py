@@ -45,7 +45,7 @@ def train(cfg: TrainConfig) -> Path:
 
     model = YOLO(cfg.model)
     model.train(data=str(cfg.data_yaml), imgsz=cfg.imgsz, epochs=cfg.epochs, batch=cfg.batch,
-                device=cfg.device, project=str(cfg.project), name=cfg.name,
+                device=cfg.device, project=str(cfg.project.resolve()), name=cfg.name,
                 cache=cfg.cache, workers=cfg.workers, patience=cfg.patience,
                 exist_ok=True)  # without it Ultralytics auto-increments the dir and we'd read a stale best.pt
     best = Path(getattr(model.trainer, "best", "") or Path(model.trainer.save_dir) / "weights" / "best.pt")

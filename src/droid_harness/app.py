@@ -174,6 +174,13 @@ def run_doctor(*, device: str = "phone-a", strategy: str | Path = "v6",
         p = bundle[opt_key]
         checks[opt_key] = str(p) if (p and p.exists()) else "not configured"
 
+    if bundle["towers"] is not None and bundle["layout"] is not None and bundle["layout"].exists():
+        try:
+            TowerStateReader.load(bundle["towers"], rois=Layout.load(bundle["layout"]).towers)
+        except Exception as e:
+            checks["towers"] = f"ERROR: {e}"
+            problems.append(f"tower templates invalid: {e}")
+
     if bundle["digits"] is not None:
         dr = load_digits(bundle["digits"])
         checks["digit_templates"] = 10 if dr is not None else "incomplete (<10 digits)"
@@ -292,7 +299,7 @@ class BotRunner:
                                        matcher=CardMatcher.load(cfg.templates), digits=load_digits(cfg.digits),
                                        detector=self.detector, on_my_play=self._on_my_play,
                                        detect_every=cfg.detect_every, async_detect=cfg.async_detect,
-                                       tower_states=TowerStateReader.load(cfg.towers) if cfg.towers else None,
+                                       tower_states=TowerStateReader.load(cfg.towers, rois=self.layout.towers) if cfg.towers else None,
                                        harvest=TemplateHarvester(cfg.harvest_templates)
                                        if cfg.harvest_templates else None)
         self.completed = 0

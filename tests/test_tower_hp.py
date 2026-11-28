@@ -88,3 +88,59 @@ def test_unknown_hp_difference_adds_nothing_to_the_dense_margin():
     base = {"result": "loss", "my_crowns": 0, "opp_crowns": 1, "duration_s": 180}
     assert dense_match_score({**base, "tower_hp_diff": None}) == dense_match_score(base)
     assert dense_match_score({**base, "tower_hp_diff": 2400}) > dense_match_score(base)
+
+
+def test_tower_state_reader_rejects_mismatched_aspect(tmp_path):
+    from droid_harness.domains.clash_royale.perception.towers import TowerStateReader
+
+    lay = Layout.load(CR / "rois/phone-a.yaml")
+    cv2.imwrite(str(tmp_path / "opp_left__alive__0.png"), np.zeros((26, 58), np.uint8))
+    cv2.imwrite(str(tmp_path / "opp_left__rubble__0.png"), np.zeros((26, 67), np.uint8))
+    with pytest.raises(ValueError, match="opp_left__rubble__0.png"):
+        TowerStateReader.load(tmp_path, rois=lay.towers)
+
+
+def test_princess_tower_marked_destroyed_when_bar_vanishes_and_intro_guarded():
+    layout = Layout.load(CR / "rois/phone-a.yaml")
+    p = CRPerception(layout=layout, tiles=TileMapper.load(CR / "tiles/phone-a.yaml"),
+                     cards=CardDB.load(ROOT / "tests/fixtures/cards_starter.json"), arena=Arena(),
+                     matcher=CardMatcher.load(CR / "templates/phone-a"), digits=load_digits(CR / "digits/phone-a"))
+    img = _frame()
+    # Build a clean frame where opp_left has no digits and no red/dark HP bar
+    no_bar = img.copy()
+    h, w = no_bar.shape[:2]
+    r = layout.tower_hp["opp_left"]
+    x0, y0 = max(0, int((r.x0 - 0.02) * w)), max(0, int((r.y0 - 0.02) * h))
+    x1, y1 = min(w, int((r.x1 + 0.03) * w)), min(h, int((r.y1 + 0.05) * h))
+    no_bar[y0:y1, x0:x1] = (120, 160, 180)  # sunlit sand, zero red/dark bar
+
+    # Seed alive towers on real frame (battle HUD active)
+    for i in range(6):
+        p.process(Frame(i + 1, img, 6_000_000 + i * 600_000, 0, 0))
+    assert p.towers["opp_left"] == 1400
+
+    # Feed 4+ tower-read cycles with opp_left bar & digits gone -> marked 0 permanently
+    for i in range(6, 12):
+        p.process(Frame(i + 1, no_bar, 6_000_000 + i * 600_000, 0, 0))
+    assert p.towers["opp_left"] == 0
+    assert any(e["kind"] == "tower_destroyed" and e["tower"] == "opp_left" for e in p.events)
+    # Returning the original frame cannot revive a destroyed tower
+    p.process(Frame(13, img, 14_000_000, 0, 0))
+    assert p.towers["opp_left"] == 0
+
+
+def test_mid_match_clipped_leading_digit_drop_requires_confirmation():
+    from droid_harness.sim.cr_scene import sim_layout, sim_tiles
+
+    lay = sim_layout()
+    lay = replace(lay, towers={"opp_right": Roi(0.7, 0.2, 0.9, 0.23)},
+                  tower_hp={"opp_right": Roi(0.7, 0.2, 0.9, 0.23)})
+    p = CRPerception(layout=lay, tiles=sim_tiles(), cards=CardDB.load(ROOT / "tests/fixtures/cards_starter.json"),
+                     arena=Arena(), matcher=CardMatcher(), digits=_Seq([1750, 750, 1750, 750, 750]))
+    img = np.zeros((1024, 464, 3), np.uint8)
+    p._last_t_ms = 20_000
+    seen = []
+    for _ in range(5):
+        p._read_towers(img, [])
+        seen.append(p.towers.get("opp_right"))
+    assert seen == [1750, 1750, 1750, 1750, 750]

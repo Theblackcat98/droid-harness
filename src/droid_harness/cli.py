@@ -689,11 +689,12 @@ def cmd_replay(a) -> None:
         warmup_once(detector, 2)
 
     def make():
-        return CRPerception(layout=Layout.load(a.layout), tiles=TileMapper.load(a.tiles), cards=cards,
+        lay = Layout.load(a.layout)
+        return CRPerception(layout=lay, tiles=TileMapper.load(a.tiles), cards=cards,
                             arena=Arena.load(a.arena) if a.arena else Arena(),
                             matcher=CardMatcher.load(a.templates), digits=load_digits(a.digits),
                             detector=detector, detect_every=a.detect_every,
-                            tower_states=TowerStateReader.load(a.towers) if a.towers else None)
+                            tower_states=TowerStateReader.load(a.towers, rois=lay.towers) if a.towers else None)
 
     dirs = sorted(d for d in Path(a.data).iterdir() if (d / "stream.h264").exists())
     if a.limit:

@@ -11,6 +11,17 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+SUBSPAWN_VALUE: dict[str, float] = {
+    "goblin_brawler": 2.5, "golemite": 1.5, "lava_pup": 0.5,
+    "elixir_golem_mid": 1.0, "elixir_golem_small": 0.5,
+    "hog": 1.5, "phoenix_egg": 2.0, "royal_guardian": 3.0,
+}
+SUBSPAWN_SPEED: dict[str, float] = {
+    "goblin_brawler": 1.5, "golemite": 0.75, "lava_pup": 1.0,
+    "elixir_golem_mid": 0.75, "elixir_golem_small": 0.75,
+    "hog": 1.5, "phoenix_egg": 0.0, "royal_guardian": 1.0,
+}
+
 
 @dataclass(frozen=True)
 class Card:
@@ -102,6 +113,6 @@ class CardDB:
         c = self.card_for_class(detector_class)
         if c is not None:
             return c.unit_value
-        if detector_class == "goblin_brawler":
-            return 2.5
+        if detector_class in SUBSPAWN_VALUE:
+            return SUBSPAWN_VALUE[detector_class]
         return 2.0 if detector_class in ("other_ground", "other_air") else 0.0

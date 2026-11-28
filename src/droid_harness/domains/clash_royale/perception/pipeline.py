@@ -34,7 +34,7 @@ from .digits import DigitReader, binarize, locate_number, segment
 from .grid import Layout, Roi, TileMapper
 from .hud import is_greyed, read_elixir
 from .ownership import ownership_and_hp, strong_bar_side
-from .towers import TowerStateReader
+from .towers import TowerStateReader, has_tower_hp_bar
 from .tracker import PlayEvent, SpawnGrouper, TileDetection, Track, Tracker
 
 TOWER_SIDE = {"me_left": "me", "me_right": "me", "me_king": "me",
@@ -106,11 +106,16 @@ class CRPerception:
         self._hp_search_ms: dict[str, int] = {}
         self._hp_search_misses: Counter = Counter()
         self._hp_rises: dict[str, list[int]] = {}
+        self._hp_drops: dict[str, list[int]] = {}
+        self._tower_bar_seen: set[str] = set()
+        self._tower_bar_absent: Counter = Counter()
         self.last_detections: list[dict] = []
         self._tower_read_ms = -10**9
         self._tower_reads = 0  # tower read cycles this match
         self._clock_read_ms = -10**9
         self._clock_match_t_s: float | None = None
+        self._clock_in_ot: bool = False
+        self._clock_last_raw_s: float | None = None
         self.clock_activity: float | None = None
         self.frame_i = 0
         self.warnings: Counter = Counter()
@@ -355,11 +360,36 @@ class CRPerception:
             vis_dets.append({"cls": base, "side": side, "conf": round(float(d.conf), 3),
                              "box": (round(bx1, 1), round(by1, 1), round(bx2, 1), round(by2, 1)),
                              "tile": (round(tile[0], 2), round(tile[1], 2)), "hp": hp})
-        self.last_detections = vis_dets
         self._pre_reported_opp = [
             tr.tile for tr in self.tracker.tracks.values() if tr.spawn_reported and tr.side == "opp"
         ]
         tracks, spawns = self.tracker.update(dets, t_ms)
+        for j, vd in enumerate(vis_dets):
+            tid = self.tracker.last_match.get(j)
+            tr = self.tracker.tracks.get(tid) if tid is not None else None
+            if tr is not None and tr.hits >= self.tracker.min_hits:
+                vd["cls"] = tr.cls
+                vd["conf"] = round(float(tr.conf), 3)
+                vd["track_id"] = tr.id
+                vd["coasted"] = False
+                tr.last_box = vd["box"]
+        matched_tids = set(self.tracker.last_match.values())
+        for t in tracks:
+            if t.id in matched_tids:
+                continue
+            base_tr = self.tracker.tracks.get(t.id)
+            if base_tr is not None and base_tr.last_box is not None:
+                p_now = self.tiles.tile_to_px(t.tile, img.shape)
+                p_old = self.tiles.tile_to_px(base_tr.tile, img.shape)
+                dx, dy = p_now[0] - p_old[0], p_now[1] - p_old[1]
+                bx1, by1, bx2, by2 = base_tr.last_box
+                vis_dets.append({
+                    "cls": t.cls, "side": t.side, "conf": round(float(t.conf), 3),
+                    "box": (round(bx1 + dx, 1), round(by1 + dy, 1), round(bx2 + dx, 1), round(by2 + dy, 1)),
+                    "tile": (round(t.tile[0], 2), round(t.tile[1], 2)), "hp": t.hp_pct,
+                    "track_id": t.id, "coasted": True,
+                })
+        self.last_detections = vis_dets
         self.grouper.expire(t_ms)
         for ev in spawns:
             for play in self.grouper.add(ev):
@@ -390,6 +420,10 @@ class CRPerception:
             return
         self._destroyed.add(name)
         self.towers[name] = 0
+        self._hp_fails[name] = 0
+        self._tower_bar_absent[name] = 0
+        self._hp_rises.pop(name, None)
+        self._hp_drops.pop(name, None)
         rec = {"kind": "tower_destroyed", "tower": name, "t_ms": self._last_t_ms}
         self.events.append(rec)
         if self.on_event:
@@ -422,14 +456,19 @@ class CRPerception:
         return self.towers.get(f"me_{lane}") == 0 and play.tile[1] >= 10.5
 
     def _is_building_spawn(self, play: PlayEvent) -> bool:
-        if play.card == "skeletons":
-            sources = ("tombstone", "witch")
-        elif play.card == "spear_goblins":
-            sources = ("goblin_hut",)
-        else:
+        _SPAWN_SOURCES = {
+            "skeletons": ("tombstone", "witch", "graveyard_effect", "skeleton_barrel", "skeleton_king"),
+            "spear_goblins": ("goblin_hut", "goblin_giant"),
+            "goblins": ("goblin_drill", "goblin_barrel_effect"),
+            "fire_spirit": ("furnace",),
+            "barbarians": ("barbarian_hut", "battle_ram"),
+            "bats": ("night_witch",),
+        }
+        sources = _SPAWN_SOURCES.get(play.card)
+        if not sources:
             return False
         return any(
-            tr.side == "opp" and tr.cls in sources and math.dist(play.tile, tr.tile) <= 2.8
+            tr.side == "opp" and tr.cls in sources and math.dist(play.tile, tr.tile) <= 3.0
             for tr in self.tracker.tracks.values()
         )
 
@@ -497,6 +536,8 @@ class CRPerception:
             self.on_event(rec)
 
     def _read_towers(self, img: np.ndarray, warns: list[str]) -> None:
+        if self.frame_i > 0 and not self._battle_hud_seen and self._last_t_ms <= 4000:
+            return  # intro/matchmaking frames before the battle HUD appears
         if self.tower_states is not None:
             for name in self.tower_states.read(img, self.layout.towers):
                 self._mark_destroyed(name)
@@ -505,12 +546,21 @@ class CRPerception:
         hp_rois = self.layout.tower_hp or self.layout.towers
         self._tower_reads += 1
         searched = False
+        hud_active = self._last_hud is not None and self._last_hud >= 0.05
         for name, roi in hp_rois.items():
             if name in self._destroyed:
                 continue  # destruction is permanent; don't let a digit misread revive it
             off = self.hp_offsets.get(name)
             use = roi if off is None else Roi(roi.x0 + off[0], roi.y0 + off[1], roi.x1 + off[0], roi.y1 + off[1])
             hp = self.digits.read(use.crop(img))
+            prev = self.towers.get(name)
+            # Reject clipped 2-3 digit fragments on undamaged start towers (e.g. 512/750/890/400)
+            if hp is not None and prev is None and self._last_t_ms <= 15000:
+                side, _, pos = name.partition("_")
+                twin = f"{side}_{'right' if pos == 'left' else 'left'}" if pos in ("left", "right") else None
+                twin_max = self.tower_max_hp.get(twin, 0) if twin else 0
+                if hp < 1000 or (twin_max >= 1000 and hp < twin_max - 300):
+                    hp = None
             if hp is None or hp <= 0 or hp > 9999:
                 self._hp_fails[name] += 1
                 # The calibrated region can sit a few pixels off the label (labels move between
@@ -523,11 +573,13 @@ class CRPerception:
                     searched = True  # at most one ~15 ms search per tower read cycle
                     self._hp_search_ms[name] = self._last_t_ms
                     mx = self.tower_max_hp.get(name)
+                    min_hp = 1000 if (prev is None and self._last_t_ms <= 15000) else 100
                     v, offset, _ = locate_number(img, roi, self.digits,
-                                                 plausible=lambda x, mx=mx: 100 <= x <= (mx + 5 if mx else 9999))
+                                                 plausible=lambda x, mx=mx, lo=min_hp: lo <= x <= (mx + 5 if mx else 9999))
                     if v is not None:
                         self._hp_search_misses[name] = 0
                         self.hp_offsets[name] = offset
+                        off = offset
                         # Princess labels on one side share a row: give the twin the same vertical offset.
                         side, _, pos = name.partition("_")
                         twin = f"{side}_{'right' if pos == 'left' else 'left'}" if pos in ("left", "right") else None
@@ -537,9 +589,19 @@ class CRPerception:
                     else:
                         self._hp_search_misses[name] += 1
                 if hp is None or hp <= 0 or hp > 9999:
+                    if not name.endswith("_king") and hud_active:
+                        bar = has_tower_hp_bar(img, roi, TOWER_SIDE[name], off or (0.0, 0.0))
+                        if bar is True:
+                            self._tower_bar_seen.add(name)
+                            self._tower_bar_absent[name] = 0
+                        elif bar is False and name in self._tower_bar_seen:
+                            self._tower_bar_absent[name] += 1
+                            if self._tower_bar_absent[name] >= 4:
+                                self._mark_destroyed(name)
                     continue
             self._hp_fails[name] = 0
-            prev = self.towers.get(name)
+            self._tower_bar_seen.add(name)
+            self._tower_bar_absent[name] = 0
             if prev is None and self._last_t_ms <= 5000 and hp < 300:
                 continue  # ignore 1-2 digit intro/crown artifacts on undamaged start towers
             if prev is not None and hp > prev + 5:
@@ -556,6 +618,18 @@ class CRPerception:
                     continue
             else:
                 self._hp_rises.pop(name, None)
+            if prev is not None and hp < prev:
+                clipped_drop = (prev >= 1000 and hp == prev % 1000) or (100 <= prev < 1000 and hp == prev % 100)
+                if clipped_drop:
+                    drops = (self._hp_drops.get(name, []) + [hp])[-2:]
+                    self._hp_drops[name] = drops
+                    if not (len(drops) == 2 and abs(drops[1] - drops[0]) <= 100):
+                        continue
+                    self._hp_drops.pop(name, None)
+                else:
+                    self._hp_drops.pop(name, None)
+            else:
+                self._hp_drops.pop(name, None)
             self.towers[name] = hp
             self.tower_read_counts[name] += 1
             self.tower_max_hp[name] = max(self.tower_max_hp.get(name, 0), hp)
@@ -590,7 +664,21 @@ class CRPerception:
             elif self.layout.clock_countdown:
                 t_s = t_ms / 1000.0
                 # Regulation counts down from 180s; overtime counts down from 120s.
-                self._clock_match_t_s = (180.0 - raw_s) if (t_s < 175.0 and raw_s <= 180.0) else (300.0 - raw_s)
+                just_entered_ot = False
+                if not self._clock_in_ot and (
+                    (self._clock_last_raw_s is not None and self._clock_last_raw_s <= 35.0
+                     and raw_s >= 90.0 and t_s >= 150.0)
+                    or (t_s >= 182.0 and raw_s <= 125.0)
+                ):
+                    self._clock_in_ot = True
+                    just_entered_ot = True
+                cand = (300.0 - raw_s) if self._clock_in_ot else (180.0 - raw_s)
+                if (self._clock_match_t_s is not None and not just_entered_ot
+                        and abs(cand - self._clock_match_t_s) > 10.0):
+                    pass  # reject single-frame clock OCR glitch (e.g. 1:50 -> 0:15)
+                else:
+                    self._clock_match_t_s = cand
+                    self._clock_last_raw_s = raw_s
             else:
                 self._clock_match_t_s = raw_s
         match_t_s = self._clock_match_t_s

@@ -50,10 +50,11 @@ def prior_effectiveness(card: Card, threat_kind: str, cards: CardDB, *, flying: 
 
 
 def effectiveness(p, key: str, threat_kind: str, cards: CardDB, *, flying: bool) -> float:
-    """The CSV row if there is one, else the prior when the strategy opts in, else 0."""
+    """The CSV row if there is one, else the prior when the strategy opts in, else generic row."""
     row = p.counters.get((key, threat_kind))
     if row is not None:
         return row
     if getattr(p, "counter_prior", False) and key in cards:
         return prior_effectiveness(cards[key], threat_kind, cards, flying=flying) * p.counter_prior_scale
-    return 0.0
+    generic = "other_air" if flying else "other_ground"
+    return p.counters.get((key, generic), 0.0)

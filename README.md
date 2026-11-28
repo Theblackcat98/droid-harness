@@ -257,7 +257,7 @@ Notes:
 
 - **Card levels.** Upgrade cards that survive into the Hog EQ deck (Musketeer, Knight, Fireball); keep Giant, Mini P.E.K.K.A, Archers, Minions and Arrows at minimum. After every upgrade session, update [`configs/accounts/theblackcat99.yaml`](configs/accounts/theblackcat99.yaml) ([§6](#account-levels)). `doctor` tells you when a strategy's `tier0.spell_tower_damage` no longer matches your spell levels.
 - **New cards after an arena unlock.** Play a few matches with `--harvest-templates data/harvest`, then `promote-templates` (or capture by hand with `droid-harness template`; `doctor` flags missing ones), add counter rows or rely on the counter prior, then fine-tune the detector ([§10](#10-detector-retrain-or-add-cards)).
-- **Calibrate the Practice and friendly flows** (battle-log Practice buttons, social/friendly screens) before using them as a testbed: `doctor --mode practice` lists what's missing.
+- **Practice Mode is calibrated** (`phone-a`, 2026-11-27): `HOME → menu → battle_log → Practice` starts the match directly — there is no confirm screen. Only two battle-log entries fit on screen without scrolling, so `practice_slot_0/1` cover them and the slot index wraps. Validate another phone's flow with `run --mode practice --matches 1` after `doctor --mode practice` is clean.
 - **Autopilot plumbing:** pick an ntfy topic, install the systemd unit, and decide when to merge the weekly agent's PRs.
 - **Hog Rider (Arena 5).** Switch to the Hog cycle blueprint in [§7](#7-strategy-playbook).
 - **M8 ranker** after ~50+ post-digits ladder matches: `python -m droid_harness.learn.label_from_video --version 2 --cards configs/domains/clash_royale/cards.json --min-credit -0.5`, then `train_ranker`, then test it with `experiment` like any candidate.
@@ -286,6 +286,8 @@ The 2026-11-27 policy release (levels, counter prior) changed every ID: v4 was `
 Card levels change the bot's strength without changing any strategy ID, so they're data: [`configs/accounts/<account>.yaml`](configs/accounts/theblackcat99.yaml) (the account comes from the device profile) holds `king_level` and each deck card's level on the game's unified 1–15 scale; `null` means not recorded yet. Every match records them in `meta.json` as `account_levels`, and an experiment is voided if they change partway.
 
 Perception reads each side's King Level from its Princess Tower max HP (1400 → 1, 1512 → 2, 1624 → 3, 1750 → 4, 1890 → 5, …), so every match also logs the level gap. `doctor` compares the file with what it measured and with each strategy's `tier0.spell_tower_damage`.
+
+The file can also carry `spell_tower_damage` — the spell-vs-tower damage you measured in game with lethal margin 0 (e.g. `fireball: 75`). That is authoritative: the card DB's per-level damage is flat below level 4, so it derives 97 for a Lv3 Fireball, and an estimate must never override a measurement. `doctor` checks strategies against the measured value when one exists and reports the level-derived value alongside it.
 
 With `params.level_aware: true` ([`policy/levels.py`](src/droid_harness/domains/clash_royale/policy/levels.py)):
 - card HP and damage scale by `1.1^(level − start level)` (start levels: common 1, rare 3, epic 6, legendary 9, champion 11). Your cards use the file, falling back to King Level; the opponent's use their inferred King Level;

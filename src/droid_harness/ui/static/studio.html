@@ -374,7 +374,9 @@ function drawPhone() {
     for (const d of dets) {
       const col = d.side === "me" ? C.blue : d.side === "opp" ? C.red : C.ink2;
       const [x1, y1, x2, y2] = d.box; ctx.strokeStyle = col; ctx.lineWidth = 1.6;
+      if (d.coasted) ctx.setLineDash([4, 3]);
       ctx.strokeRect(x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy);
+      if (d.coasted) ctx.setLineDash([]);
       if (d.hp != null) { ctx.fillStyle = col; ctx.fillRect(x1 * sx, y1 * sy - 4, (x2 - x1) * sx * d.hp, 3); }
       if (S.overlay.labels) label(ctx, `${cardName(d.cls)} ${Math.round(d.conf * 100)}%`, x1 * sx, y1 * sy - 6, col);
     }

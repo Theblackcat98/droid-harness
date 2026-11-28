@@ -507,3 +507,115 @@ def test_result_detail_ignores_arena_sand_outside_cushions_and_low_sat():
     img[int(0.42 * h):int(0.51 * h), int(0.05 * w):int(0.14 * w)] = sand_edge_bgr
     img[int(0.19 * h):int(0.25 * h), int(0.66 * w):int(0.76 * w)] = sand_dull_bgr
     assert read_result_detail(img) == ("loss", 1, 0)
+
+
+def test_tracker_vel_clamp_coasting_sticky_class_and_gui_smoothing(scene, cards, arena):
+    import math
+
+    from droid_harness.domains.clash_royale.perception.detector import Detection
+
+    tr = Tracker(min_hits=2, max_speed=4.0, coast=2, coast_ms=200, conf_alpha=0.35, class_votes=2)
+    # Noisy high-speed jumps must be clamped to max_speed (4.0 tiles/s)
+    tr.update([TileDetection("other_ground", 0.40, (4.0, 22.0), side="opp", key="other_ground|opp")], 0)
+    tracks, _ = tr.update([TileDetection("musketeer", 0.80, (5.0, 21.8), side="opp", key="musketeer|opp")], 50)
+    assert len(tracks) == 1
+    assert math.hypot(*tracks[0].vel) <= 4.0 + 1e-6
+    # Second musketeer vote upgrades catch-all -> musketeer and updates key, never downgrades back
+    tracks, _ = tr.update([TileDetection("musketeer", 0.90, (5.0, 21.6), side="opp", key="musketeer|opp")], 100)
+    assert tracks[0].cls == "musketeer" and tracks[0].key == "musketeer|opp"
+    # Confidence is EMA-smoothed, not raw 0.90 -> 0.40
+    assert tracks[0].conf > 0.55
+    tracks, _ = tr.update([TileDetection("other_ground", 0.40, (5.0, 21.5), side="opp", key="other_ground|opp")], 150)
+    assert tracks[0].cls == "musketeer" and tracks[0].conf > 0.50
+
+    # Coasting: missed frame keeps track published with last_ms=t_ms (no double-extrapolation)
+    coasted, _ = tr.update([], 200)
+    assert len(coasted) == 1 and coasted[0].last_ms == 200
+
+    # Pipeline last_detections carries smoothed conf and stabilized cls
+    class FlickerDet:
+        def __init__(self):
+            self.seq = 0
+
+        def __call__(self, img):
+            self.seq += 1
+            h, w = img.shape[:2]
+            cls = "other_ground_opp" if self.seq == 1 else "musketeer_opp"
+            conf = 0.40 if self.seq == 1 else 0.90
+            return [Detection(cls, conf, (w * 0.5, h * 0.45, w * 0.5 + 20, h * 0.45 + 30))]
+
+    perc = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=cards, arena=arena,
+                        matcher=build_matcher_from_scene(scene), detector=FlickerDet())
+    img = scene.render()
+    perc.process(frame(img, 1, 0))
+    perc.process(frame(img, 2, 50_000))
+    perc.process(frame(img, 3, 100_000))
+    assert perc.last_detections[0]["cls"] == "musketeer"
+    assert perc.last_detections[0]["conf"] < 0.85  # EMA-smoothed, not raw 0.90
+
+
+def test_ot_clock_transition_spawner_subspawn_and_coasted_boxes(scene, cards, arena):
+    from droid_harness.domains.clash_royale.cards import SUBSPAWN_VALUE
+    from droid_harness.domains.clash_royale.perception.detector import Detection
+    from droid_harness.domains.clash_royale.perception.grid import Roi
+    from droid_harness.domains.clash_royale.perception.tracker import PlayEvent, SpawnEvent
+    from droid_harness.domains.clash_royale.state import GameState, Unit
+    from droid_harness.ui.snapshot import snapshot_from_record
+
+    # 1. Clock OT transition & single-frame glitch filter
+    lay = scene.layout
+    lay = type(lay)(
+        hand=lay.hand, next_card=lay.next_card, elixir_bar=lay.elixir_bar, clock=lay.clock,
+        towers=lay.towers, arena=lay.arena, buttons=lay.buttons, elixir_hsv_lo=lay.elixir_hsv_lo,
+        elixir_hsv_hi=lay.elixir_hsv_hi, tower_hp=lay.tower_hp, clock_countdown=True,
+    )
+    p = CRPerception(layout=lay, tiles=scene.tiles, cards=cards, arena=arena,
+                     matcher=build_matcher_from_scene(scene))
+    seq = iter([10.0, 2.0, 120.0, 15.0, 118.0])
+    p._parse_clock = lambda crop, allow_red=False: next(seq)
+    img = scene.render()
+    t1, _ = p._read_clock(img, 166_000, [])
+    t2, _ = p._read_clock(img, 174_000, [])
+    t3, _ = p._read_clock(img, 176_000, [])  # 2:00 OT banner arrives before 180s
+    t4, _ = p._read_clock(img, 177_500, [])  # glitch 15.0s rejected
+    t5, _ = p._read_clock(img, 179_000, [])
+    assert (t1, t2, t3, t4, t5) == (170.0, 178.0, 180.0, 180.0, 182.0)
+
+    # 2. Expanded spawner suppression & 3M swarm upgrade
+    class StaticDet:
+        def __init__(self):
+            self.items = []
+
+        def __call__(self, im):
+            return list(self.items)
+
+    det = StaticDet()
+    p2 = CRPerception(layout=scene.layout, tiles=scene.tiles, cards=cards, arena=arena,
+                      matcher=build_matcher_from_scene(scene), detector=det)
+    shape = img.shape
+    x0, y0, _, _ = scene.layout.arena.to_px(shape)
+    px, py = scene.tiles.tile_to_px((9.0, 24.0), shape)
+    det.items = [Detection("furnace_opp", 0.9, (px - 8 - x0, py - 16 - y0, px + 8 - x0, py - y0))]
+    p2._detect(img, 0)
+    p2._detect(img, 100)
+    assert p2._is_building_spawn(PlayEvent("opp", "fire_spirit", (9.2, 23.0), 500, 1))
+    assert not p2._is_building_spawn(PlayEvent("opp", "knight", (9.2, 23.0), 500, 1))
+
+    g = SpawnGrouper(cards.card_for_class)
+    plays = []
+    for i in range(3):
+        plays += g.add(SpawnEvent(30 + i, "musketeer", "opp", (9.0 + 0.2 * i, 28.0), 1000 + 30 * i))
+    assert [(pl.card, pl.upgraded_from) for pl in plays] == [("musketeer", None), ("three_musketeers", "musketeer")]
+
+    # 3. Sub-spawn value, threat speed, coasted boxes, and snapshot conf
+    assert cards.unit_value("golemite") == SUBSPAWN_VALUE["golemite"]
+    st = GameState(t_ms=1000, units=[Unit(1, "golemite", "opp", (3.5, 20.0), conf=0.77)])
+    assert st.threats(arena, cards)[0].eta_to_tower_s < 50.0
+    snap = snapshot_from_record({"t_ms": 1000, "state": st.digest()})
+    assert "conf" in snap["units"][0]
+
+    # Coasted detection box appears in last_detections when detector drops a frame
+    det.items = []
+    p2._detect(img, 200)
+    assert any(d.get("coasted") is True for d in p2.last_detections)
+    _ = Roi  # keep lint clean

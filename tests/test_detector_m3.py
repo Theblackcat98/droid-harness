@@ -102,14 +102,15 @@ def test_synth_dataset_layout_and_side_aware_sprites(tmp_path):
     import yaml
     seg = tmp_path / "segment"
     for d, files in {"knight": ["knight_0_0000001.png", "knight_1_0000002.png"],
-                     "fireball_effect": ["fireball_1_0000003.png"], "hog_rider": ["hog-rider_1_0000004.png"]}.items():
+                     "fireball_effect": ["fireball_1_0000003.png"],
+                     "unlisted_unit": ["unlisted-unit_1_0000004.png"]}.items():
         (seg / d).mkdir(parents=True)
         for f in files:
             cv2.imwrite(str(seg / d / f), _sprite(40, 24))
     names = _names()
     sprites, counts = synth.load_sprites(seg, names)
     assert sorted(s.cls for s in sprites) == ["fireball_effect", "knight_me", "knight_opp"]
-    assert counts["skipped:hog_rider"] == 1  # not in our class list
+    assert counts["skipped:unlisted_unit"] == 1  # not in our class list
     pool = list(sprites)
     bg = np.full((768, 464, 3), 60, np.uint8)
     data = synth.generate_dataset([bg], sprites, tmp_path / "ds", 6, names, synth.SynthConfig(seed=3),
@@ -125,12 +126,11 @@ def test_synth_dataset_layout_and_side_aware_sprites(tmp_path):
             cls, *xywh = row.split()
             assert 0 <= int(cls) < len(names) and all(0 <= float(v) <= 1 for v in xywh)
     with pytest.raises(ValueError, match="not in the class list"):
-        synth.generate_dataset([bg], [synth.Sprite(_sprite(), "hog_rider_opp")], tmp_path / "x", 1, names)
+        synth.generate_dataset([bg], [synth.Sprite(_sprite(), "unlisted_unit_opp")], tmp_path / "x", 1, names)
 
 
 def test_katacr_real_frames_convert_by_sequence_with_catch_alls(tmp_path):
     from droid_harness.learn import katacr
-    root = Path(__file__).resolve().parents[1]
     part2 = tmp_path / "part2"
     (part2 / "ClashRoyale_detection.yaml").parent.mkdir(parents=True)
     (part2 / "ClashRoyale_detection.yaml").write_text(
@@ -149,8 +149,8 @@ def test_katacr_real_frames_convert_by_sequence_with_catch_alls(tmp_path):
             for fr in ("00000", "00015"):
                 (d / f"{fr}.txt").write_text("\n".join(rows) + "\n")
                 cv2.imwrite(str(d / f"{fr}.jpg"), np.zeros((896, 568, 3), np.uint8))
-    names = _names()
-    alias = katacr.load_alias(root / "models/katacr_alias.json", root / "models/katacr_generic.json")
+    names = ["knight_me", "knight_opp", "fireball_effect", "other_ground_opp", "other_air_opp"]
+    alias = {"knight": "knight", "fireball": "fireball_effect", "hog-rider": "other_ground", "balloon": "other_air"}
     data, counts = katacr.convert(part2, tmp_path / "out", names, alias, val_frac=0.3)
     groups = json.loads((tmp_path / "out/groups.json").read_text())
     assert set(groups.values()) == {"train", "val"}  # both splits exist ...

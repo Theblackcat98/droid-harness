@@ -5,6 +5,7 @@ __pycache__/
 .venv
 runs/
 yolo26n.pt
+yolo26s.pt
 data/
 vendor/
 models/*

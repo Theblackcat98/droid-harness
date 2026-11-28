@@ -12,13 +12,15 @@ from droid_harness.flywheel.eval.runner import ExperimentConfig, ExperimentRunne
 def test_practice_flow_picks_the_pair_opponent():
     slots = {f"practice_slot_{i}": Roi(0.1, 0.2 + 0.1 * i, 0.9, 0.25 + 0.1 * i) for i in range(4)}
     nav = MenuNavigator({**slots, "menu": Roi(0, 0, 0.1, 0.1)}, dict(DEFAULT_FLOWS["practice"]), cooldown_s=0)
-    nav.slot_index = 2
+    nav.slot_index = 1
     ev = nav.events_for("BATTLE_LOG", (1024, 464, 3), 0)
-    assert ev and ev[0].action_id == "menu:BATTLE_LOG:practice_slot_2"
-    nav.slot_index = 5  # wraps over the calibrated entries
-    assert nav.events_for("BATTLE_LOG", (1024, 464, 3), 0)[0].action_id.endswith("practice_slot_1")
+    assert ev and ev[0].action_id == "menu:BATTLE_LOG:practice_slot_1"
+    nav.slot_index = 4  # wraps over the calibrated entries (two fit on screen)
+    assert nav.events_for("BATTLE_LOG", (1024, 464, 3), 0)[0].action_id.endswith("practice_slot_0")
     buttons, screens = required_for("practice")
-    assert {"battle_log", "confirm", "practice_slot_0"} <= buttons and "BATTLE_LOG" in screens
+    # The Practice tap starts the match directly (VS screen), so no confirm screen is required.
+    assert {"battle_log", "practice_slot_0"} <= buttons and "BATTLE_LOG" in screens
+    assert "confirm" not in buttons and "PRACTICE_CONFIRM" not in screens
     assert "RESULT_WIN" not in screens and "UNKNOWN" not in screens
     assert {"friendly_host", "friendly_guest"} <= DEFAULT_FLOWS.keys()
 

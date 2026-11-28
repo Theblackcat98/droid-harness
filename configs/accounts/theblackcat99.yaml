@@ -2,15 +2,23 @@
 # Update after every upgrade session. Every match records these in meta.json, and a paired
 # experiment is voided if they change mid-run (an upgrade changes the bot's strength without
 # changing any strategy ID). Levels use the game's unified 1-15 scale.
+#
+# Read off the Battle Deck screen on 2026-11-27 (King Level 2, 8/9 to level 3).
 account: theblackcat99
-king_level: 2          # measured 2026-11-27: your Princess Towers read 1512 HP
+king_level: 2
 updated: 2026-11-27
-cards:                 # null = not recorded yet (falls back to king_level in level-aware math)
-  knight: null
-  archers: 3           # upgraded Lv2 -> Lv3 on 2026-11-26
-  minions: null
-  arrows: null
-  fireball: null
-  giant: null
-  musketeer: null
-  mini_pekka: null
+cards:
+  knight: 2
+  archers: 3
+  minions: 1
+  arrows: 1
+  fireball: 3
+  giant: 3
+  musketeer: 3
+  mini_pekka: 4
+# Crown-tower damage measured in game with lethal margin 0 (see ladder-vision-v6.yaml). This is
+# authoritative: doctor checks the strategies against these, not the card DB estimate, because
+# the DB's per-level damage is flat below level 4 (it says fireball ~97 at Lv3, the game shows 75).
+spell_tower_damage:
+  fireball: 75
+  arrows: 30

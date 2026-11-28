@@ -17,3 +17,7 @@ d718599b3b13: hog-cycle-v1
 3e41671ff61b: training-camp-v3-e3-tank-ahead
 d3ed5cb61098: training-camp-v3-e4-cycle-gate
 4aa74971971a: training-camp-v3-e5-reserve
+# Policy source before counter_prior generic CSV fallback (2026-11-27):
+61f2df2e1ec1: ladder-vision-v4
+434fb3d8d263: ladder-vision-v6
+f42458bd6f37: ladder-vision-v7

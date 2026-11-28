@@ -11,8 +11,8 @@ import numpy as np
 
 # HSV ranges (OpenCV hue 0..180). Calibrate on your phone; these are starting points.
 BLUE = ((95, 120, 120), (125, 255, 255))
-RED_LO = ((0, 120, 120), (8, 255, 255))
-RED_HI = ((170, 120, 120), (180, 255, 255))
+RED_LO = ((0, 120, 120), (10, 255, 255))
+RED_HI = ((163, 120, 120), (180, 255, 255))
 
 
 def bar_strip(img: np.ndarray, box: tuple[float, float, float, float], height_px: int = 8,

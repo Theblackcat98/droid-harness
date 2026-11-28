@@ -16,11 +16,11 @@ towers:
   me_right: [0.715, 0.592, 0.860, 0.618]
   me_king: [0.430, 0.722, 0.600, 0.752]
 tower_hp:
-  opp_left: [0.163, 0.156, 0.265, 0.178]
-  opp_right: [0.754, 0.156, 0.854, 0.178]
+  opp_left: [0.159, 0.156, 0.265, 0.178]
+  opp_right: [0.744, 0.156, 0.854, 0.178]
   opp_king: [0.456, 0.068, 0.575, 0.091]
-  me_left: [0.163, 0.612, 0.265, 0.633]
-  me_right: [0.754, 0.612, 0.854, 0.633]
+  me_left: [0.159, 0.612, 0.265, 0.633]
+  me_right: [0.744, 0.612, 0.854, 0.633]
   me_king: [0.456, 0.734, 0.575, 0.758]
 arena: [0.025, 0.086, 0.974, 0.776]
 buttons:
@@ -32,6 +32,12 @@ buttons:
   close: [0.850, 0.100, 0.950, 0.150]
   dismiss: [0.080, 0.450, 0.250, 0.550]
   trophy_ok: [0.380, 0.948, 0.620, 0.992]
+  # Practice gauntlet (calibrated 2026-11-27 from measured pixels on 1080x2400):
+  # MENU first entry; then the Practice buttons of battle-log entries 1 and 2. Only two fit
+  # on screen without scrolling, so the runner's slot index wraps over these two.
+  battle_log: [0.395, 0.075, 0.803, 0.127]
+  practice_slot_0: [0.518, 0.492, 0.721, 0.525]
+  practice_slot_1: [0.518, 0.735, 0.721, 0.767]
 # Top 18% is the stable HUD (clock/opponent/name). The bottom half changes with the
 # hand, so including it made the screen classifier miss real IN_BATTLE frames.
 screen_regions:

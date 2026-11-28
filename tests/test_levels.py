@@ -89,15 +89,33 @@ def test_counter_prior_fills_missing_rows_but_never_overrides_the_csv():
     assert effectiveness(p, "musketeer", "giant", CARDS, flying=False) > 0
 
 
+def test_counter_csv_generic_fallback_when_prior_off():
+    _, p, _ = load_strategy(STRATS / "ladder-vision-v4.yaml")
+    assert not getattr(p, "counter_prior", False)
+    # Named class not in v4's CSV falls back to other_ground / other_air instead of 0.0
+    assert effectiveness(p, "knight", "wizard", CARDS, flying=False) == p.counters[("knight", "other_ground")]
+    assert effectiveness(p, "musketeer", "lava_hound", CARDS, flying=True) == p.counters[("musketeer", "other_air")]
+    p.counters = {("knight", "giant"): 0.0}
+    assert effectiveness(p, "knight", "wizard", CARDS, flying=False) == 0.0
+
+
 def test_account_levels_meta_doctor_and_experiment_void(tmp_path):
     acct = AccountLevels.load(ROOT / "configs/accounts/theblackcat99.yaml")
     assert acct.king_level == 2 and acct.known_cards.get("archers") == 3
+    assert acct.known_cards.get("mini_pekka") == 4 and acct.spell_tower_damage["fireball"] == 75
     m = acct.to_meta()
     assert m["levels_id"] == acct.levels_id and len(acct.levels_id) == 10
     upgraded = AccountLevels(acct.account, acct.king_level, {**acct.cards, "musketeer": 4})
     assert upgraded.levels_id != acct.levels_id
     _, v6, _ = load_strategy(STRATS / "ladder-vision-v6.yaml")
+    # The shipped file is complete, so doctor has nothing to complain about.
+    assert check_strategy(v6, CARDS, acct)["problems"] == []
+    # A value measured in game beats the card DB estimate (flat below level 4: it says ~97).
     rep = check_strategy(v6, CARDS, acct)
+    assert rep["derived_spell_tower_damage"]["fireball"] > rep["measured_spell_tower_damage"]["fireball"]
+    # A partially filled file still reports what is missing.
+    partial = AccountLevels(acct.account, acct.king_level, {"archers": 3})
+    rep = check_strategy(v6, CARDS, partial)
     assert "knight" in rep["card_levels_missing"] and "fireball" in rep["derived_spell_tower_damage"]
     assert derived_spell_tower_damage(CARDS, acct, ["fireball", "knight"]).keys() == {"fireball"}
 

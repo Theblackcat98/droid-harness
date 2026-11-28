@@ -296,7 +296,8 @@ def snapshot_from_record(record: dict, *, params: Any | None = None, costs: Cost
         "hand": hand,
         "next": st.next_card,
         "units": [{"id": u.track_id, "kind": u.kind, "side": u.side, "tile": _round(list(u.tile)),
-                   "vel": _round(list(u.vel)), "hp": _round(u.hp_pct)} for u in st.units],
+                   "vel": _round(list(u.vel)), "hp": _round(u.hp_pct), "conf": _round(u.conf, 2)}
+                  for u in st.units],
         "opp": opponent_cycle(st, costs),
         "decision": candidate_rows(record, params),
         "latency": {k: _round(v, 2) for k, v in (record.get("lat") or {}).items()},

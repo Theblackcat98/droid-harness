@@ -23,11 +23,46 @@ import re
 import subprocess
 from pathlib import Path
 
+_CLASS_NORMALIZE = {
+    "xbow": "x_bow",
+    "wallbreaker": "wall_breaker",
+    "blowdart_goblin": "dart_goblin",
+    "axe_man": "executioner",
+    "zap_machine": "sparky",
+    "mini_zap_machine": "zappy",
+    "ice_golemite": "ice_golem",
+    "ice_spirits": "ice_spirit",
+    "fire_spirits": "fire_spirit",
+    "firespirit_hut": "furnace",
+    "moving_cannon": "cannon_cart",
+    "dart_barrell": "flying_machine",
+    "skeleton_warrior": "guard",
+    "skeleton_balloon": "skeleton_barrel",
+    "rage_barbarian": "lumberjack",
+    "angry_barbarian": "elite_barbarian",
+    "elite_archer": "magic_archer",
+    "witch_mother": "mother_witch",
+    "dark_witch": "night_witch",
+    "assassin": "bandit",
+    "ghost": "royal_ghost",
+    "ram": "ram_rider",
+    "recruit": "royal_recruit",
+    "elixir_golem1": "elixir_golem",
+    "barb_log_effect": "barbarian_barrel_effect",
+    "snowball_effect": "giant_snowball_effect",
+    "three_musketeer": "musketeer",
+}
+
 
 def snake(s: str) -> str:
     s = s.replace("-", "_").replace(" ", "_").replace(".", "")
     s = re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", s)
     return re.sub(r"_+", "_", s).lower().strip("_")
+
+
+def norm_cls(s: str) -> str:
+    k = snake(s)
+    return _CLASS_NORMALIZE.get(k, k)
 
 
 def load(base: Path, name: str):
@@ -53,9 +88,9 @@ def build(repo: Path) -> dict:
                 skipped.append(key)
                 continue
             units = max(1, int(t.get("summon_number") or 0))
-            classes = [snake(t["summon_character"])]
+            classes = [norm_cls(t["summon_character"])]
             if t.get("summon_character_second"):
-                classes.append(snake(t["summon_character_second"]))
+                classes.append(norm_cls(t["summon_character_second"]))
                 units += int(t.get("summon_character_second_count") or 0)
             rec.update(
                 deploy_time_s=(ch.get("deploy_time") or 1000) / 1000, units=units,
@@ -71,7 +106,7 @@ def build(repo: Path) -> dict:
                 continue
             rec.update(deploy_time_s=(b.get("deploy_time") or 1000) / 1000, range_tiles=(b.get("range") or 0) / 1000,
                        hitpoints=int(b.get("hitpoints") or 0), targets_air=bool(b.get("attacks_air")),
-                       unit_classes=[snake(sc_key)])
+                       unit_classes=[norm_cls(sc_key)])
         elif kind == "spell":
             s = spells.get(sc_key, {})
             names = [s.get("projectile"), f"{sc_key}Spell", f"{sc_key}ProjectileRolling", f"{sc_key}Projectile"]
@@ -83,7 +118,7 @@ def build(repo: Path) -> dict:
                 ct_damage_pct=float(100 + ct if ct <= 0 else ct),
                 projectile_speed_tiles_s=((p.get("speed") or 0) / 60) or None,
                 radius_tiles=(p.get("radius") or s.get("radius") or 0) / 1000,
-                unit_classes=[snake(sc_key) + "_effect"])
+                unit_classes=[norm_cls(snake(sc_key) + "_effect")])
         else:
             skipped.append(key)
             continue

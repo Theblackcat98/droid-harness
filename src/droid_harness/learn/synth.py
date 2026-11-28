@@ -60,8 +60,8 @@ class SynthConfig:
     imgsz: tuple[int, int] = (640, 384)  # (h, w): the static export shape
     src_arena_width_px: float = KATACR_ARENA_WIDTH_PX
     scale_jitter: float = 0.1
-    min_units: int = 2
-    max_units: int = 10
+    min_units: int = 4
+    max_units: int = 12
     hp_bar_prob: float = 0.7
     min_visible: float = 0.4
     seed: int = 0
@@ -132,6 +132,8 @@ def compose(background: np.ndarray, sprites: list[Sprite], cfg: SynthConfig, rng
     for j, sp in enumerate(sprites):
         s = base_scale * rng.uniform(1 - cfg.scale_jitter, 1 + cfg.scale_jitter)
         img = _bgra(sp.img)
+        if not is_effect(split_side(sp.cls)[0]) and rng.random() < 0.5:
+            img = cv2.flip(img, 1)
         nw, nh = max(2, int(round(img.shape[1] * s))), max(2, int(round(img.shape[0] * s)))
         img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
         if feet is not None:
@@ -271,7 +273,7 @@ def load_sprites(segment_dir: str | Path, names: list[str], *,
             counts[cls] += 1
     if synthesize_missing_sides:
         for cls in names:
-            if not cls.endswith("_me") or counts[cls] >= 10:
+            if not cls.endswith("_me") or counts[cls] >= 20:
                 continue
             opp_cls = f"{cls[:-3]}_opp"
             opp_pool = [s for s in sprites if s.cls == opp_cls]
@@ -279,7 +281,7 @@ def load_sprites(segment_dir: str | Path, names: list[str], *,
                 continue
             step = max(1, len(opp_pool) // 80)
             for s in opp_pool[::step][:80]:
-                sprites.append(Sprite(_recolor_opp_to_me(s.img), cls, force_bar=True))
+                sprites.append(Sprite(_recolor_opp_to_me(s.img), cls, force_bar=False))
                 counts[cls] += 1
                 counts[f"synth_me:{cls}"] += 1
     return sprites, counts

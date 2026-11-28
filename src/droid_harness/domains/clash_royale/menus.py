@@ -52,12 +52,11 @@ DEFAULT_FLOWS: dict[str, dict[str, list[str]]] = {
     # Practice Mode gauntlet: the bot plays a bot with a real opponent's deck and levels from the
     # battle log. `practice_slot_*` are the Practice buttons of battle-log entries; the runner
     # picks one per experiment pair, so both arms of a pair face the same deck (todo R4).
+    # The Practice tap starts the match directly (VS screen, no confirm dialog as of 2026-11-27).
     "practice": {
         "HOME": ["menu"],
         "MENU": ["battle_log"],
-        "BATTLE_LOG": ["practice_slot_0", "practice_slot_1", "practice_slot_2", "practice_slot_3"],
-        "PRACTICE_CONFIRM": ["confirm"],
-        "TRAINING_CONFIRM": ["confirm"],
+        "BATTLE_LOG": ["practice_slot_0", "practice_slot_1"],
         "RESULT_WIN": ["ok"], "RESULT_LOSS": ["ok"], "RESULT_DRAW": ["ok"],
         "POPUP": ["close"], "UNKNOWN": ["close"],
     },

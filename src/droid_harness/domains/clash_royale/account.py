@@ -25,6 +25,8 @@ class AccountLevels:
     cards: dict[str, int | None] = field(default_factory=dict)
     updated: str | None = None
     path: str | None = None
+    # Tower damage measured in game (lethal margin 0), authoritative over the card DB estimate.
+    spell_tower_damage: dict[str, int] = field(default_factory=dict)
 
     @property
     def known_cards(self) -> dict[str, int]:
@@ -47,7 +49,9 @@ class AccountLevels:
         d = yaml.safe_load(Path(path).read_text()) or {}
         return cls(account=str(d.get("account") or Path(path).stem), king_level=d.get("king_level"),
                    cards=dict(d.get("cards") or {}), updated=str(d.get("updated")) if d.get("updated") else None,
-                   path=str(path))
+                   path=str(path),
+                   spell_tower_damage={k: int(v) for k, v in (d.get("spell_tower_damage") or {}).items()
+                                       if isinstance(v, (int, float))})
 
 
 def load_account(account: str | None, root: Path = Path(".")) -> AccountLevels | None:
@@ -70,16 +74,25 @@ def derived_spell_tower_damage(cards, acct: AccountLevels, deck: list[str]) -> d
 
 
 def check_strategy(params, cards, acct: AccountLevels | None) -> dict:
-    """What ``doctor`` reports: missing card levels and tower-damage values far from the levels."""
+    """What ``doctor`` reports: missing card levels and tower-damage values far from the levels.
+
+    A value measured in game (``spell_tower_damage`` in the account file, lethal margin 0) is
+    authoritative: the card DB's per-level damage is coarse (flat below level 4), so an
+    estimate must never override a measurement.
+    """
     if acct is None:
         return {"account_file": "missing (configs/accounts/<account>.yaml)", "problems": []}
     problems = []
     missing = [k for k in params.deck if not acct.known_cards.get(k)]
     derived = derived_spell_tower_damage(cards, acct, list(params.deck))
+    measured = {k: int(v) for k, v in acct.spell_tower_damage.items() if k in derived}
     configured = dict(params.tier0.spell_tower_damage)
-    for k, v in derived.items():
+    for k, v in {**derived, **measured}.items():
         have = configured.get(k)
-        if have is not None and abs(have - v) > max(5, 0.15 * v):
-            problems.append(f"tier0.spell_tower_damage[{k}] = {have}, but your levels give ~{v}")
+        if have is None or abs(have - v) <= max(5, 0.15 * v):
+            continue
+        src = "your in-game measurement gives" if k in measured else "your levels give"
+        problems.append(f"tier0.spell_tower_damage[{k}] = {have}, but {src} ~{v}")
     return {"account_file": acct.path, "king_level": acct.king_level, "levels_id": acct.levels_id,
-            "card_levels_missing": missing, "derived_spell_tower_damage": derived, "problems": problems}
+            "card_levels_missing": missing, "derived_spell_tower_damage": derived,
+            "measured_spell_tower_damage": measured, "problems": problems}
