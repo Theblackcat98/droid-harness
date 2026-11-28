@@ -79,12 +79,19 @@ def reserve_factor(s, p, cost: int) -> tuple[float, str]:
 
 
 def _weaker_lane(s, ctx: RuleContext) -> str:
-    """Attack the lane with the lower enemy princess HP; ties go to the lane with fewer enemies."""
-    hp = {lane: s.towers.get(f"opp_{lane}", 0) or 10**9 for lane in ("left", "right")}
-    crowd = {"left": 0, "right": 0}
+    """Pick attack lane balancing enemy tower HP and defensive fortification (avoids dead/walled lanes)."""
+    alive = {lane: s.towers.get(f"opp_{lane}", 1) > 0 for lane in ("left", "right")}
+    if alive["left"] != alive["right"]:
+        return "left" if alive["left"] else "right"
+    hp = {lane: s.towers.get(f"opp_{lane}", 0) or 2000 for lane in ("left", "right")}
+    max_hp = max(hp["left"], hp["right"], 1500)
+    load = {"left": 0.0, "right": 0.0}
     for u in s.enemy_units():
-        crowd[ctx.arena.lane_of(u.tile[0])] += 1
-    return min(("left", "right"), key=lambda lane: (hp[lane], crowd[lane]))
+        lane = ctx.arena.lane_of(u.tile[0])
+        uc = ctx.cards.card_for_class(u.kind)
+        mult = 1.5 if (uc is not None and uc.kind == "building") else 1.0
+        load[lane] += ctx.cards.unit_value(u.kind) * u.hp_pct * mult
+    return min(("left", "right"), key=lambda lane: (hp[lane] / max_hp + 0.12 * load[lane], load[lane]))
 
 
 def unanswered_threat(s, p, ctx: RuleContext) -> bool:
@@ -129,37 +136,57 @@ class CounterPush:
     id = "offense.counter_push"
 
     def propose(self, s, p, ctx: RuleContext, intent):
+        if unanswered_threat(s, p, ctx):
+            return  # defend an unanswered opposite-lane push before reinforcing a counter-push
         groups: dict[str, float] = {"left": 0.0, "right": 0.0}
         lead: dict[str, tuple[float, float]] = {}
+        has_wc_in_lane: dict[str, bool] = {"left": False, "right": False}
         for u in s.my_units():
             if u.vel[1] <= 0.2:  # not advancing
                 continue
             lane = ctx.arena.lane_of(u.tile[0])
             groups[lane] += ctx.cards.unit_value(u.kind) * u.hp_pct
+            uc = ctx.cards.card_for_class(u.kind)
+            if uc is not None and uc.key in p.win_conditions:
+                has_wc_in_lane[lane] = True
             if lane not in lead or u.tile[1] > lead[lane][1]:
                 lead[lane] = u.tile
+        wc_in_hand = [k for k in s.hand if k and k in p.win_conditions and k in ctx.cards]
+        wc_cost = min((ctx.cards.cost(k) for k in wc_in_hand), default=0)
         for lane, value in groups.items():
             if value < p.counterpush_min_value or lane not in lead:
                 continue
+            other = "right" if lane == "left" else "left"
+            dead_lane_pen = 0.5 if (s.towers.get(f"opp_{lane}", 1) == 0 and s.towers.get(f"opp_{other}", 1) > 0) else 1.0
             enemies = sum(1 for u in s.enemy_units() if ctx.arena.lane_of(u.tile[0]) == lane)
             lx, ly = lead[lane]
             for slot, key in s.affordable_hand(ctx.cards):
                 card = ctx.cards[key]
                 if card.is_spell or card.kind == "building":
                     continue
+                is_wc = key in p.win_conditions
+                if not is_wc:
+                    if p.counterpush_min_elixir > 0 and s.my_elixir < p.counterpush_min_elixir:
+                        continue
+                    # Bank elixir for Giant in hand instead of dumping 3e support at the bridge.
+                    if (p.counterpush_bank_for_wc and wc_cost > 0
+                            and not has_wc_in_lane[lane]
+                            and s.my_elixir < wc_cost + 1.5):
+                        continue
                 score = p.counter_push_bonus * value / 10 - 0.1 * enemies - p.elixir_weight * card.cost / 20
-                tank = p.counterpush_tank_ahead and key in p.win_conditions
+                tank = p.counterpush_tank_ahead and is_wc
                 if tank:  # E3: the tank leads, so the survivors shoot from behind it
                     tile = ctx.placement.snap((lx, ly + 1.0), card, s)
                     score += p.counterpush_tank_bonus
                     fc, why = counter_factor(s, p, key, ctx)
                     fr, why_r = reserve_factor(s, p, card.cost)
-                    score = _scale(score, fc * fr)
+                    score = _scale(score, fc * fr * dead_lane_pen)
                     why = f"{why}{why_r}"
                 else:
                     tile = ctx.placement.snap((lx, ly - 2.0), card, s)
+                    tile = ctx.placement.avoid_clump(tile, card, s, radius=p.avoid_clump_radius)
                     fr, why = reserve_factor(s, p, card.cost)
-                    score = _scale(score, fr)
+                    score = _scale(score, fr * dead_lane_pen)
                     if p.spell_aware and key == "minions":
                         if s.opp_can_play_now("arrows", ctx.cards):
                             score = _scale(score, 0.65)

@@ -27,9 +27,15 @@ params:
   counterpush_tank_ahead: true
   counterpush_tank_bonus: 0.35
   giant_back_build: true
-  giant_safe_build_elixir: 7.5
+  giant_safe_build_elixir: 8.5
   giant_back_build_score: 0.65
+  giant_back_build_allow_in_opening: false
   attack_blocked_by_threat_eta_s: 6.0
+  ignore_chip_tower_hp_frac: 0.55
+  ignore_chip_max_threat_value: 1.8
+  bank_for_wc_max_threat: 2.2
+  counterpush_min_elixir: 4.5
+  counterpush_bank_for_wc: true
   counter_gate: true
   wc_counters: [mini_pekka, goblin_cage, tombstone, cannon, minions, minion_horde, skeleton_army, barbarians, valkyrie, prince, witch, pekka, inferno_tower, hunter]
   counter_in_hand_mult: 0.45
@@ -52,6 +58,9 @@ tier0:
   leak_card_preference: [knight, archers, minions, musketeer, mini_pekka]
   emergency_eta_s: 1.8
   emergency_hp_frac: 0.35
+placement:
+  anti_spell_tower_offset: 3.0
+  melee_kite_center: true
 weights:
   defend.lane_threat: 1.0
   defend.air_threat: 1.0

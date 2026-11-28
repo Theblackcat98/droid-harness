@@ -49,6 +49,9 @@ params:
   use_min_cycle_elixir: true
   ignore_chip_tower_hp_frac: 0.60
   ignore_chip_max_threat_value: 1.6
+  bank_for_wc_max_threat: 2.2
+  counterpush_min_elixir: 4.5
+  counterpush_bank_for_wc: true
   opposite_lane_punish: true
   punish_min_enemy_cost: 5
   punish_enemy_back_y: 23.5

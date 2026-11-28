@@ -41,15 +41,29 @@ class ScreenClassifier:
         return [dhash(r.crop(img)) for r in self.regions]
 
     def battle_evidence(self, img: np.ndarray) -> float:
-        """Fraction of magenta (elixir) pixels in the elixir-bar region."""
+        """Fraction of magenta (elixir) pixels in the elixir-bar region.
+
+        Rejects full-screen purple/magenta chest or Lucky Drop animations where the
+        center arena body itself is saturated with magenta.
+        """
         if self.battle_roi is None:
             return 0.0
         crop = self.battle_roi.crop(img)
         if crop.size == 0:
             return 0.0
-        mask = cv2.inRange(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV),
-                           np.array(self.battle_hsv_lo, np.uint8), np.array(self.battle_hsv_hi, np.uint8))
-        return float((mask > 0).mean())
+        lo = np.array(self.battle_hsv_lo, np.uint8)
+        hi = np.array(self.battle_hsv_hi, np.uint8)
+        mask = cv2.inRange(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV), lo, hi)
+        frac = float((mask > 0).mean())
+        if frac < self.battle_min_frac:
+            return frac
+        h, w = img.shape[:2]
+        mid = img[int(0.25 * h):int(0.72 * h), int(0.10 * w):int(0.90 * w)]
+        if mid.size > 0:
+            mid_mask = cv2.inRange(cv2.cvtColor(mid, cv2.COLOR_BGR2HSV), lo, hi)
+            if float((mid_mask > 0).mean()) >= 0.18:
+                return 0.0  # full-screen purple chest / Lucky Drop glow, not an arena
+        return frac
 
     def register(self, name: str, img: np.ndarray) -> None:
         self.references.setdefault(name, []).append(self.signature(img))

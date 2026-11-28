@@ -6,6 +6,7 @@ spells). Moving targets keep moving meanwhile, so aim where they'll be.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from .. import path
@@ -63,9 +64,15 @@ class Placement:
         elif card.range_tiles >= 2.5:
             # ranged troop: stand off behind the predicted point, toward our side
             tx, ty = predicted[0], predicted[1] - self.params.ranged_standoff_tiles
+            tpos = self.arena.towers.get(threat.tower)
+            # Never hide ranged defenders behind an alive Princess Tower (e.g. [3.5, 5.0]):
+            # step laterally toward center-high so they shoot cleanly without sharing tower splash.
+            if (tpos is not None and not threat.tower.endswith("_king")
+                    and s.towers.get(threat.tower, 1) > 0 and ty < tpos[1] + 1.0):
+                tx = min(8.0, tpos[0] + 3.0) if threat.lane == "left" else max(10.0, tpos[0] - 3.0)
+                ty = max(tpos[1] + 1.0, min(predicted[1] - 1.0, 10.0))
             offset = self.params.anti_spell_tower_offset
             if offset > 0 and any(sp in s.opp_deck_seen for sp in ("fireball", "poison", "rocket", "lightning")):
-                tpos = self.arena.towers.get(threat.tower)
                 if tpos is not None and abs(tx - tpos[0]) < offset and abs(ty - tpos[1]) < offset:
                     # Shift laterally toward center lane (x = 9) to deny 2-for-1 spell value on tower + defender
                     tx = min(8.5, tpos[0] + offset) if threat.lane == "left" else max(9.5, tpos[0] - offset)
@@ -93,3 +100,17 @@ class Placement:
     def snap(self, tile: Point, card: Card, s: GameState) -> Point:
         x, y = self.arena.clamp_deployable(tile, card.kind, s.pocket_open)
         return (round(x * 2) / 2, round(y * 2) / 2)  # half-tile grid
+
+    def avoid_clump(self, tile: Point, card: Card, s: GameState, radius: float = 1.8) -> Point:
+        """Offset non-tank troop placements away from stacked friendly units to avoid splash."""
+        if radius <= 0 or card.is_spell or card.kind == "building" or card.buildings_only:
+            return tile
+        crowded = [
+            u for u in s.my_units()
+            if u.flying == card.flying and math.dist(u.tile, tile) < radius
+        ]
+        if not crowded:
+            return tile
+        dx = 1.5 if tile[0] < self.arena.width / 2 else -1.5
+        shifted = (tile[0] + dx, max(1.5, tile[1] - 1.0))
+        return self.snap(shifted, card, s)

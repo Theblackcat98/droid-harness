@@ -21,3 +21,8 @@ d3ed5cb61098: training-camp-v3-e4-cycle-gate
 61f2df2e1ec1: ladder-vision-v4
 434fb3d8d263: ladder-vision-v6
 f42458bd6f37: ladder-vision-v7
+# Policy source as of 0bd7333 (2026-11-27, before 31-match video-audit fixes):
+a14483bc3227: ladder-vision-v4
+e73e2dcf4fa7: ladder-vision-v5
+6aa01f15bc4c: ladder-vision-v6
+63555ca45947: ladder-vision-v7

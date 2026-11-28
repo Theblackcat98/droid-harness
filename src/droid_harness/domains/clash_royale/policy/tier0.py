@@ -57,15 +57,33 @@ class Tier0:
         return best
 
     def emergency_defend(self, s: GameState, p: Params) -> Candidate | None:
-        for th in s.threats(self.arena, self.cards):
+        threats = s.threats(self.arena, self.cards)
+        # Prioritize threats actively hitting our tower (dist <= 3.0) before mid-lane units.
+        threats.sort(key=lambda t: (t.distance > 3.0, t.eta_to_tower_s))
+        for th in threats:
             if th.eta_to_tower_s > p.tier0.emergency_eta_s:
-                break  # sorted by ETA
-            hp, hp_max = s.towers.get(th.tower, 0), self._tower_max.get(th.tower, 0)
-            if not hp_max or hp / hp_max > p.tier0.emergency_hp_frac:
                 continue
-            options = [(self.cards.cost(k), slot, k) for slot, k in s.affordable_hand(self.cards)
-                       if effectiveness(p, k, th.kind, self.cards, flying=th.unit.flying) > 0
-                       and self.cards[k].can_hit(th.unit.flying)]
+            if th.unit.conf < p.emergency_min_conf:
+                continue
+            hp, hp_max = s.towers.get(th.tower, 0), self._tower_max.get(th.tower, 0)
+            if hp <= 0 or not hp_max or hp / hp_max > p.tier0.emergency_hp_frac:
+                continue
+            options = []
+            for slot, k in s.affordable_hand(self.cards):
+                card = self.cards[k]
+                if not card.can_hit(th.unit.flying):
+                    continue
+                if effectiveness(p, k, th.kind, self.cards, flying=th.unit.flying) <= 0:
+                    continue
+                if card.is_spell:
+                    if th.unit.conf < p.spell_min_conf:
+                        continue
+                    u_card = self.cards.card_for_class(th.kind)
+                    if u_card is not None and u_card.hitpoints > 0 and card.damage > 0:
+                        rem_hp = max(1.0, u_card.hitpoints * th.unit.hp_pct)
+                        if card.damage < 0.45 * rem_hp:
+                            continue  # never fire Arrows/Fireball at a tank it barely scratches
+                options.append((self.cards.cost(k), slot, k))
             if not options:
                 continue
             _, slot, key = min(options)

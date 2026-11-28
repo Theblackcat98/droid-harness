@@ -131,6 +131,13 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # Counter prior (todo R7; opt-in): a missing counters-CSV row falls back to card attributes.
     "counter_prior": False,
     "counter_prior_scale": 1.0,
+    # Confidence & starvation / anti-clumping guards (31-match video audit).
+    "spell_min_conf": 0.48,
+    "emergency_min_conf": 0.48,
+    "bank_for_wc_max_threat": 0.0,      # >0 defers low-threat defense while banking for win condition in hand
+    "counterpush_min_elixir": 0.0,      # min elixir required to reinforce a counter-push with support
+    "counterpush_bank_for_wc": False,   # defer cheap counterpush support when win condition is in hand & unaffordable
+    "avoid_clump_radius": 1.8,          # spread non-tank troops away from already-placed friendly troops
 }
 
 

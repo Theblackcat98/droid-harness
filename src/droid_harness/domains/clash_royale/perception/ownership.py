@@ -24,7 +24,8 @@ def bar_strip(img: np.ndarray, box: tuple[float, float, float, float], height_px
     return img[top:bottom, max(0, x1):min(w, x2)]
 
 
-def ownership_and_hp(img: np.ndarray, box, min_fill: float = 0.05) -> tuple[str | None, float | None]:
+def ownership_and_hp(img: np.ndarray, box, min_fill: float = 0.05,
+                     dominance: float = 1.0) -> tuple[str | None, float | None]:
     strip = bar_strip(img, box)
     if strip.size == 0:
         return None, None
@@ -34,8 +35,9 @@ def ownership_and_hp(img: np.ndarray, box, min_fill: float = 0.05) -> tuple[str 
         cv2.inRange(hsv, np.array(RED_HI[0]), np.array(RED_HI[1]))
     cols_blue = (blue > 0).mean(axis=0) > 0.4
     cols_red = (red > 0).mean(axis=0) > 0.4
-    fb, fr = cols_blue.mean(), cols_red.mean()
-    if max(fb, fr) < min_fill:
+    fb, fr = float(cols_blue.mean()), float(cols_red.mean())
+    hi, lo = (fb, fr) if fb >= fr else (fr, fb)
+    if hi < min_fill or (dominance > 1.0 and lo > 0.0 and hi < dominance * lo):
         return None, None
     side = "me" if fb >= fr else "opp"
     cols = cols_blue if side == "me" else cols_red
@@ -44,6 +46,7 @@ def ownership_and_hp(img: np.ndarray, box, min_fill: float = 0.05) -> tuple[str 
     return side, float(min(1.0, hp))
 
 
-def strong_bar_side(img: np.ndarray, box, min_fill: float = 0.18) -> tuple[str | None, float | None]:
+def strong_bar_side(img: np.ndarray, box, min_fill: float = 0.18,
+                    dominance: float = 1.6) -> tuple[str | None, float | None]:
     """Strict HP-bar check used to catch high-confidence blue/red team overrides."""
-    return ownership_and_hp(img, box, min_fill=min_fill)
+    return ownership_and_hp(img, box, min_fill=min_fill, dominance=dominance)

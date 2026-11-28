@@ -87,6 +87,7 @@ class CRSession:
         self._progress_clock: float | None = None
         self._progress_elixir: float | None = None
         self._progress_since = time.monotonic()
+        self._ever_had_battle_hud = False
         # Stuck-screen fallback: when a menu/result screen refuses to change, walk it
         # back to HOME with calibrated taps, visual button taps, BACK, then a restart.
         self.recovery = recovery or HomeRecovery(menus.buttons)
@@ -153,6 +154,12 @@ class CRSession:
                     name = f"RESULT_{actual.upper()}"
             if self._post_result and name in BATTLE_SCREENS:
                 name = self.screen  # wait for HOME/MENU/TRAINING_CONFIRM before a new match
+            # Block false IN_BATTLE entry on chest / Lucky Drop / menu screens whose top 18%
+            # dhash resembles IN_BATTLE but have no magenta elixir bar at the bottom.
+            if (name in BATTLE_SCREENS and self.screen not in BATTLE_SCREENS
+                    and getattr(self.screens, "battle_roi", None) is not None
+                    and self.screens.battle_evidence(frame.img) < self.screens.battle_min_frac):
+                name = "UNKNOWN"
             if name in {"HOME", "MENU", "TRAINING_CONFIRM"}:
                 self._post_result = False
                 if self.screen not in BATTLE_SCREENS:
@@ -193,19 +200,25 @@ class CRSession:
             now = time.monotonic()
             clock_t = getattr(state, "match_t_s", None)
             elixir = round(state.my_elixir, 1)
+            if any(state.hand_fresh) or clock_t is not None or bool(state.towers):
+                self._ever_had_battle_hud = True
             advanced = any(state.hand_fresh)
             if clock_t is not None and (self._progress_clock is None
                                         or abs(clock_t - self._progress_clock) >= 0.5):
                 advanced = True
-            if self._progress_elixir is None or abs(elixir - self._progress_elixir) >= 0.1:
+            if self._ever_had_battle_hud and (
+                self._progress_elixir is None or abs(elixir - self._progress_elixir) >= 0.1
+            ):
                 advanced = True
+            no_progress_limit = self.battle_no_progress_s if self._ever_had_battle_hud else min(
+                self.battle_no_progress_s, 15.0)
             if advanced:
                 self._progress_clock = clock_t if clock_t is not None else self._progress_clock
                 self._progress_elixir = elixir
                 self._progress_since = now
-            elif now - self._progress_since >= self.battle_no_progress_s:
-                # Clock, hand and elixir are frozen: the chest/reward animation is
-                # not a battle. Record the abort and let menu recovery take over.
+            elif now - self._progress_since >= no_progress_limit:
+                # Clock, hand and elixir are frozen (or battle HUD never appeared on a chest/Lucky
+                # Drop screen): record the abort and let menu recovery take over.
                 self.abort_match("battle_no_progress")
                 self._set_screen("UNKNOWN", frame)
                 self._unknown_since = None
@@ -245,6 +258,7 @@ class CRSession:
         self._progress_clock = None
         self._progress_elixir = None
         self._progress_since = time.monotonic()
+        self._ever_had_battle_hud = False
         self.recovery.reset()
         if self.recorder is not None:
             self.recorder.start_match(self.match.match_id, self.match.__dict__)
@@ -301,7 +315,10 @@ class CRSession:
     # --- PolicyEngine -----------------------------------------------------------
     def decide(self, obs: Observation, intent: Intent | None):
         if obs.state is not None:
-            return self.policy.decide(obs.state, intent)
+            decision = self.policy.decide(obs.state, intent)
+            if decision.chosen is not None and hasattr(self.perception, "record_my_action"):
+                self.perception.record_my_action(decision.chosen.card, decision.chosen.tile, obs.state.t_ms)
+            return decision
         if self.suspend_menu:
             return MenuDecision(obs.screen)
         now = time.monotonic()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ..candidate import Candidate
 from . import RuleContext
+from .offense import _weaker_lane
 
 
 def _cheapest_cycle_card(s, p, ctx: RuleContext):
@@ -46,5 +47,6 @@ class CheapCycle:
         if pick is None:
             return
         _, slot, key = pick
-        tile = ctx.placement.snap(tuple(p.placement.back_tiles["right"]), ctx.cards[key], s)
+        lane = _weaker_lane(s, ctx)
+        tile = ctx.placement.snap(tuple(p.placement.back_tiles[lane]), ctx.cards[key], s)
         yield Candidate(self.id, key, slot, tile, score=0.2, reason="cycle to win condition")

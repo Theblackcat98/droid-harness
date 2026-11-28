@@ -301,7 +301,8 @@ class BotRunner:
                                        detect_every=cfg.detect_every, async_detect=cfg.async_detect,
                                        tower_states=TowerStateReader.load(cfg.towers, rois=self.layout.towers) if cfg.towers else None,
                                        harvest=TemplateHarvester(cfg.harvest_templates)
-                                       if cfg.harvest_templates else None)
+                                       if cfg.harvest_templates else None,
+                                       my_deck=self.params.deck)
         self.completed = 0
         self._match_summaries: list[dict] = []
         self._on_summary_hook: Callable[[dict], None] | None = None
@@ -367,6 +368,7 @@ class BotRunner:
                 self.cfg.opponent_id = f"practice:slot{self.session.menus.slot_index}"
         self.policy, self.strategy_id, self.params = pol, sid, params
         self.session.policy = pol
+        self.perception.set_my_deck(params.deck)
         return sid
 
     def _meta(self) -> MatchMeta:

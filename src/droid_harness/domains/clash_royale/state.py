@@ -140,12 +140,14 @@ class GameState:
         alive = self.tower_alive()
         out = []
         for u in self.enemy_units():
+            card = cards.card_for_class(u.kind)
+            if card is not None and card.kind == "building" and card.key not in ("x_bow", "mortar"):
+                continue  # stationary buildings never walk toward our towers
             lane = arena.lane_of(u.tile[0])
             tower, pos = arena.target_tower("opp", lane, alive)
             dist = path_distance_to_tower(u, arena, pos)
             if dist > max_tiles_to_tower:
                 continue
-            card = cards.card_for_class(u.kind)
             base_speed = (card.speed_tiles_s if card else
                           SUBSPAWN_SPEED.get(u.kind, 1.0 if u.kind in ("other_ground", "other_air") else 0.0))
             speed = max(u.speed, base_speed, speed_floor)
@@ -159,7 +161,8 @@ class GameState:
             "opp_elixir": self.opp_elixir, "hand": self.hand, "hand_fresh": self.hand_fresh,
             "next": self.next_card,
             "units": [(u.track_id, u.kind, u.side, round(u.tile[0], 2), round(u.tile[1], 2),
-                       round(u.vel[0], 2), round(u.vel[1], 2), round(u.hp_pct, 2)) for u in self.units],
+                       round(u.vel[0], 2), round(u.vel[1], 2), round(u.hp_pct, 2), round(u.conf, 2))
+                      for u in self.units],
             "towers": self.towers, "crowns": self.crowns, "opp_last_four": self.opp_last_four,
             "opp_deck_seen": self.opp_deck_seen, "pocket_open": self.pocket_open,
             "posture": self.posture, "last_action_ms": self.last_action_ms, "warnings": self.warnings,
@@ -168,8 +171,11 @@ class GameState:
 
     @classmethod
     def from_digest(cls, d: dict) -> GameState:
-        units = [Unit(track_id=t, kind=k, side=s, tile=(x, y), vel=(vx, vy), hp_pct=hp)
-                 for t, k, s, x, y, vx, vy, hp in d.get("units", [])]
+        units = [
+            Unit(track_id=item[0], kind=item[1], side=item[2], tile=(item[3], item[4]),
+                 vel=(item[5], item[6]), hp_pct=item[7], conf=item[8] if len(item) >= 9 else 1.0)
+            for item in d.get("units", [])
+        ]
         return cls(t_ms=d["t_ms"], phase=d.get("phase", "x1"), my_elixir=d.get("my_elixir", 5.0),
                    opp_elixir=tuple(d.get("opp_elixir", (5.0, 5.0))), hand=list(d.get("hand", [None] * 4)),
                    hand_fresh=list(d.get("hand_fresh", [])), next_card=d.get("next"), units=units, towers=dict(d.get("towers", {})),
