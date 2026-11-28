@@ -89,6 +89,18 @@ class DefendLaneThreat:
                     and lane_val[th.lane] <= p.bank_for_wc_max_threat
                     and hp_frac >= 0.55):
                 continue
+            # Cheap-probe discipline: an affordable card is not a reason to answer a 1-2 elixir
+            # card that is still seconds away from a healthy tower. Let the tower eat the chip and
+            # bank the elixir for a win-condition push (the engine's own value estimate on these
+            # plays was deeply negative in every audited loss).
+            if (p.ignore_cheap_threat_cost > 0
+                    and th.eta_to_tower_s > 2.5
+                    and hp_frac >= p.ignore_cheap_tower_hp_frac
+                    and lane_val[th.lane] <= p.ignore_cheap_lane_value
+                    and th.kind not in SERIOUS_SOLO_THREATS):
+                src = ctx.cards.card_for_class(th.kind)
+                if src is not None and src.cost <= p.ignore_cheap_threat_cost:
+                    continue
             urgency = max(0.0, 1.0 - th.eta_to_tower_s / p.defend_horizon_s)
             if urgency <= 0:
                 continue

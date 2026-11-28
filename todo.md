@@ -22,6 +22,10 @@ Tags: **[you]** needs your hands, phone or account · **[code]** pure code work 
 
 ## Priority queue
 
+0. **[code] Claim the post-match reward chain.** The harness has no screen type for the Collection
+   Level / King's Journey tiers (top-left `Claim` badge → green `Claim` buttons → full-screen
+   "Gems x50" reveal → back to HOME), so nothing is collected: no new cards, and the upgrader
+   reports "no more upgradeable slots" with 6 600 gold in the bank. This gates every future level.
 1. **[you] Close the level gap.** Spend gold on cards that survive into Hog EQ (Musketeer, Knight, Fireball; README §7) and push King Level. Opponents at ~476 trophies were King Level 4–5 against your 2. Levels are now recorded (see below), so `doctor` is clean.
 2. **[you/live] First autopilot cycle, watched.** `droid-harness autopilot --testbed training_camp --test dense --cycles 1 --ui`. The systemd unit is installed (`systemctl --user status droid-autopilot`, paths fixed 2026-11-27) but **not enabled**: after you watch a cycle, `systemctl --user start droid-autopilot` then `enable`.
 3. **[you/live] v7 vs v4.** `droid-harness experiment --champion v4 --candidate v7 --mode training_camp --test dense --ui`, then confirm on the ladder.
@@ -302,6 +306,46 @@ Detector foundations (`models/classes.txt`, `models/katacr_alias.json`, `models/
 ---
 
 # Run log (newest first)
+
+## 2026-11-27 (night) — Ladder v9: two perception bugs, cheap-probe defense, live 40-match window
+
+Live ladder run on `phone-a` after v8 was promoted. Everything below is on the real phone.
+
+- **Wasted lethal spells (bug, fixed).** An undamaged opponent King tower was read as `5` HP on the
+  first two agreeing frames, and `t0.lethal_spell` fired a Fireball at 11 s and Arrows at 27 s in
+  every audited match (7 elixir lost per game). `_read_towers` now requires a first read to be at
+  least the level-1 maximum (princess ≥ 1300, king ≥ 2000) during the first 20 s, and
+  `lethal_spell` additionally requires the tower's HP to have held still for
+  `tier0.lethal_min_stable_ms` (1200 ms) — a new `GameState.tower_hp_stable_ms`, absent meaning
+  "unknown", so old replay states behave as before.
+- **Upgrader could act during a live battle (bug, fixed).** A batch-start pass found the game
+  mid-match, ran `walk_to_home` and tapped BACK/force-restart, which abandons the game. The pass
+  now waits up to 10 s for the first screen the classifier recognises and refuses to run on
+  `IN_BATTLE`/`LOADING`/`MATCHMAKING`; an unrecognisable screen skips the pass.
+  Second bug in the same code: the first version of that guard bailed on the `UNKNOWN` flapping
+  around result screens, so every mid-batch pass skipped and no upgrades happened for 11 matches.
+- **Cheap-probe discipline (`ladder-vision-v9.yaml`, new champion).** 20–35 of the 21–43 plays per
+  match were `defend.*`, answering 1–2 elixir probes with 3–4 elixir cards (the engine's own value
+  estimate on those plays was −3 to −7). `ignore_cheap_threat_cost: 2` skips a ≤2 elixir source card
+  that is >2.5 s from a ≥60 % tower while the lane total stays ≤3.0; `spell_value_threshold` 3.5 → 4.5
+  because every match had 1–3 negative-value arrows/fireballs.
+- **Levels (real, via the upgrader).** Tower Princess (King Level 2 → 3), musketeer 3 → 5,
+  knight 2 → 4, fireball 3 → 4, arrows 1 → 5. `configs/accounts/theblackcat99.yaml` updated;
+  `spell_tower_damage` re-derived at the new levels (fireball 82, arrows 44).
+- **Measured.** 952 → 692 trophies climbing, ~2–4 min per match. v9 by opponent King Level:
+  L5 8W–0L, L6 4W–7L, plus two `infra_abort` runs (false `IN_BATTLE` after a win, then a 15 s
+  stuck-screen BACK into MENU). Overall v9 12W–9L over 21 completed matches before the run was
+  paused; the 40-match window is not yet 80 %.
+- **Open, found but not fixed:** the harness has no screen type for the post-match reward chain —
+  the top-left `Claim` badge opens Collection Level / King's Journey tiers with green `Claim`
+  buttons and full-screen "Gems x50"-style reward reveals. Nothing claims them, so no new cards
+  arrive and the upgrader reports "no more upgradeable slots" even with 6 600 gold. Priority 0 for
+  card progression. Also open: `me_spawn_play` events over-count (13 for 5 played knights), which
+  inflates play detection and distorts the opponent-elixir interval.
+- **Tooling.** `tools/ladder_window.py` reports the rolling-ladder-window win rate with a Wilson CI
+  and exits non-zero unless the target is met. `flywheel/engagements.py` now reads logged unit
+  tuples by index (the trailing `conf` field broke `digest`). `tests/test_levels.py` no longer
+  pins the live account's current levels.
 
 ## 2026-11-27 — Plan steps 1–6: trustworthy numbers, levels, testbed, autopilot, cards, value model
 

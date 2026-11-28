@@ -1,24 +1,25 @@
-# Account levels for theblackcat99 (README §7 "Account levels"; todo R2).
-# Update after every upgrade session. Every match records these in meta.json, and a paired
-# experiment is voided if they change mid-run (an upgrade changes the bot's strength without
-# changing any strategy ID). Levels use the game's unified 1-15 scale.
+# Account levels for theblackcat99 (README §6 "Account levels"; todo R2). The auto-upgrader
+# rewrites this file after every upgrade pass, so keep the machine-readable keys intact.
+# Levels use the game's unified 1-15 scale; every match records them in meta.json as
+# account_levels, and a paired experiment is voided if they change mid-run.
 #
-# Read off the Battle Deck screen on 2026-11-27 (King Level 2, 8/9 to level 3).
+# 2026-11-27 22:04 pass: Tower Princess (King Level 2 → 3), arrows 1 → 5, fireball 3 → 4,
+# knight 2 → 4, musketeer 3 → 5.
 account: theblackcat99
-king_level: 2
-updated: 2026-11-27
+king_level: 3
+updated: '2026-11-27'
 cards:
-  knight: 2
+  knight: 4
   archers: 3
   minions: 1
-  arrows: 1
-  fireball: 3
+  arrows: 5
+  fireball: 4
   giant: 3
-  musketeer: 3
+  musketeer: 5
   mini_pekka: 4
-# Crown-tower damage measured in game with lethal margin 0 (see ladder-vision-v6.yaml). This is
-# authoritative: doctor checks the strategies against these, not the card DB estimate, because
-# the DB's per-level damage is flat below level 4 (it says fireball ~97 at Lv3, the game shows 75).
+# Crown-tower damage at the current card levels (1.1x per level from the values measured in
+# game with lethal margin 0: fireball 75 at Lv3, arrows 30 at Lv1). Authoritative: doctor
+# checks strategies against these, not the card-DB estimate (the DB is flat below Lv4).
 spell_tower_damage:
-  fireball: 75
-  arrows: 30
+  fireball: 82   # Lv4
+  arrows: 44     # Lv5

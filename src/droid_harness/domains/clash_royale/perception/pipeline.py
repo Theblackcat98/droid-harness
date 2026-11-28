@@ -229,6 +229,9 @@ class CRPerception:
         self._hp_rises: dict[str, list[int]] = {}
         self._hp_drops: dict[str, list[int]] = {}
         self._hp_init_low: dict[str, list[int]] = {}
+        # (value, t_ms) when the stored HP last changed: lets the policy refuse to act on a
+        # value that has not held still for a moment.
+        self._hp_since: dict[str, list[int]] = {}
         self._tower_bar_seen: set[str] = set()
         self._tower_bar_absent: Counter = Counter()
         self.last_detections: list[dict] = []
@@ -323,6 +326,9 @@ class CRPerception:
         state.clock_drift_s = clock_drift_s
         state.clock_activity = self.clock_activity
         state.tower_max_hp = dict(self.tower_max_hp)
+        state.tower_hp_stable_ms = {
+            name: max(0, self._last_t_ms - since[1]) for name, since in self._hp_since.items()
+        }
         state.my_king_level = king_level_from_princess_hp(
             max(self.tower_max_hp.get("me_left", 0), self.tower_max_hp.get("me_right", 0)))
         state.opp_king_level = king_level_from_princess_hp(
@@ -921,12 +927,15 @@ class CRPerception:
                         continue
                     if hp is not None and hp < 300:
                         hp = None  # rubble noise without an HP bar
-            # Reject clipped 2-3 digit fragments on undamaged start towers (e.g. 512/750/890/400)
-            if hp is not None and prev is None and self._last_t_ms <= 15000:
+            # Reject clipped 2-3 digit fragments on undamaged start towers (e.g. 512/750/890/400,
+            # or an undamaged King read as "5"). Nothing damages a tower before the battle clock
+            # starts, so a first read must be at least the level-1 maximum for that tower.
+            if hp is not None and prev is None and self._last_t_ms <= 20000:
                 side, _, pos = name.partition("_")
                 twin = f"{side}_{'right' if pos == 'left' else 'left'}" if pos in ("left", "right") else None
                 twin_max = self.tower_max_hp.get(twin, 0) if twin else 0
-                if hp < 1000 or (twin_max >= 1000 and hp < twin_max - 300):
+                floor = 2000 if name.endswith("_king") else 1300
+                if hp < floor or (twin_max >= 1000 and hp < twin_max - 300):
                     hp = None
             if hp is None or hp <= 0 or hp > 9999:
                 self._hp_fails[name] += 1
@@ -997,6 +1006,8 @@ class CRPerception:
             else:
                 self._hp_drops.pop(name, None)
             self.towers[name] = hp
+            if self._hp_since.get(name, [None, 0])[0] != hp:
+                self._hp_since[name] = [hp, self._last_t_ms]
             self.tower_read_counts[name] += 1
             self.tower_max_hp[name] = max(self.tower_max_hp.get(name, 0), hp)
         # Seed unactivated King Tower baseline HP from observed Princess Tower max HP so

@@ -48,13 +48,16 @@ def _lane(arena: Arena, x: float) -> str:
 
 
 def board_value(p: Point, side: str, lane: str, arena: Arena, cards: CardDB) -> float:
-    return sum(cards.unit_value(kind) * hp for _, kind, s, x, _y, _vx, _vy, hp in p.units
-               if s == side and _lane(arena, x) == lane)
+    # Logged unit tuples carry a trailing confidence field (see GameState.digest); read by index
+    # so an extra trailing field never breaks analysis again.
+    return sum(cards.unit_value(u[1]) * u[7] for u in p.units
+               if u[2] == side and _lane(arena, u[3]) == lane)
 
 
 def contested(p: Point, lane: str, arena: Arena, advancing: float = 0.2) -> bool:
     """A lane is live while a unit is across the river, or still advancing toward it."""
-    for _, _kind, s, x, y, _vx, vy, _hp in p.units:
+    for u in p.units:
+        _kind, s, x, y, vy = u[1], u[2], u[3], u[4], u[6]
         if _lane(arena, x) != lane:
             continue
         if s == "opp" and (y < arena.river_y[1] or vy < -advancing):

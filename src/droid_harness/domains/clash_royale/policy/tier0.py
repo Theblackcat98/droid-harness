@@ -43,17 +43,23 @@ class Tier0:
 
     def lethal_spell(self, s: GameState, p: Params) -> Candidate | None:
         best = None
+        stable = getattr(s, "tower_hp_stable_ms", None) or {}
         for slot, key in s.affordable_hand(self.cards):
             if not self.cards[key].is_spell:
                 continue
             dmg = self.spell_tower_damage(key, p)
             for tower in ("opp_king", "opp_left", "opp_right"):  # the king first: it ends the game
                 hp = s.towers.get(tower, 0)
-                if 0 < hp and dmg >= hp + p.tier0.lethal_margin_hp:
-                    cand = Candidate("t0.lethal_spell", key, slot, self.arena.towers[tower], 10.0,
-                                     reason=f"{key} {dmg} >= {tower} {hp}")
-                    if best is None:
-                        best = cand
+                if not (0 < hp and dmg >= hp + p.tier0.lethal_margin_hp):
+                    continue
+                # Only trust a value that has held still: one misread digit must not spend a
+                # spell. Missing tracker data (old replay states) means "unknown", not "unstable".
+                if stable and stable.get(tower, 10**9) < p.tier0.lethal_min_stable_ms:
+                    continue
+                cand = Candidate("t0.lethal_spell", key, slot, self.arena.towers[tower], 10.0,
+                                 reason=f"{key} {dmg} >= {tower} {hp}")
+                if best is None:
+                    best = cand
         return best
 
     def emergency_defend(self, s: GameState, p: Params) -> Candidate | None:

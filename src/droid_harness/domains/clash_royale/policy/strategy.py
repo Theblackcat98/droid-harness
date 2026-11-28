@@ -20,6 +20,9 @@ POLICY_DIR = Path(__file__).parent
 
 class Tier0Params(BaseModel):
     lethal_margin_hp: int = 30
+    # A tower's HP value must have been stable this long before a spell may claim lethal. A
+    # single misread (e.g. an undamaged King read as "5") used to fire a 4-elixir spell at 11 s.
+    lethal_min_stable_ms: int = 1200
     spell_tower_damage: dict[str, int] = Field(default_factory=dict)  # your levels; overrides the DB
     leak_threshold: float = 9.3
     leak_ms: int = 800
@@ -114,6 +117,11 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "use_min_cycle_elixir": False,
     "ignore_chip_tower_hp_frac": 1.0,
     "ignore_chip_max_threat_value": 0.0,
+    # Cheap-probe discipline: skip answering a <= N-elixir card (source card cost) that is still
+    # seconds from a healthy tower while the lane total stays small. 0 = off.
+    "ignore_cheap_threat_cost": 0,
+    "ignore_cheap_tower_hp_frac": 0.6,
+    "ignore_cheap_lane_value": 3.0,
     "opposite_lane_punish": False,
     "punish_min_enemy_cost": 5,
     "punish_enemy_back_y": 23.5,

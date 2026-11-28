@@ -259,6 +259,28 @@ def run_auto_upgrade(
     say = log or (lambda *_a, **_k: None)
     rep = UpgradeReport()
 
+    # 0. Never act on a screen that could be a live match. The recovery walk taps buttons and
+    #    can force-restart the app, which would throw away the game in progress. The screen
+    #    classifier flaps to UNKNOWN while a result/chest animation plays, so wait for the first
+    #    frame it recognises instead of treating UNKNOWN as "probably fine".
+    first: str | None = None
+    for _ in range(20):  # up to ~10 s
+        f = client.slot.peek()
+        if f is not None:
+            name, _ = screens.classify(f.img)
+            if name != "UNKNOWN":
+                first = name
+                break
+        time.sleep(0.5)
+    if first is None:
+        say("upgrade: no recognisable screen for 10 s; skipping pass")
+        rep.skipped.append("screen:unknown")
+        return rep
+    if first in ("IN_BATTLE", "LOADING", "MATCHMAKING"):
+        say("upgrade: screen is %s; skipping pass so a live match is never disturbed", first)
+        rep.skipped.append(f"screen:{first}")
+        return rep
+
     def latest_frame(wait_s: float = 0.5) -> np.ndarray | None:
         f = client.slot.peek()
         last_seq = f.seq if f is not None else 0

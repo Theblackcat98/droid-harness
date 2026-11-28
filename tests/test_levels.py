@@ -100,24 +100,33 @@ def test_counter_csv_generic_fallback_when_prior_off():
 
 
 def test_account_levels_meta_doctor_and_experiment_void(tmp_path):
+    # The live file tracks real progression (the upgrader rewrites it), so assert its shape and
+    # the machinery around it, not today's numbers. Fixed levels below keep the doctor checks
+    # reproducible no matter what the account has upgraded.
     acct = AccountLevels.load(ROOT / "configs/accounts/theblackcat99.yaml")
-    assert acct.king_level == 2 and acct.known_cards.get("archers") == 3
-    assert acct.known_cards.get("mini_pekka") == 4 and acct.spell_tower_damage["fireball"] == 75
+    assert acct.king_level is not None and acct.king_level >= 1
+    assert set(acct.cards) == {"knight", "archers", "minions", "arrows", "fireball", "giant",
+                               "musketeer", "mini_pekka"}
+    assert all(1 <= v <= 15 for v in acct.known_cards.values())
+    assert acct.spell_tower_damage.get("fireball")
     m = acct.to_meta()
     assert m["levels_id"] == acct.levels_id and len(acct.levels_id) == 10
     upgraded = AccountLevels(acct.account, acct.king_level, {**acct.cards, "musketeer": 4})
     assert upgraded.levels_id != acct.levels_id
+    fixed = AccountLevels("fixture", 2, {"knight": 2, "archers": 3, "minions": 1, "arrows": 1,
+                                         "fireball": 3, "giant": 3, "musketeer": 3, "mini_pekka": 4},
+                          spell_tower_damage={"fireball": 75, "arrows": 30})
     _, v6, _ = load_strategy(STRATS / "ladder-vision-v6.yaml")
-    # The shipped file is complete, so doctor has nothing to complain about.
-    assert check_strategy(v6, CARDS, acct)["problems"] == []
+    # The pinned strategy matches the fixed account, so doctor has nothing to complain about.
+    assert check_strategy(v6, CARDS, fixed)["problems"] == []
     # A value measured in game beats the card DB estimate (flat below level 4: it says ~97).
-    rep = check_strategy(v6, CARDS, acct)
+    rep = check_strategy(v6, CARDS, fixed)
     assert rep["derived_spell_tower_damage"]["fireball"] > rep["measured_spell_tower_damage"]["fireball"]
     # A partially filled file still reports what is missing.
-    partial = AccountLevels(acct.account, acct.king_level, {"archers": 3})
+    partial = AccountLevels("fixture", 2, {"archers": 3})
     rep = check_strategy(v6, CARDS, partial)
     assert "knight" in rep["card_levels_missing"] and "fireball" in rep["derived_spell_tower_damage"]
-    assert derived_spell_tower_damage(CARDS, acct, ["fireball", "knight"]).keys() == {"fireball"}
+    assert derived_spell_tower_damage(CARDS, fixed, ["fireball", "knight"]).keys() == {"fireball"}
 
     r = ExperimentRunner(ExperimentConfig(experiment_id="E", game_version="v", account_levels_id=acct.levels_id))
     arm, pid = r.next_assignment()
