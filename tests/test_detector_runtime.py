@@ -86,6 +86,15 @@ def test_detector_refuses_mismatched_class_list(tmp_path):
     assert OnnxDetector(path, ok, providers=["CPUExecutionProvider"]).class_names == ["knight_me", "knight_opp"]
     with pytest.raises(ValueError, match="disagrees"):
         OnnxDetector(path, ["knight_opp", "knight_me"], providers=["CPUExecutionProvider"])
+    # A superset with a matching prefix is the roadmap list: decode with the model's names only.
+    wide = tmp_path / "wide.txt"
+    wide.write_text("knight_me\nknight_opp\nvalkyrie_opp\ntombstone_opp\n")
+    assert OnnxDetector(path, wide, providers=["CPUExecutionProvider"]).class_names == \
+        ["knight_me", "knight_opp"]
+    reordered = tmp_path / "reordered.txt"
+    reordered.write_text("knight_opp\nknight_me\nvalkyrie_opp\n")
+    with pytest.raises(ValueError, match="disagrees"):
+        OnnxDetector(path, reordered, providers=["CPUExecutionProvider"])
     bare = _onnx(tmp_path / "bare.onnx", e2e)
     with pytest.raises(ValueError, match="no class names"):
         OnnxDetector(bare, None, providers=["CPUExecutionProvider"])

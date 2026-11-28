@@ -102,6 +102,15 @@ def resolve_class_names(class_names: list[str] | str | Path | None, embedded: li
         given = load_class_names(class_names)
     else:
         given = [str(c) for c in class_names]
+    # A classes file may be a superset of what the model predicts (e.g. the 214-name roadmap
+    # list whose first 31 entries are the shipped model's classes). Decoding only ever sees the
+    # model's own indices, so a matching prefix is safe: keep the model's names and ignore the
+    # extra tail. Anything else is still a hard error.
+    if embedded is not None and given is not None and len(given) > len(embedded) \
+            and given[:len(embedded)] == embedded:
+        log.warning("detector: %s: classes file lists %d names, model predicts %d; using the model's",
+                    model_path, len(given), len(embedded))
+        given = embedded
     if embedded is not None and given is not None and embedded != given:
         diff = next((i for i, (a, b) in enumerate(zip(embedded, given, strict=False)) if a != b),
                     min(len(embedded), len(given)))

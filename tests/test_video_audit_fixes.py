@@ -298,6 +298,32 @@ def test_my_play_slot_cooldown_and_flicker_debounce(starter_cards):
 
 # --- 2.1-2.5 Policy fixes ----------------------------------------------------
 
+def test_opening_win_condition_counterpush_is_gated(starter_cards):
+    """No Giant behind a safe first play before 0:30: two back-plays starve the defense."""
+    arena = Arena()
+    _, p, _ = load_strategy(ROOT / "configs/strategies/ladder-vision-v11.yaml")
+    pol = CRPolicy(starter_cards, arena, p)
+
+    s_open = GameState(
+        t_ms=6200, my_elixir=6.15, opp_elixir=(5.0, 5.0),
+        hand=["giant", "musketeer", "fireball", "knight"], towers=dict(TOWERS),
+        units=[Unit(1, "knight", "me", (4.5, 1.5), vel=(0.0, 1.0), hp_pct=1.0)],
+    )
+    cands = [c for r in pol.rules for c in r.propose(s_open, p, pol.ctx, None)
+             if c.rule_id == "offense.counter_push" and c.card == "giant"]
+    assert cands == []
+
+    # Past the opening, or with a banked elixir pool, the same counter-push is allowed again.
+    s_banked = GameState(
+        t_ms=6200, my_elixir=9.0, opp_elixir=(5.0, 5.0),
+        hand=["giant", "musketeer", "fireball", "knight"], towers=dict(TOWERS),
+        units=[Unit(1, "knight", "me", (4.5, 1.5), vel=(0.0, 1.0), hp_pct=1.0)],
+    )
+    cands_late = [c for r in pol.rules for c in r.propose(s_banked, p, pol.ctx, None)
+                  if c.rule_id == "offense.counter_push" and c.card == "giant"]
+    assert cands_late
+
+
 def test_policy_opening_starvation_lane_switch_spells_and_placement(starter_cards):
     arena = Arena()
     _, p, _ = load_strategy(ROOT / "configs/strategies/ladder-vision-v4.yaml")

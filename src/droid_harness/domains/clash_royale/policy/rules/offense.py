@@ -165,6 +165,13 @@ class CounterPush:
                 if card.is_spell or card.kind == "building":
                     continue
                 is_wc = key in p.win_conditions
+                # Opening discipline applies to win-condition counter-pushes too: two back-plays
+                # before 0:30 (a safe first play + a tank behind it) leave ~1 elixir and the next
+                # enemy push walks over an empty arena. Same barrier the giant_back_build rule uses.
+                in_opening = s.posture == "OPENING" or (s.t_ms < p.opening_ms and not s.enemy_units())
+                if (is_wc and not p.giant_back_build_allow_in_opening and in_opening
+                        and s.my_elixir < p.giant_x1_min_elixir):
+                    continue
                 if not is_wc:
                     if p.counterpush_min_elixir > 0 and s.my_elixir < p.counterpush_min_elixir:
                         continue
