@@ -82,6 +82,7 @@ class ExperimentConfig:
     account_levels_id: str = ""  # set -> a match played at other card levels voids the test
     dense_tau: float = 0.5  # dense test: mixture scale (a paired margin difference worth detecting)
     min_dense_pairs: int = 6  # dense test: pairs before the variance estimate is trusted
+    mode: str = ""  # where it's played (ladder | training_camp | practice | friendly_*): the warehouse pool
 
     def __post_init__(self) -> None:
         self.test = LEGACY_TESTS.get(self.test, self.test)
@@ -126,9 +127,14 @@ class ExperimentRunner:
 
     def record(self, summary: dict) -> SprtResult:
         """Record one match summary; returns the current SPRT state."""
-        if self.void_reason is None and summary.get("game_version") != self.cfg.game_version:
-            self.void_reason = (
-                f"game version changed: {summary.get('game_version')} != {self.cfg.game_version}")
+        # An unread version (adb failed) is unknown, not a change (issue #11). The first match that
+        # does read it fills in a config that started without one.
+        seen = str(summary.get("game_version") or "")
+        if self.void_reason is None and seen:
+            if not self.cfg.game_version:
+                self.cfg.game_version = seen
+            elif seen != self.cfg.game_version:
+                self.void_reason = f"game version changed: {seen} != {self.cfg.game_version}"
         seen_levels = (summary.get("account_levels") or {}).get("levels_id")
         if (self.void_reason is None and self.cfg.account_levels_id and seen_levels
                 and seen_levels != self.cfg.account_levels_id):
@@ -263,7 +269,22 @@ class ExperimentRunner:
             return True
         if self.decision is not None and self.decision.decision != "continue":
             return True
-        return len(self.matches) >= self.cfg.max_games
+        # Stop at a pair boundary once max_games real games are in (aborts don't count toward
+        # it), so the last pair is never left half-played; total attempts are capped at twice
+        # that so endless aborts still end the experiment (issue #20).
+        if len(self.matches) >= 2 * self.cfg.max_games:
+            return True
+        completed = sum(1 for m in self.matches
+                        if m.get("status") != "infra_abort" and m.get("result") in SCORE)
+        return completed >= self.cfg.max_games and not self.mid_pair
+
+    @property
+    def mid_pair(self) -> bool:
+        """One arm of the current pair has played and the other hasn't yet."""
+        if not self._queue:
+            return False
+        pid = self._queue[0][1]
+        return pid not in self.dropped_pairs and len(self._pairs.get(pid, {})) == 1
 
     def tallies(self) -> dict[str, ArmTally]:
         return {arm: tally(self.matches, arm, self.cfg.game_version)
@@ -314,13 +335,13 @@ class ExperimentRunner:
                wins=excluded.wins, losses=excluded.losses, draws=excluded.draws,
                aborts_by_arm=excluded.aborts_by_arm, llr=excluded.llr, decided_at=excluded.decided_at,
                notes=excluded.notes""",
+            # opponent_pool is where it was played; wins/losses/draws are the candidate's, as
+            # in the ledger (per-arm aborts are in aborts_by_arm) (issue #19).
             [self.cfg.experiment_id, self.cfg.title, self.cfg.hypothesis, self.cfg.proposer,
-             self.cfg.champion_id, self.cfg.candidate_id, "training_camp", self.cfg.test,
+             self.cfg.champion_id, self.cfg.candidate_id, self.cfg.mode or "unknown", self.cfg.test,
              self.cfg.game_version, self.cfg.balance_epoch, self.cfg.p0, self.cfg.p1,
              self.cfg.alpha, self.cfg.beta, self.status, len(self.matches),
-             t["candidate"].wins + t["champion"].wins,
-             t["candidate"].losses + t["champion"].losses,
-             t["candidate"].draws + t["champion"].draws, aborts,
+             t["candidate"].wins, t["candidate"].losses, t["candidate"].draws, aborts,
              self.decision.llr if self.decision else 0.0,
              time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()) if self.done else None,
              self.notes()])

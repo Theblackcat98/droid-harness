@@ -26,3 +26,21 @@ a14483bc3227: ladder-vision-v4
 e73e2dcf4fa7: ladder-vision-v5
 6aa01f15bc4c: ladder-vision-v6
 63555ca45947: ladder-vision-v7
+# Policy source as of 9a320f9 (2026-11-28, before level-aware tower damage, issue #15):
+62933852a085: ladder-vision-v9
+8d7922131c24: ladder-vision-v8
+6108996de3ad: ladder-vision-v7
+925b76b4679d: ladder-vision-v6
+8e57288ba00d: ladder-vision-v5
+094ff06bb8e6: ladder-vision-v4
+7033f7c36365: ladder-vision-v3
+4932a7bacc6e: ladder-vision-v2
+199d48d0ac63: ladder-vision-v1
+6e6a5d51cb9a: hog-cycle-v1
+ccc4641064bc: training-camp-blind-v1
+2c8a1883de46: training-camp-v1
+ab802d56ef62: training-camp-v2
+2d9c570ae943: training-camp-v3
+2a9c267d0305: training-camp-v3-e3-tank-ahead
+93b59ef61374: training-camp-v3-e4-cycle-gate
+40001c973224: training-camp-v3-e5-reserve

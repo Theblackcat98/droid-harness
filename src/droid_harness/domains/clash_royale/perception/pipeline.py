@@ -329,11 +329,19 @@ class CRPerception:
         state.tower_hp_stable_ms = {
             name: max(0, self._last_t_ms - since[1]) for name, since in self._hp_since.items()
         }
-        state.my_king_level = king_level_from_princess_hp(
-            max(self.tower_max_hp.get("me_left", 0), self.tower_max_hp.get("me_right", 0)))
-        state.opp_king_level = king_level_from_princess_hp(
-            max(self.tower_max_hp.get("opp_left", 0), self.tower_max_hp.get("opp_right", 0)))
+        state.my_king_level = self._king_level("me")
+        state.opp_king_level = self._king_level("opp")
         return state
+
+    def _king_level(self, side: str) -> int | None:
+        """King Level from both Princess Towers' max HP; None when they disagree (issue #12).
+
+        A tower first read after it took damage maps to no level and is ignored, so one
+        clean tower is enough. Two towers that map to different levels mean one read is wrong.
+        """
+        levels = {king_level_from_princess_hp(self.tower_max_hp.get(f"{side}_{pos}", 0)) for pos in ("left", "right")}
+        levels.discard(None)
+        return levels.pop() if len(levels) == 1 else None
 
     # --- pieces ---------------------------------------------------------------
     def _read_hand(self, img: np.ndarray, t_ms: int, warns: list[str], *,

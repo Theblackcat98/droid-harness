@@ -35,6 +35,11 @@ class Tier0:
 
     # --- invariants -----------------------------------------------------------
     def spell_tower_damage(self, card_key: str, p: Params) -> int:
+        """Crown-tower damage of a spell. Level-aware strategies take your account's in-game
+        measurement first (it follows every upgrade; strategy files can't), then the strategy's
+        value, then the level-scaled card database (issue #15)."""
+        if p.level_aware and card_key in self.levels.tower_damage:
+            return int(self.levels.tower_damage[card_key])
         if card_key in p.tier0.spell_tower_damage:
             return p.tier0.spell_tower_damage[card_key]
         c = self.cards[card_key]

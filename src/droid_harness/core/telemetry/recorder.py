@@ -8,16 +8,30 @@
 * ``log`` appends JSON records to per-match streams (decisions, frames, events...).
 * The queue is bounded. When it's full, records are dropped and counted; the recorder
   never blocks the brain.
+* A failed write (disk full, permissions) is counted and logged, and the writer keeps going
+  with the next item. Errors that mean nothing more can be written (no space, read-only,
+  permission denied, I/O error) set ``fatal_error``, which ``BotRunner.run`` turns into a
+  clean stop. ``flush`` and ``close`` never wait longer than their timeouts.
+* ``end_match(summary, after=fn)`` runs ``fn(match_dir)`` on a helper thread once the match
+  is fully written (summary.json on disk, files closed), e.g. video retention.
 """
 
 from __future__ import annotations
 
+import errno
 import json
+import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
+
+# Errors after which further writes can't succeed: stop the run instead of recording nothing.
+FATAL_ERRNOS = {errno.ENOSPC, errno.EDQUOT, errno.EROFS, errno.EACCES, errno.EPERM, errno.EIO}
 
 try:  # orjson is ~5x faster; optional
     import orjson
@@ -44,6 +58,11 @@ class Recorder:
         self._video = None
         self._pts = None  # stream.pts: one device pts_us per video packet, for exact replay timing
         self._streams: dict[str, Any] = {}
+        self.write_errors = 0
+        self.last_error: str | None = None
+        self.fatal_error: str | None = None
+        self._error_kinds: set[str] = set()
+        self._after: list[threading.Thread] = []
         self._thread = threading.Thread(target=self._loop, name="T4-recorder", daemon=True)
         self._running = True
         self._thread.start()
@@ -72,8 +91,9 @@ class Recorder:
         self._put(("start", d, self._last_config, list(self._gop), meta or {}))
         return d
 
-    def end_match(self, summary: dict | None = None) -> None:
-        self._put(("end", summary or {}))
+    def end_match(self, summary: dict | None = None, *, after: Callable[[Path], Any] | None = None) -> None:
+        """Queue the summary; ``after(match_dir)`` runs once the match is fully on disk."""
+        self._put(("end", summary or {}, after))
 
     def log(self, stream: str, record: dict) -> None:
         self._put(("log", stream, record))
@@ -87,8 +107,20 @@ class Recorder:
                 continue
             try:
                 self._handle(item)
+            except Exception as e:  # noqa: BLE001 - one bad write must not end recording
+                self._note_error(item[0], e)
             finally:
                 self._q.task_done()
+
+    def _note_error(self, kind: str, e: Exception) -> None:
+        self.write_errors += 1
+        self.last_error = f"{kind}: {type(e).__name__}: {e}"
+        if isinstance(e, OSError) and e.errno in FATAL_ERRNOS and self.fatal_error is None:
+            self.fatal_error = self.last_error
+            log.error("recorder: %s; nothing more can be recorded", self.last_error)
+        elif kind not in self._error_kinds:
+            log.exception("recorder: writing %s failed (later failures of this kind are only counted)", kind)
+        self._error_kinds.add(kind)
 
     def _handle(self, item: tuple) -> None:
         kind = item[0]
@@ -120,10 +152,15 @@ class Recorder:
                 f = self._streams[stream] = open(self.match_dir / f"{stream}.jsonl", "ab")
             f.write(_dumps(record) + b"\n")
         elif kind == "end":
-            if self.match_dir is not None:
-                (self.match_dir / "summary.json").write_bytes(
-                    _dumps({**item[1], "recorder_dropped": self.dropped}))
-            self._close_match()
+            d, after = self.match_dir, item[2] if len(item) > 2 else None
+            try:
+                if d is not None:
+                    (d / "summary.json").write_bytes(_dumps({
+                        **item[1], "recorder_dropped": self.dropped, "recorder_write_errors": self.write_errors}))
+            finally:
+                self._close_match()
+                if after is not None and d is not None:
+                    self._run_after(after, d)
 
     def _close_match(self) -> None:
         if self._video is not None:
@@ -135,14 +172,34 @@ class Recorder:
         self._streams.clear()
         self.match_dir = None
 
-    def flush(self, timeout_s: float = 5.0) -> None:
-        t0 = time.time()
-        while not self._q.empty() and time.time() - t0 < timeout_s:
-            time.sleep(0.01)
-        self._q.join()
+    def _run_after(self, fn: Callable[[Path], Any], d: Path) -> None:
+        def run() -> None:
+            try:
+                fn(d)
+            except Exception:  # noqa: BLE001
+                log.exception("recorder: after-match step for %s failed", d.name)
 
-    def close(self) -> None:
-        self.flush()
+        t = threading.Thread(target=run, name=f"T4-after-{d.name}", daemon=True)
+        self._after = [x for x in self._after if x.is_alive()] + [t]
+        t.start()
+
+    def flush(self, timeout_s: float = 5.0) -> bool:
+        """Wait until everything queued is written; False if that didn't happen in time."""
+        deadline = time.time() + timeout_s
+        while self._q.unfinished_tasks and time.time() < deadline:
+            if not self._thread.is_alive():
+                return False
+            time.sleep(0.01)
+        return not self._q.unfinished_tasks
+
+    def close(self, timeout_s: float = 10.0, after_timeout_s: float = 120.0) -> None:
+        if not self.flush(timeout_s):
+            log.warning("recorder: %d items still unwritten after %.0f s; closing anyway",
+                        self._q.unfinished_tasks, timeout_s)
         self._running = False
         self._thread.join(timeout=2)
-        self._close_match()
+        if not self._thread.is_alive():
+            self._close_match()
+        deadline = time.time() + after_timeout_s
+        for t in self._after:  # e.g. the last match's video retention
+            t.join(timeout=max(0.0, deadline - time.time()))

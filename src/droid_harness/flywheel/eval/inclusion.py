@@ -33,7 +33,8 @@ def tally(matches: list[dict], arm: str, game_version: str) -> ArmTally:
     for m in matches:
         if m.get("arm") != arm:
             continue
-        if m.get("game_version") != game_version:
+        seen = str(m.get("game_version") or "")
+        if seen and game_version and seen != game_version:  # unknown on either side: can't tell, keep it
             t.excluded_other_version += 1
             continue
         if m.get("status") == "infra_abort":

@@ -133,8 +133,16 @@ class PhoneControl:
         if serial and (s != serial or time.monotonic() - t > 5.0) and not self._probing:
             self._probing = True
             threading.Thread(target=self._probe, args=(serial,), daemon=True).start()
+        holder = None
+        if serial:
+            from ..core.transport.device_lock import holder as lock_holder
+
+            try:
+                holder = lock_holder(serial)
+            except OSError:
+                holder = None
         return {"serial": serial, "reachable": ok if s == serial else None, "locked": self.locked,
-                "error": err, "last_input": self.last_input}
+                "error": err, "last_input": self.last_input, "holder": holder}
 
     def _probe(self, serial: str) -> None:
         try:

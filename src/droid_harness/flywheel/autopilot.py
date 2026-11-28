@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class AutopilotConfig:
     device: str = "phone-a"
-    champion: str = "v6"  # used when the CHAMPION pointer doesn't exist yet
+    champion: str | None = None  # used only when the CHAMPION pointer doesn't exist yet
     farm_mode: str = "ladder"
     farm_matches: int = 20
     testbed: str = "ladder"  # mode for experiments: training_camp | practice | ladder
@@ -99,6 +99,9 @@ def read_champion(cfg: AutopilotConfig) -> Path:
             p = cfg.strategies_dir / name
         if p.exists():
             return p
+    if not cfg.champion:
+        raise FileNotFoundError(f"{cfg.champion_file} is missing and no --champion was given: write the "
+                                "champion's file name into it, or pass --champion (issue #16)")
     return resolve_strategy_path(cfg.champion, root=cfg.strategies_dir.parent.parent)
 
 
@@ -429,19 +432,27 @@ class BotPlayer:
 
         # Never auto-upgrade during a paired experiment (changing levels mid-run voids SPRT).
         bot = self._bot(champion, data, mode, self.max_games * 2, auto_upgrade=False)
-        bot.game_version = bot.client_version()
-        exp_id = Ledger(self.store).next_id()
+        bot.game_version = bot.client_version(retries=3)
+        ledger = Ledger(self.store)
+        exp_id = ledger.reserve_id(title=title, hypothesis=hypothesis, proposer="autopilot",
+                                   champion_id=load_strategy(champion)[2], candidate_id=load_strategy(candidate)[2],
+                                   test=self.test, game_version=bot.game_version or "")
         runner = ExperimentRunner(ExperimentConfig(
             experiment_id=exp_id, title=title, hypothesis=hypothesis, proposer="autopilot",
             champion_id=load_strategy(champion)[2], candidate_id=load_strategy(candidate)[2], test=self.test,
             game_version=bot.game_version or "", balance_epoch=str(self.base.get("balance_epoch") or ""),
             max_games=self.max_games, futility_min_pairs=self.futility_pairs,
-            account_levels_id=bot.account.levels_id if bot.account else ""))
+            account_levels_id=bot.account.levels_id if bot.account else "", mode=mode))
         if self.ui is not None:
             from ..ui.launch import attach_experiment
 
             attach_experiment(bot, runner)
-        run_paired(bot, runner, champion, candidate, store=self.store, db=self.db)
+        try:
+            run_paired(bot, runner, champion, candidate, store=self.store, db=self.db)
+        except BaseException as e:
+            if not runner.matches:
+                ledger.void_reservation(exp_id, f"never started: {type(e).__name__}: {e}")
+            raise
         return {"experiment_id": exp_id, "status": runner.status, "matches": len(runner.matches),
                 "notes": runner.notes(), "void": runner.void_reason}
 

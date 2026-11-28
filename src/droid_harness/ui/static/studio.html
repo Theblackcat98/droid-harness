@@ -1297,8 +1297,11 @@ function renderAppStatus() {
   const st = A.state, job = fg();
   const ph = st.phone || {};
   const dot = ph.reachable === true ? "ok" : ph.reachable === false ? "bad" : "warn";
-  $("#phoneChip").innerHTML = `<span class="dot ${dot}"></span><span>${ph.serial ? esc(ph.serial) : "No phone set"}</span>`;
-  $("#phoneChip").title = ph.error || (ph.reachable === true ? "adb can reach the phone" : ph.reachable === false ? "adb can't reach the phone: check the cable or Wi-Fi, or the serial in Settings" : "Checking the phone");
+  const mine = (st.jobs || []).some((j) => ["starting", "running", "stopping"].includes(j.status) && j.foreground);
+  const busy = ph.holder && !mine ? `in use by PID ${ph.holder.pid} (${ph.holder.command || "droid-harness"})` : "";
+  $("#phoneChip").innerHTML = `<span class="dot ${busy ? "warn" : dot}"></span><span>${ph.serial ? esc(ph.serial) : "No phone set"}${busy ? `, ${esc(busy)}` : ""}</span>`;
+  $("#phoneChip").title = busy ? `Another droid-harness process is using the phone: ${busy}. Phone buttons stay unavailable until it ends.`
+    : ph.error || (ph.reachable === true ? "adb can reach the phone" : ph.reachable === false ? "adb can't reach the phone: check the cable or Wi-Fi, or the serial in Settings" : "Checking the phone");
   const running = (st.jobs || []).filter((j) => ["starting", "running", "stopping"].includes(j.status));
   const shown = job || running[0];
   $("#jobPill").classList.toggle("busy", !!shown);

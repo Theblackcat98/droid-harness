@@ -22,6 +22,7 @@ from .core.runtime.liveness import Finding, LivenessMonitor
 from .core.runtime.orchestrator import BrainLoop
 from .core.runtime.watchdog import AppWatchdog
 from .core.telemetry.recorder import Recorder
+from .core.transport.device_lock import DeviceBusy, DeviceLock
 from .core.transport.scrcpy_bridge import ScrcpyClient
 from .domains.clash_royale.account import check_strategy, load_account
 from .domains.clash_royale.actions import CRActionMapper
@@ -83,6 +84,7 @@ class RunConfig:
     auto_upgrade: bool = False  # upgrade ready Battle Deck cards & Tower Princess between farm matches
     auto_upgrade_every: int = 4  # matches between mid-batch upgrade passes (0 = start of batch only)
     auto_upgrade_max: int = 10  # max upgrades per pass
+    reconnect_deadline_s: float = 300.0  # keep retrying a dropped phone this long before giving up (#17)
 
 
 def resolve_strategy_path(strategy: str | Path, root: Path = Path(".")) -> Path:
@@ -138,13 +140,19 @@ def resolve_device_bundle(device: str = "phone-a", root: Path = Path("."), *,
     }
 
 
-def run_doctor(*, device: str = "phone-a", strategy: str | Path = "v6",
-               root: Path = Path("."), live: bool = False, mode: str | None = None) -> dict[str, Any]:
-    """Pre-flight verification of calibration, templates, digits, detector, disk, and ADB."""
+def run_doctor(*, device: str = "phone-a", strategy: str | Path = "champion",
+               root: Path = Path("."), live: bool = False, mode: str | None = None,
+               strict: bool = False) -> dict[str, Any]:
+    """Pre-flight verification of calibration, templates, digits, detector, disk, and ADB.
+
+    ``problems`` stop a run from working (no adb, missing templates or detector, no disk);
+    ``warnings`` are worth fixing but don't (a strategy's tower damage or card levels that
+    disagree with the account file). ``ok`` ignores warnings unless ``strict`` (issue #9)."""
     bundle = resolve_device_bundle(device, root=root, with_detector=True)
     strat_path = resolve_strategy_path(strategy, root=root)
     checks: dict[str, Any] = {}
     problems: list[str] = []
+    warnings: list[str] = []
 
     for key in ("profile", "layout", "tiles", "templates", "screens", "cards"):
         p = bundle[key]
@@ -201,7 +209,10 @@ def run_doctor(*, device: str = "phone-a", strategy: str | Path = "v6",
             cards_db = CardDB.load(bundle["cards"]) if bundle["cards"] and bundle["cards"].exists() else None
             acct = load_account(account, root)
             checks["account"] = check_strategy(params, cards_db, acct)
-            problems += [f"account: {p}" for p in checks["account"]["problems"]]
+            warnings += [f"account: {p}" for p in checks["account"]["problems"]]
+            if checks["account"].get("card_levels_missing"):
+                warnings.append(f"account: no level recorded for {checks['account']['card_levels_missing']} "
+                                "(level-aware strategies fall back to your King Level)")
         tdir = bundle["templates"]
         if tdir and tdir.exists():
             matcher = CardMatcher.load(tdir)
@@ -243,7 +254,8 @@ def run_doctor(*, device: str = "phone-a", strategy: str | Path = "v6",
             checks["adb_state"] = f"error: {e}"
             problems.append(f"adb check failed: {e}")
 
-    return {"ok": len(problems) == 0, "device": device, "checks": checks, "problems": problems}
+    ok = not problems and not (strict and warnings)
+    return {"ok": ok, "device": device, "checks": checks, "problems": problems, "warnings": warnings}
 
 
 def load_screens(directory: Path, regions: list[Roi], *, battle_roi: Roi | None = None,
@@ -268,6 +280,12 @@ def load_digits(directory: Path | None) -> DigitReader | None:
         if p.exists():
             r.templates[d] = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
     return r if len(r.templates) == 10 else None
+
+
+class RunAborted(RuntimeError):
+    """The run can't continue (recording failed, the phone stayed unreachable, the phone is busy).
+
+    The CLI prints the message and exits with status 2 instead of a traceback."""
 
 
 class BotRunner:
@@ -308,6 +326,7 @@ class BotRunner:
                                        if cfg.harvest_templates else None,
                                        my_deck=self.params.deck)
         self.completed = 0
+        self.reconnects = 0
         self._upgrade_requested = False
         self._match_summaries: list[dict] = []
         self._on_summary_hook: Callable[[dict], None] | None = None
@@ -317,6 +336,9 @@ class BotRunner:
             screens=self.screens, menus=MenuNavigator(self.layout.buttons, self._flow(cfg)),
             perception=self.perception, policy=self.policy, mapper=CRActionMapper(self.layout, self.tiles),
             recorder=self.recorder, meta_factory=self._meta, on_match_end=self._on_end)
+        if cfg.prune_win_video:
+            # After the recorder has written summary.json and closed the video (issue #8).
+            self.session.after_written = lambda d, summary: retain_match(d)
 
     @staticmethod
     def _flow(cfg: RunConfig) -> dict[str, list[str]]:
@@ -397,8 +419,6 @@ class BotRunner:
                 and self.completed < self.cfg.matches):
             self._upgrade_requested = True
             self.session.suspend_menu = True  # hold menu taps until the upgrade pass runs
-        if self.cfg.prune_win_video and summary.get("match_id"):
-            retain_match(self.cfg.data / str(summary["match_id"]))
         self._match_summaries.append(summary)
         if self._on_summary_hook is not None:
             self._on_summary_hook(summary)
@@ -491,8 +511,11 @@ class BotRunner:
             obj = getattr(self, part, None)
             if obj is not None:
                 obj.stop()
+                setattr(self, part, None)  # a failed reconnect must not stop them twice
         self.session.send_key = None
-        self.client.stop()
+        client = getattr(self, "client", None)
+        if client is not None:
+            client.stop()
 
     def _settle_home(self, timeout_s: float = 25.0) -> bool:
         """Walk a finished batch back to HOME so the next run can queue immediately."""
@@ -519,7 +542,15 @@ class BotRunner:
         run_start_upgrade = bool(self.cfg.auto_upgrade and self.cfg.experiment_id is None and not self.cfg.observe_only)
         if run_start_upgrade:
             self.session.suspend_menu = True
-        self._connect()
+        # Held for the whole run, so another process can't take the phone between reconnects
+        # (issue #18). Raises DeviceBusy, naming the holder, before anything touches the phone.
+        run_lock = DeviceLock(self.profile.serial).acquire() if self.profile.serial != "sim" else None
+        try:
+            self._connect()
+        except BaseException:
+            if run_lock is not None:
+                run_lock.release()
+            raise
         stuck_since = None
         last_screen = self.session.screen
         watchdog = AppWatchdog(self.client.adb, PACKAGE)
@@ -527,6 +558,9 @@ class BotRunner:
             if run_start_upgrade:
                 self._run_auto_upgrade()
             while self.completed < self.cfg.matches and not (stop_when and stop_when()):
+                if self.recorder.fatal_error:  # disk full, read-only, no permission (issue #7)
+                    raise RunAborted(f"recording failed: {self.recorder.fatal_error}. Free disk space or fix "
+                                     f"the permissions on {self.cfg.data}, then run again.")
                 if self._upgrade_requested and self.session.match is None:
                     self._run_auto_upgrade()
                     self.session.screen_since = time.monotonic()
@@ -560,11 +594,7 @@ class BotRunner:
                 log.warning("liveness: %s (%s)", f.kind, f.detail)
                 if f.action in ("reconnect", "restart_server", "adb_reconnect"):
                     self.session.abort_match(f.kind)
-                    self._disconnect()
-                    if f.action == "adb_reconnect":
-                        self.client.adb.run("reconnect", check=False)
-                    time.sleep(1.0)
-                    self._connect()
+                    self._reconnect(f.kind, adb_reconnect=f.action == "adb_reconnect")
                 elif f.action == "recover_ui" and self.cfg.observe_only:
                     self.session.screen_since = time.monotonic()  # the player is in charge of menus
                 elif f.action == "recover_ui":
@@ -590,14 +620,58 @@ class BotRunner:
         finally:
             self._disconnect()
             self.recorder.close()
+            if run_lock is not None:
+                run_lock.release()
 
-    def client_version(self) -> str | None:
+    RECONNECT_DELAYS_S = (1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
+
+    def _reconnect(self, reason: str, *, adb_reconnect: bool = False) -> None:
+        """Reconnect after a liveness finding, retrying with backoff (issue #17).
+
+        Gives up with RunAborted once ``reconnect_deadline_s`` has passed, so a phone that
+        dropped off Wi-Fi for a minute doesn't end an overnight batch, but a phone that's
+        gone for good still ends it with a clear reason."""
+        deadline = time.monotonic() + self.cfg.reconnect_deadline_s
+        attempt, last = 0, None
+        while True:
+            self._disconnect()
+            if adb_reconnect or attempt > 0:
+                try:
+                    self.client.adb.run("reconnect", check=False)
+                except Exception:  # noqa: BLE001 - adb itself may be what's broken
+                    pass
+            time.sleep(self.RECONNECT_DELAYS_S[min(attempt, len(self.RECONNECT_DELAYS_S) - 1)])
+            try:
+                self._connect()
+            except DeviceBusy:
+                raise  # another process took the phone: don't fight over it
+            except Exception as e:  # noqa: BLE001
+                attempt, last = attempt + 1, e
+                log.warning("reconnect attempt %d after %s failed: %s", attempt, reason, e)
+                if time.monotonic() >= deadline:
+                    raise RunAborted(
+                        f"the phone stayed unreachable for {self.cfg.reconnect_deadline_s:.0f} s after {reason} "
+                        f"({attempt} attempts; last error: {last}). Check the cable or adb over Wi-Fi.") from e
+                continue
+            self.reconnects += 1
+            if attempt:
+                log.info("reconnected after %s on attempt %d", reason, attempt + 1)
+            return
+
+    def client_version(self, retries: int = 1, delay_s: float = 2.0) -> str | None:
+        """The game's version via adb, or None if it couldn't be read (``retries`` attempts)."""
         from .core.transport.adb import Adb
 
-        try:
-            return Adb(self.profile.serial).package_version(PACKAGE)
-        except Exception:
-            return None
+        for i in range(max(1, retries)):
+            try:
+                v = Adb(self.profile.serial).package_version(PACKAGE)
+                if v:
+                    return v
+            except Exception:  # noqa: BLE001 - phone booting, locked, adb hiccup
+                pass
+            if i + 1 < retries:
+                time.sleep(delay_s)
+        return None
 
 
 def run_sim(seconds: float = 10.0, out: Path = Path("data/sim"), *, ui: dict | None = None) -> dict:

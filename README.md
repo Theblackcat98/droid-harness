@@ -40,7 +40,7 @@ Measured on `phone-a` (OnePlus N10, `741be240`), account `theblackcat99`. The la
 | Opponent tracking | Card, cost and cycle tracker locks 8-card opponent decks (10/10 matches in recent batches) |
 | HUD | Tower-HP digits with a per-tower label search, locked offsets and misread correction; countdown clock; both sides' King Level inferred from Princess Tower HP. `tower_hp_diff` is only written when all six towers were read |
 | Results | `ladder-vision-v4` 9W–1L near 0 trophies; at ~476 trophies EXP-0001 (v4 vs v6, 16 matches) went 2–6 vs 2–5, inconclusive. Opponents there were King Level 4–5 against your 2 |
-| Strategies | Champion `ladder-vision-v9` (`62933852a085`, per [`CHAMPION`](configs/strategies/CHAMPION)); v4 is `094ff06bb8e6`, v8 `8d7922131c24`. Policy changes move every ID; old IDs resolve through [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml) |
+| Strategies | Champion `ladder-vision-v9` (`daea90862e53`, per [`CHAMPION`](configs/strategies/CHAMPION)); v4 is `fa95f7aad097`, v8 `95c5a587f1b1`. Policy changes move every ID; old IDs resolve through [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml) |
 | Automation | `autopilot` runs farm → diagnose → propose → test → promote → report unattended ([§5](#autopilot-unattended-loop)); a weekly coding-agent job turns its reports into one structural-rule pull request |
 | Studio | `droid-harness` alone opens the app: live preview, Play and phone tools, screenshots, a tap lock for manual input, guided Speed 1 → Speed 2 rounds, settings and a log of every job ([§4](#4-studio-live-view-and-replay-inspector)). Also `play --ui`, `watch`, `inspect`, `sim --ui` |
 | Tests | `pytest` 278 passed, 2 skipped without torch; `ruff check src tests tools` clean |
@@ -76,7 +76,7 @@ Optional extras: `[detector]` (ONNX Runtime), `[tuning]` (Optuna), `[gui]` (pywe
 `phone-a` has its calibration checked in under [`configs/`](configs/). Check `adb devices`, unlock the phone onto Clash Royale's home screen, then:
 
 ```bash
-# Pre-flight: calibration, 10/10 digits, 8/8 deck templates, GPU detector, ADB
+# Pre-flight: calibration, 10/10 digits, 8/8 deck templates, GPU detector, ADB (checks the champion)
 .venv/bin/droid-harness doctor --live
 
 # Stuck on a loss/result screen or a menu? Walk it back to HOME (safe while the harness is stopped)
@@ -135,6 +135,16 @@ Explicit paths still work for custom setups:
 | `--data <dir>` | Output. Each match writes `<dir>/<match_id>/` with `meta.json`, `summary.json`, `decisions.jsonl`, `frames.jsonl`, `stream.h264` + `stream.pts`. |
 | `--ui` | Serve the Studio while playing (also on `run`, `experiment`, `run-experiment`, `autopilot`, `sim`). See [§4](#4-studio-live-view-and-replay-inspector). |
 | `--harvest-templates <dir>` | Save hand crops the template matcher can't read (a newly unlocked card). Review them, then `promote-templates` ([§10](#new-cards-without-hand-capturing-templates)). |
+| `--prune-win-video` | Delete `stream.h264` of clean completed wins. It runs after the match is fully written (summary on disk, files closed), off the brain thread. |
+| `--reconnect-deadline S` | How long to keep retrying a phone that dropped off (1, 2, 5, 10, 30, 60 s between attempts) before the run ends with a reason (default 300). |
+
+### Running safely
+
+- **Strategy defaults.** `play`, `watch`, `doctor`, `tune-offline` and `tune-targeted` default to `champion` (whatever [`CHAMPION`](configs/strategies/CHAMPION) points at). `autopilot --champion` is only used when `CHAMPION` is missing; with neither, it stops and says so.
+- **`doctor`: problems and warnings.** Problems stop a run from working (no adb, missing calibration, templates or detector, low disk) and make `doctor` exit 1. Warnings are worth fixing but don't block, such as a strategy's tower damage that no longer matches the account file. `--strict` fails on warnings too.
+- **One process per phone.** Every run takes a machine-wide lock for its phone's serial (in `$XDG_RUNTIME_DIR/droid-harness`, or `DROID_HARNESS_LOCK_DIR`), so a second `play`, `experiment` or the autopilot service fails at once, naming the PID and command that has the phone, instead of stealing its scrcpy port. The Studio shows "in use by …" on the phone chip and won't start phone jobs until that process ends. The lock is released when the process exits, even after a crash.
+- **Clean stops.** A disk that fills up (or turns read-only) during a run stops it instead of recording nothing; other write errors are counted in `summary.json` (`recorder_write_errors`) and recording carries on. A phone that stays unreachable past the reconnect deadline, or a busy phone, ends the command with exit code 2 and one line saying why.
+- **Experiment IDs** are reserved in the ledger before the first match, so two experiments started close together can't get the same ID. One that never gets a match is marked `void` with the reason.
 
 ### Stuck-screen recovery (automatic)
 
@@ -278,7 +288,7 @@ Notes:
 
 `--cycles 0` runs until `data/autopilot/STOP` exists (`touch` it to stop after the current cycle). `--ui` serves the Studio for the whole run. The autopilot never writes code: new rules arrive as pull requests from the weekly job, and you merge them.
 
-**Run it as a service** on the bot machine with [`tools/systemd/droid-autopilot.service`](tools/systemd/droid-autopilot.service) (setup steps in the file): it waits for the phone, runs `doctor` first, restarts on failure after 5 minutes, and `loginctl enable-linger` keeps it running after you log out.
+**Run it as a service** on the bot machine with [`tools/systemd/droid-autopilot.service`](tools/systemd/droid-autopilot.service) (setup steps in the file): it waits for the phone, runs `doctor` on the champion first (warnings don't block it), restarts on failure after 5 minutes, and `loginctl enable-linger` keeps it running after you log out.
 
 **Weekly coding-agent job** (a scheduled task in Claude, Saturdays 14:17 Pacific). It reads `reports/latest.md` and `latest-digest.md` from `autopilot/reports` and does nothing when there's no report from the past 8 days or its previous PR is still open. Otherwise it picks one structural weakness the reports show and parameters didn't fix, implements it as an opt-in parameter (default off, so existing strategies don't change behaviour) with a unit test and a new strategy YAML copied from the champion, checks it with `pytest`, `ruff`, `replay-diff`, `shadow` and a pattern scan, and opens a PR against `main`. It never merges. Merging and letting the autopilot test it is your call.
 
@@ -313,11 +323,15 @@ Notes:
 
 | File | ID | Notes |
 | --- | --- | --- |
-| [`ladder-vision-v4.yaml`](configs/strategies/ladder-vision-v4.yaml) | `61f2df2e1ec1` | Champion ([`CHAMPION`](configs/strategies/CHAMPION)) |
-| [`ladder-vision-v6.yaml`](configs/strategies/ladder-vision-v6.yaml) | `434fb3d8d263` | Pro-rules candidate (EXP-0001 inconclusive) |
-| [`ladder-vision-v7.yaml`](configs/strategies/ladder-vision-v7.yaml) | `f42458bd6f37` | v6 + `level_aware: true`, `level_gap_respect: 0.08` |
+| [`ladder-vision-v4.yaml`](configs/strategies/ladder-vision-v4.yaml) | `fa95f7aad097` | Former champion (9W–1L near 0 trophies) |
+| [`ladder-vision-v6.yaml`](configs/strategies/ladder-vision-v6.yaml) | `52d2348a1bde` | Pro-rules candidate (EXP-0001 inconclusive) |
+| [`ladder-vision-v7.yaml`](configs/strategies/ladder-vision-v7.yaml) | `1a78bd008a43` | v6 + `level_aware: true`, `level_gap_respect: 0.08` |
+| [`ladder-vision-v8.yaml`](configs/strategies/ladder-vision-v8.yaml) | `95c5a587f1b1` | v7 + the 31-match video-audit fixes (win-condition banking, confidence-gated spells) |
+| [`ladder-vision-v9.yaml`](configs/strategies/ladder-vision-v9.yaml) | `daea90862e53` | Champion ([`CHAMPION`](configs/strategies/CHAMPION)): v8 + cheap-probe discipline, stricter spell value |
 
 The 2026-11-27 policy release (levels, counter prior) changed every ID: v4 was `639c09fe0c3a` and v6 `ab2d9564c216`. Both make the same decisions as before on all 28,744 logged states. [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml) maps old IDs to names so the Studio, ledger and digest still label old matches.
+
+The 2026-11-28 fix release ([#15](https://github.com/Theblackcat98/droid-harness/issues/15): level-aware strategies take tower damage from the account file) moved every ID again; v9 was `62933852a085`, v8 `8d7922131c24` and v4 `094ff06bb8e6`. Every strategy, v4 to v9, with and without the account's levels, makes the same decisions as before on all 113,086 logged states: none of them had an opponent tower in the narrow HP window where the measured arrows damage (44) differs from v9's file (33).
 
 **Champion pointer.** [`configs/strategies/CHAMPION`](configs/strategies/CHAMPION) holds the path of the current champion, relative to `configs/strategies/`. `--strategy champion` resolves it; the autopilot reads it and moves it when a candidate is accepted.
 
@@ -325,13 +339,15 @@ The 2026-11-27 policy release (levels, counter prior) changed every ID: v4 was `
 
 Card levels change the bot's strength without changing any strategy ID, so they're data: [`configs/accounts/<account>.yaml`](configs/accounts/theblackcat99.yaml) (the account comes from the device profile) holds `king_level` and each deck card's level on the game's unified 1–15 scale; `null` means not recorded yet. Every match records them in `meta.json` as `account_levels`, and an experiment is voided if they change partway.
 
-Perception reads each side's King Level from its Princess Tower max HP (1400 → 1, 1512 → 2, 1624 → 3, 1750 → 4, 1890 → 5, …), so every match also logs the level gap. `doctor` compares the file with what it measured and with each strategy's `tier0.spell_tower_damage`.
+Perception reads each side's King Level from its Princess Tower max HP (1400 → 1, 1512 → 2, 1624 → 3, 1750 → 4, 1890 → 5, …), so every match also logs the level gap. Both Princess Towers have to agree (a tower first read after it took damage maps to no level and is ignored), and the stored King Level only goes up after two matches in a row read the same higher level, so one misread can't raise it for good. `doctor` compares the file with what it measured and with each strategy's `tier0.spell_tower_damage`.
 
-The file can also carry `spell_tower_damage` — the spell-vs-tower damage you measured in game with lethal margin 0 (e.g. `fireball: 75`). That is authoritative: the card DB's per-level damage is flat below level 4, so it derives 97 for a Lv3 Fireball, and an estimate must never override a measurement. `doctor` checks strategies against the measured value when one exists and reports the level-derived value alongside it.
+The upgrader writes the file back after each upgrade, keeping your comments and layout: only the values change. A card whose level is `null` stays `null` after an upgrade (with a warning to fill it in), because a guess could sit below the card's starting level. An upgraded spell's `spell_tower_damage` is carried up one level (×1.1) until you measure it again.
+
+The file can also carry `spell_tower_damage` — the spell-vs-tower damage you measured in game with lethal margin 0 (e.g. `fireball: 75`). That is authoritative: the card DB's per-level damage is flat below level 4, so it derives 97 for a Lv3 Fireball, and an estimate must never override a measurement. Level-aware strategies use it directly in Tier 0's lethal check, ahead of the strategy's own `tier0.spell_tower_damage`, so an upgrade takes effect without a new strategy file. For other strategies `doctor` warns when the file's value no longer matches the measurement (it reports the level-derived value alongside).
 
 With `params.level_aware: true` ([`policy/levels.py`](src/droid_harness/domains/clash_royale/policy/levels.py)):
 - card HP and damage scale by `1.1^(level − start level)` (start levels: common 1, rare 3, epic 6, legendary 9, champion 11). Your cards use the file, falling back to King Level; the opponent's use their inferred King Level;
-- kill-aware spells use scaled damage against scaled HP. Tier 0's lethal check derives a spell's tower damage from your levels when `tier0.spell_tower_damage` doesn't list that spell (a listed value still wins, so leave it out of new strategies and let the levels decide);
+- kill-aware spells use scaled damage against scaled HP. Tier 0's lethal check takes a spell's tower damage from the account file's measurement first, then `tier0.spell_tower_damage`, then derives it from your levels;
 - `level_gap_respect: r` multiplies defense by `1 + r·gap` and divides offense by it when you're under-leveled (`gap` = their King Level − yours).
 
 ### Counter prior
@@ -1098,7 +1114,8 @@ Build notes since: the elixir cap *collapses* the opponent interval (a full bar 
 
 ## 15. Troubleshooting and operational limits
 
-- **Phone sleeps or drops ADB:** enable *Stay awake* while charging; check `adb devices`. If `scrcpy-server` is busy after a crash, wait ~3 s for the old socket on `local_port` or kill stray `adb` / `droid-harness` processes. Only one scrcpy client per phone/port.
+- **Phone sleeps or drops ADB:** enable *Stay awake* while charging; check `adb devices`. A run retries a dropped phone for `--reconnect-deadline` (300 s) before it ends. If `scrcpy-server` is busy after a crash, wait ~3 s for the old socket on `local_port` or kill stray `adb` processes.
+- **"the phone … is in use by PID …":** another `droid-harness` process has the phone (often the autopilot service: `systemctl --user stop droid-autopilot`). Only one process per phone at a time.
 - **Stuck on a result screen or popup:** `droid-harness recover` (or wait 8–15 s for the live loop to do the same). If the calibrated `ok` keeps missing, re-capture the result screen or recalibrate `buttons:`; recovery finds the real button visually either way.
 - **Deck changed in the game:** capture `affordable` and `greyed` templates into a clean directory, update `deck:` in a **new** strategy file, re-run `replay` / `pytest`. Stale templates show up as `hand_unreadable` warnings and dashed slots in the Studio.
 - **Disk:** raw video is ~60 MB/min (2–4 GB per 10 matches). Use `--prune-win-video` and `droid-harness retain`; keep `meta.json`, `summary.json`, `decisions.jsonl` (~1.5 MB/match).

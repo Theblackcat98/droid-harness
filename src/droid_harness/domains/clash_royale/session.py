@@ -6,10 +6,12 @@ generic ``BrainLoop`` can drive menus and battles alike.
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ...core.actuate.gestures import TouchEvent
 from ...core.runtime.intent_bus import Intent
@@ -75,6 +77,13 @@ class CRSession:
         self.recorder = recorder
         self.meta_factory = meta_factory
         self.on_match_end = on_match_end
+        # Runs with (match_dir, summary) once the recorder has written the match (summary.json
+        # on disk, files closed): video retention needs the finished files (issue #8).
+        self.after_written: Callable[[Path, dict], None] | None = None
+        # The brain thread ends matches on result screens while the runner thread aborts them
+        # (app died, stuck screen, reconnect). Whoever takes the match under this lock ends it;
+        # the other finds no match and does nothing (issue #10).
+        self._match_lock = threading.Lock()
         self.screen_every = screen_every
         self.result_stable_frames = result_stable_frames
         self.result_settle_s = result_settle_s
@@ -246,10 +255,12 @@ class CRSession:
         return self.screen, time.monotonic() - self.screen_since
 
     def _start_match(self, frame: Frame) -> None:
-        self.match = self.meta_factory()
-        self.match.match_id = self.match.match_id or uuid.uuid4().hex[:12]
+        meta = self.meta_factory()
+        meta.match_id = meta.match_id or uuid.uuid4().hex[:12]
+        meta.start_pts_us = frame.pts_us
+        with self._match_lock:
+            self.match = meta
         self.perception.start_match(frame)
-        self.match.start_pts_us = frame.pts_us
         self.policy.reset_match()
         self.match_latency = LatencyStats()
         self._pending_key, self._pending_n = None, 0
@@ -263,7 +274,12 @@ class CRSession:
         if self.recorder is not None:
             self.recorder.start_match(self.match.match_id, self.match.__dict__)
 
-    def _end_match(self, result: str, status: str) -> dict:
+    def _end_match(self, result: str, status: str) -> dict | None:
+        with self._match_lock:
+            m = self.match
+            if m is None:
+                return None  # another thread ended or aborted it first
+            self.match = None
         s = self.last_state
         if self._result_crowns is not None and status == "completed":
             my_crowns, opp_crowns = self._result_crowns
@@ -279,7 +295,7 @@ class CRSession:
             if all(n in s.towers for n in names):
                 tower_hp_diff = int(sum(s.towers[n] for n in names[:3]) - sum(s.towers[n] for n in names[3:]))
         summary = {
-            **self.match.__dict__, "status": status, "result": result,
+            **m.__dict__, "status": status, "result": result,
             "my_crowns": my_crowns, "opp_crowns": opp_crowns,
             "tower_hp_diff": tower_hp_diff,
             "my_king_level_seen": getattr(s, "my_king_level", None) if s else None,
@@ -299,17 +315,20 @@ class CRSession:
             "events": self.perception.events,
         }
         if self.recorder is not None:
-            self.recorder.end_match(summary)
+            if self.after_written is not None:
+                hook = self.after_written
+                self.recorder.end_match(summary, after=lambda d: hook(d, summary))
+            else:
+                self.recorder.end_match(summary)
+        self._post_result = True
         if self.on_match_end:
             self.on_match_end(summary)
-        self.match = None
-        self._post_result = True
         return summary
 
     def abort_match(self, reason: str) -> dict | None:
-        """Infrastructure failure mid-battle (disconnect, crash): recorded as infra_abort."""
-        if self.match is None:
-            return None
+        """Infrastructure failure mid-battle (disconnect, crash): recorded as infra_abort.
+
+        Safe to call from any thread: it does nothing if the match already ended."""
         return self._end_match(f"aborted:{reason}", status="infra_abort")
 
     # --- PolicyEngine -----------------------------------------------------------

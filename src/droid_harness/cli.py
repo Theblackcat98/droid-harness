@@ -341,7 +341,7 @@ def _build_run_config(a):
 def cmd_doctor(a) -> None:
     from .app import run_doctor
 
-    rep = run_doctor(device=a.device, strategy=a.strategy, live=a.live, mode=a.mode)
+    rep = run_doctor(device=a.device, strategy=a.strategy, live=a.live, mode=a.mode, strict=a.strict)
     print(json.dumps(rep, indent=1, default=str))
     if not rep["ok"]:
         raise SystemExit(1)
@@ -641,7 +641,6 @@ def cmd_experiment(a) -> None:
     _, _, champ_sid = load_strategy(a.champion)
     _, _, cand_sid = load_strategy(a.candidate)
     store = Ledger(a.store)
-    exp_id = a.experiment_id or store.next_id()
 
     # Build ONE persistent BotRunner (loads GPU weights & connects scrcpy ONCE across all pairs).
     a.strategy = a.champion
@@ -653,8 +652,11 @@ def cmd_experiment(a) -> None:
 
         tap = TelemetryTap()
     bot = BotRunner(cfg, ui=tap)
-    game_version = bot.client_version()
+    game_version = bot.client_version(retries=3)
     bot.game_version = game_version
+    exp_id = a.experiment_id or store.reserve_id(
+        title=a.title, hypothesis=a.hypothesis, proposer=a.proposer, champion_id=champ_sid,
+        candidate_id=cand_sid, test=a.test, game_version=game_version or "")
 
     runner = ExperimentRunner(ExperimentConfig(
         experiment_id=exp_id, title=a.title, hypothesis=a.hypothesis, proposer=a.proposer,
@@ -662,12 +664,17 @@ def cmd_experiment(a) -> None:
         p0=a.p0, p1=a.p1, alpha=a.alpha, beta=a.beta,
         game_version=game_version or "", balance_epoch=a.balance_epoch or "",
         max_games=a.max_games, futility_min_pairs=a.futility_pairs, dense_tau=a.dense_tau,
-        account_levels_id=bot.account.levels_id if bot.account else ""))
+        account_levels_id=bot.account.levels_id if bot.account else "", mode=a.mode))
 
     from .flywheel.eval.live import run_paired
 
     def _play(stop_when=lambda: False) -> None:
-        run_paired(bot, runner, a.champion, a.candidate, store=a.store, db=a.db, stop=stop_when)
+        try:
+            run_paired(bot, runner, a.champion, a.candidate, store=a.store, db=a.db, stop=stop_when)
+        except BaseException as e:
+            if not runner.matches:  # never got going: don't leave a "running" placeholder behind
+                store.void_reservation(exp_id, f"never started: {type(e).__name__}: {e}")
+            raise
 
     if tap is None:
         _play()
@@ -869,7 +876,9 @@ def _add_runtime_args(s, *, default_mode: str = "training_camp", require_strateg
     s.add_argument("--sync-detect", dest="sync_detect", action="store_true",
                    help="force synchronous detection on `play`/`experiment`")
     s.add_argument("--prune-win-video", dest="prune_win_video", action="store_true",
-                   help="delete raw stream.h264 on clean completed wins immediately after match end")
+                   help="delete raw stream.h264 on clean completed wins once the match is written")
+    s.add_argument("--reconnect-deadline", dest="reconnect_deadline_s", type=float, default=None,
+                   help="seconds to keep retrying a phone that dropped off before ending the run (default 300)")
     s.add_argument("--mode", default=default_mode,
                    choices=["training_camp", "ladder", "practice", "friendly", "friendly_host", "friendly_guest"])
     s.add_argument("--opponent-id", dest="opponent_id")
@@ -905,9 +914,10 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("doctor", help="pre-flight check of calibration, templates, digits, GPU detector & ADB")
     s.add_argument("--device", default="phone-a")
-    s.add_argument("--strategy", default="v6")
+    s.add_argument("--strategy", default="champion", help="strategy to check (default: configs/strategies/CHAMPION)")
     s.add_argument("--live", action="store_true", help="also probe connected ADB device state")
     s.add_argument("--mode", default=None, help="also check the buttons/screens a mode's menu flow needs")
+    s.add_argument("--strict", action="store_true", help="exit 1 on warnings too (level/tower-damage mismatches)")
     s.set_defaults(fn=cmd_doctor)
 
     s = sub.add_parser("recover", help="click any Clash Royale screen back to HOME (stuck loss/popup recovery)")
@@ -933,7 +943,7 @@ def main(argv: list[str] | None = None) -> None:
     s.set_defaults(fn=cmd_upgrade)
 
     s = sub.add_parser("play", help="one-command live play with auto-resolved device, digits & async GPU detector")
-    _add_runtime_args(s, default_mode="ladder", default_strategy="v6")
+    _add_runtime_args(s, default_mode="ladder", default_strategy="champion")
     s.add_argument("--matches", type=int, default=10)
     s.add_argument("--experiment-id", dest="experiment_id")
     s.add_argument("--arm")
@@ -942,7 +952,7 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("watch", help="live Studio in observe-only mode: you play, the bot shows what it sees "
                                      "and would do (never taps)")
-    _add_runtime_args(s, default_mode="ladder", default_strategy="v6")
+    _add_runtime_args(s, default_mode="ladder", default_strategy="champion")
     s.set_defaults(data="data/watch")
     s.add_argument("--matches", type=int, default=0, help="stop after N matches (default: until Ctrl+C)")
     _add_ui_args(s, always_on=True)
@@ -1117,7 +1127,7 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("tune-offline", help="Speed-1 CPU counterfactual parameter search over logged matches")
     s.add_argument("--device", default="phone-a")
-    s.add_argument("--champion", default="v6", help="base strategy YAML or alias")
+    s.add_argument("--champion", default="champion", help="base strategy YAML or alias (default: CHAMPION)")
     s.add_argument("--data", default="data/matches")
     s.add_argument("--cards", default=None)
     s.add_argument("--arena", default=None)
@@ -1130,7 +1140,7 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("autopilot", help="unattended farm -> diagnose -> propose -> test -> promote -> report loop")
     _add_runtime_args(s, default_mode="ladder")
-    s.add_argument("--champion", default="v4", help="starting champion if configs/strategies/CHAMPION is missing")
+    s.add_argument("--champion", default=None, help="starting champion if configs/strategies/CHAMPION is missing")
     s.add_argument("--farm-mode", dest="farm_mode", default="ladder")
     s.add_argument("--farm-matches", dest="farm_matches", type=int, default=20)
     s.add_argument("--testbed", default="ladder", help="mode for experiments: training_camp | practice | ladder")
@@ -1159,7 +1169,7 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("tune-targeted", help="Speed-1: remove one failure pattern with a 1-2 knob change (R5)")
     s.add_argument("--device", default="phone-a")
-    s.add_argument("--champion", default="v6")
+    s.add_argument("--champion", default="champion", help="strategy to fix (default: CHAMPION)")
     s.add_argument("--data", default="data/matches", help="searched recursively for decisions.jsonl")
     s.add_argument("--cards", default=None)
     s.add_argument("--arena", default=None)
@@ -1311,7 +1321,14 @@ def main(argv: list[str] | None = None) -> None:
     if a.cmd is None:
         cmd_studio(a)
         return
-    a.fn(a)
+    from .app import RunAborted
+    from .core.transport.device_lock import DeviceBusy
+
+    try:
+        a.fn(a)
+    except (RunAborted, DeviceBusy) as e:  # a clear reason, not a traceback
+        print(f"droid-harness {a.cmd}: {e}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from ..config import DeviceProfile
 from . import scrcpy_protocol as proto
 from .adb import Adb
 from .decoder import H264Decoder
+from .device_lock import DeviceLock
 from .frame_slot import Frame, LatestFrame
 
 log = logging.getLogger(__name__)
@@ -57,9 +58,20 @@ class ScrcpyClient:
         self.control: socket.socket | None = None
         self._control_lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._device_lock: DeviceLock | None = None
 
     # --- lifecycle --------------------------------------------------------
     def start(self, *, launch: bool = True, connect_attempts: int = 50) -> None:
+        if launch and self.profile.serial != "sim" and self._device_lock is None:
+            # One process per phone (issue #18): raises DeviceBusy naming the holder.
+            self._device_lock = DeviceLock(self.profile.serial).acquire()
+        try:
+            self._start(launch, connect_attempts)
+        except BaseException:
+            self.stop()
+            raise
+
+    def _start(self, launch: bool, connect_attempts: int) -> None:
         if launch:
             self._launch_server()
         self.video = self._connect_first(connect_attempts)
@@ -86,10 +98,13 @@ class ScrcpyClient:
                 pass
         if self.proc is not None:
             self.proc.terminate()
-        try:
-            self.adb.forward_remove(self.profile.local_port)
-        except Exception:  # pragma: no cover - best effort
-            pass
+        if self._device_lock is not None:  # only remove a forward this process created
+            try:
+                self.adb.forward_remove(self.profile.local_port)
+            except Exception:  # pragma: no cover - best effort
+                pass
+            self._device_lock.release()
+            self._device_lock = None
 
     def _launch_server(self) -> None:
         p = self.profile
