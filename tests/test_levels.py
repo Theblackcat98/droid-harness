@@ -105,8 +105,12 @@ def test_account_levels_meta_doctor_and_experiment_void(tmp_path):
     # reproducible no matter what the account has upgraded.
     acct = AccountLevels.load(ROOT / "configs/accounts/theblackcat99.yaml")
     assert acct.king_level is not None and acct.king_level >= 1
-    assert set(acct.cards) == {"knight", "archers", "minions", "arrows", "fireball", "giant",
-                               "musketeer", "mini_pekka"}
+    # The level-aware champion takes its card levels from this file, so the file must list
+    # exactly the cards the champion's deck plays (whatever the deck is today).
+    from droid_harness.app import resolve_strategy_path
+
+    _, champion, _ = load_strategy(resolve_strategy_path("champion", root=ROOT))
+    assert set(acct.cards) == set(champion.deck)
     assert all(1 <= v <= 15 for v in acct.known_cards.values())
     assert acct.spell_tower_damage.get("fireball")
     m = acct.to_meta()

@@ -3,23 +3,25 @@
 # Levels use the game's unified 1-15 scale; every match records them in meta.json as
 # account_levels, and a paired experiment is voided if they change mid-run.
 #
-# 2026-11-27 22:04 pass: Tower Princess (King Level 2 → 3), arrows 1 → 5, fireball 3 → 4,
-# knight 2 → 4, musketeer 3 → 5.
+# 2026-11-28: read off the Battle Deck screen after the deck change (Archers, Minions and Mini
+# P.E.K.K.A left; Skeletons, Cannon and Mega Minion are in). Only the eight cards in the deck
+# are listed: a level for a card that isn't in the deck was never more than a guess.
 account: theblackcat99
 king_level: 4
 updated: '2026-11-28'
 cards:
-  knight: 4
-  archers: 3
-  minions: 1
+  knight: 5
+  skeletons: 5
+  cannon: 8
   arrows: 5
-  fireball: 4
+  fireball: 7
   giant: 3
   musketeer: 5
-  mini_pekka: 4
-# Crown-tower damage at the current card levels (1.1x per level from the values measured in
-# game with lethal margin 0: fireball 75 at Lv3, arrows 30 at Lv1). Authoritative: doctor
-# checks strategies against these, not the card-DB estimate (the DB is flat below Lv4).
+  mega_minion: 6
+# Crown-tower damage at the current card levels, from tower HP drops in recorded matches (six
+# clean Arrows hits at Lv5: 42 each).
+# Fireball: measured 83 at Lv4, carried up one level per upgrade at the game's 1.1x per level
+# (Lv7 = 110); re-measure when a Fireball lands on a full tower.
 spell_tower_damage:
-  fireball: 82   # Lv4
-  arrows: 44     # Lv5
+  fireball: 110  # Lv7 (83 at Lv4 x 1.1^3)
+  arrows: 42     # Lv5, measured

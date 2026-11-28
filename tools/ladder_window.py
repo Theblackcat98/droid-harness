@@ -39,8 +39,8 @@ def load(roots: list[str]) -> list[dict]:
                 d = json.load(open(path))
             except (OSError, ValueError):
                 continue
-            if d.get("opponent_kind") != "ladder":
-                continue
+            if d.get("opponent_kind") != "ladder" or d.get("joined"):
+                continue  # a joined battle was queued by hand: its mode isn't known
             if d.get("status") != "completed":
                 continue
             if d.get("result") not in ("win", "loss", "draw"):

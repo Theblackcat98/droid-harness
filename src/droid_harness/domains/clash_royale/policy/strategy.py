@@ -146,6 +146,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "counterpush_min_elixir": 0.0,      # min elixir required to reinforce a counter-push with support
     "counterpush_bank_for_wc": False,   # defer cheap counterpush support when win condition is in hand & unaffordable
     "avoid_clump_radius": 1.8,          # spread non-tank troops away from already-placed friendly troops
+    # save_counters_for_in_hand_threats: cards the opening/cycle rules never throw away while the
+    # opponent can still play a tank. None = the starter deck's answers (mini_pekka, minions).
+    "cycle_save_cards": None,
 }
 
 

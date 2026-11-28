@@ -11,7 +11,9 @@ def _cheapest_cycle_card(s, p, ctx: RuleContext):
     if p.save_counters_for_in_hand_threats and len(opts) > 1:
         urgent_tanks = ("giant", "prince", "hog_rider", "goblin_giant", "pekka")
         if any(s.opp_can_play_now(t, ctx.cards) for t in urgent_tanks):
-            filtered = [o for o in opts if o[2] not in ("mini_pekka", "minions")]
+            # The tank answers stay in hand; which cards those are is the deck's to say.
+            save = tuple(p.cycle_save_cards) if p.cycle_save_cards is not None else ("mini_pekka", "minions")
+            filtered = [o for o in opts if o[2] not in save]
             if filtered:
                 opts = filtered
     return min(opts) if opts else None
