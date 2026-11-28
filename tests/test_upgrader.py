@@ -13,12 +13,17 @@ from droid_harness.domains.clash_royale.account import AccountLevels
 from droid_harness.domains.clash_royale.perception.cards import CardMatcher
 from droid_harness.domains.clash_royale.perception.grid import Layout, Roi
 from droid_harness.domains.clash_royale.upgrader import (
+    DEFAULT_CLAIM_BAR,
     DEFAULT_UPGRADE_SLOTS,
+    claim_rewards,
     find_confirm_button,
     find_gold_upgrade_button,
+    find_green_claim_button,
     find_info_upgrade_button,
     find_upgradeable_slots,
+    has_claim_banner,
     has_collection_badge,
+    is_collection_level_panel,
     is_deck_screen,
     run_auto_upgrade,
 )
@@ -196,3 +201,130 @@ def test_upgrader_detectors_on_real_phone_a_screenshots():
     assert find_info_upgrade_button(upg1) is not None
     assert find_confirm_button(upg2) is not None
     assert find_confirm_button(done1) is None
+
+
+# --- reward claim (Collection Level / King's Journey tiers) ------------------
+
+FIXTURES = ROOT / "tests/fixtures"
+PURPLE_BGR = _bgr_from_hsv(140, 160, 150)
+
+
+def _make_panel_frame(*, with_claim: bool = True, claim_box=(0.62, 0.51, 0.85, 0.555)) -> np.ndarray:
+    """Purple tier panel with an optional solid green Claim button."""
+    img = np.full((1024, 464, 3), PURPLE_BGR, np.uint8)
+    if with_claim:
+        x0, y0, x1, y1 = claim_box
+        img[int(y0 * 1024):int(y1 * 1024), int(x0 * 464):int(x1 * 464)] = GREEN_BGR
+    return img
+
+
+def test_collection_level_panel_and_claim_button_on_a_real_frame():
+    img = cv2.imread(str(FIXTURES / "collection_level_phone_a.png"))
+    assert img is not None
+    assert is_collection_level_panel(img)
+    hit = find_green_claim_button(img)
+    assert hit is not None
+    h, w = img.shape[:2]
+    assert 0.66 <= hit[0] / w <= 0.82 and 0.46 <= hit[1] / h <= 0.60
+
+
+def test_home_frame_has_a_claim_banner_but_is_not_the_panel():
+    img = cv2.imread(str(FIXTURES / "home_phone_a.png"))
+    assert img is not None
+    # The old badge detector missed this frame (red 1.7 % < 4 %); the gold banner does not.
+    assert has_claim_banner(img)
+    assert not is_collection_level_panel(img)
+    assert find_green_claim_button(img) is None
+
+
+def test_claim_rewards_collects_tiers_and_dismisses_reveals():
+    home = np.full((1024, 464, 3), (60, 40, 20), np.uint8)
+    bar_roi = DEFAULT_CLAIM_BAR
+    x0, y0, x1, y1 = bar_roi.to_px(home.shape)
+    home[y0:y1, x0:x1] = GOLD_BGR  # the Claim banner
+    panel_claim = _make_panel_frame(with_claim=True)
+    panel_done = _make_panel_frame(with_claim=False)
+    reveal = np.full((1024, 464, 3), _bgr_from_hsv(110, 180, 120), np.uint8)
+
+    stage = {"name": "HOME", "img": home}
+
+    class _Slot:
+        def __init__(self):
+            self.seq = 0
+
+        def peek(self):
+            return SimpleNamespace(seq=self.seq, img=stage["img"])
+
+        def wait_newer(self, _seq, timeout=0.2):
+            self.seq += 1
+            return self.peek()
+
+    class _Client:
+        def __init__(self):
+            self.slot = _Slot()
+            self.taps = []
+
+        def touch(self, action, x, y, pointer_id=0):
+            if action != 0:  # DOWN only
+                return
+            self.taps.append((x, y))
+            st = stage["name"]
+            if st == "HOME":
+                stage.update(name="PANEL1", img=panel_claim)
+            elif st == "PANEL1":
+                stage.update(name="REVEAL", img=reveal)
+            elif st == "REVEAL":
+                stage.update(name="PANEL2", img=panel_done)
+            elif st == "PANEL2":
+                stage.update(name="HOME", img=home)
+
+        def keycode(self, code):
+            pass
+
+    class _Screens:
+        def classify(self, _img):
+            return ("HOME", 0) if stage["name"] == "HOME" else ("UNKNOWN", 99)
+
+    layout = Layout(hand=[], next_card=Roi(0, 0, 1, 1), elixir_bar=Roi(0, 0.9, 1, 0.95),
+                    clock=Roi(0.8, 0, 1, 0.1), towers={}, arena=Roi(0, 0, 1, 1), buttons={})
+    rep = claim_rewards(_Client(), _Screens(), layout, settle_s=0.0)
+    assert rep.claims == 1 and rep.reveals == 1 and rep.opened is True
+    assert rep.returned_home is True
+
+
+def test_claim_rewards_does_nothing_without_a_claim_banner():
+    home = np.full((1024, 464, 3), (60, 40, 20), np.uint8)
+
+    class _Slot:
+        seq = 0
+
+        def peek(self):
+            return SimpleNamespace(seq=self.seq, img=home)
+
+        def wait_newer(self, _seq, timeout=0.2):
+            self.seq += 1
+            return self.peek()
+
+    class _Client:
+        def __init__(self):
+            self.slot = _Slot()
+            self.taps = []
+
+        def touch(self, action, x, y, pointer_id=0):
+            if action == 0:
+                self.taps.append((x, y))
+
+        def keycode(self, code):
+            pass
+
+    class _Screens:
+        def classify(self, _img):
+            return "HOME", 0
+
+    layout = Layout(hand=[], next_card=Roi(0, 0, 1, 1), elixir_bar=Roi(0, 0.9, 1, 0.95),
+                    clock=Roi(0.8, 0, 1, 0.1), towers={}, arena=Roi(0, 0, 1, 1), buttons={})
+    client = _Client()
+    rep = claim_rewards(client, _Screens(), layout, settle_s=0.0)
+    assert rep.claims == 0 and rep.opened is False
+    assert "no_claim_banner" in rep.skipped
+    assert client.taps == []  # never taps a screen it does not recognise

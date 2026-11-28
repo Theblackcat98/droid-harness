@@ -381,6 +381,33 @@ def cmd_upgrade(a) -> None:
     print(json.dumps(asdict(rep), indent=1))
 
 
+def cmd_claim(a) -> None:
+    """Claim ready Collection Level / King's Journey reward tiers (never spends Gems)."""
+    from dataclasses import asdict
+
+    from .app import load_screens, resolve_device_bundle
+    from .core.transport.scrcpy_bridge import ScrcpyClient
+    from .domains.clash_royale.perception.grid import Layout, Roi
+    from .domains.clash_royale.upgrader import claim_rewards
+
+    bundle = resolve_device_bundle(a.device, with_detector=False)
+    prof = _profile(str(bundle["profile"]))
+    layout_p = Path(bundle["layout"])
+    layout = Layout.load(layout_p)
+    regions = [Roi(*r) for r in yaml.safe_load(layout_p.read_text()).get("screen_regions",
+                                                                         [[0, 0, 1, 0.5], [0, 0.5, 1, 1]])]
+    screens = load_screens(Path(bundle["screens"]), regions, battle_roi=layout.elixir_bar,
+                           battle_hsv=(layout.elixir_hsv_lo, layout.elixir_hsv_hi))
+    client = ScrcpyClient(prof)
+    client.start()
+    try:
+        rep = claim_rewards(client, screens, layout, max_claims=a.max_claims, dry_run=a.dry_run,
+                            log=lambda fmt, *args: print(fmt % args if args else fmt, flush=True))
+    finally:
+        client.stop()
+    print(json.dumps(asdict(rep), indent=1))
+
+
 def cmd_run(a) -> None:
     from .app import BotRunner
 
@@ -941,6 +968,13 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="inspect ready upgrades without tapping Confirm")
     s.set_defaults(fn=cmd_upgrade)
+
+    s = sub.add_parser("claim", help="claim ready Collection Level / King's Journey reward tiers")
+    s.add_argument("--device", default="phone-a")
+    s.add_argument("--max-claims", dest="max_claims", type=int, default=12)
+    s.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="open the panel and report what is claimable without tapping Claim")
+    s.set_defaults(fn=cmd_claim)
 
     s = sub.add_parser("play", help="one-command live play with auto-resolved device, digits & async GPU detector")
     _add_runtime_args(s, default_mode="ladder", default_strategy="champion")

@@ -109,6 +109,7 @@ class ButtonHit:
 class UpgradeReport:
     upgraded: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    claimed: int = 0  # reward tiers collected in this pass
     king_journey_claimed: bool = False
     reached_deck: bool = False
     returned_home: bool = False
@@ -241,6 +242,164 @@ def find_confirm_button(img: np.ndarray) -> ButtonHit | None:
     return find_gold_upgrade_button(img, x_min=0.30, x_max=0.70, y_min=0.64, y_max=0.78)
 
 
+# --- reward claim: Collection Level / King's Journey tiers -------------------
+#
+# The top-left Claim bar opens a purple "Collection Level" panel whose unclaimed tiers each
+# carry a solid green Claim button; each claim plays a full-screen reward reveal ("Gems x50",
+# "Firecracker x120") that must be tapped away before the panel returns. Nothing here was
+# recognised before, so a farming session banked no cards at all and the upgrader kept
+# reporting "no more upgradeable slots" while holding thousands of gold.
+
+DEFAULT_CLAIM_BAR = DEFAULT_KING_JOURNEY
+DEFAULT_CLAIM_CLOSE = Roi(0.885, 0.118, 0.950, 0.150)
+_CLAIM_PANEL = Roi(0.10, 0.16, 0.90, 0.78)
+
+
+def _purple_fraction(img: np.ndarray, roi: Roi) -> float:
+    crop = roi.crop(img)
+    if crop.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    mask = (hsv[:, :, 0] >= 125) & (hsv[:, :, 0] <= 168) & (hsv[:, :, 1] >= 70) & (hsv[:, :, 2] >= 50)
+    return float(mask.mean())
+
+
+def _gold_fraction(img: np.ndarray, roi: Roi) -> float:
+    crop = roi.crop(img)
+    if crop.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([15, 120, 140], np.uint8), np.array([35, 255, 255], np.uint8))
+    return float((mask > 0).mean())
+
+
+def has_claim_banner(img: np.ndarray, roi: Roi = DEFAULT_CLAIM_BAR) -> bool:
+    """True when the gold Claim / King's Journey banner is drawn at the top-left.
+
+    The red badge behind it is only a few pixels (2 % of the ROI) and was below every threshold
+    in ``has_king_journey_badge``, which is why the old pass never claimed anything: the banner
+    itself is the reliable signal (45 % of that ROI on a real frame).
+    """
+    return _gold_fraction(img, roi) >= 0.25
+
+
+def is_collection_level_panel(img: np.ndarray) -> bool:
+    """True on the purple Collection Level / King's Journey tier panel."""
+    return _purple_fraction(img, _CLAIM_PANEL) >= 0.42
+
+
+def find_green_claim_button(
+    img: np.ndarray, *, x_min: float = 0.05, x_max: float = 0.95,
+    y_min: float = 0.18, y_max: float = 0.86,
+) -> tuple[int, int] | None:
+    """Centre of the solid green Claim button inside the panel, if one is shown.
+
+    Deliberately narrower than :func:`find_gold_upgrade_button`: the Claim button has no coin
+    icon, so it is identified by shape alone, and only inside the purple panel.
+    """
+    h, w = img.shape[:2]
+    if h == 0 or w == 0:
+        return None
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    green = cv2.inRange(hsv, np.array([42, 140, 150], np.uint8), np.array([78, 255, 255], np.uint8))
+    green[: int(y_min * h), :] = 0
+    green[int(y_max * h):, :] = 0
+    green[:, : int(x_min * w)] = 0
+    green[:, int(x_max * w):] = 0
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(3, w // 90), max(3, h // 240)))
+    green = cv2.morphologyEx(green, cv2.MORPH_CLOSE, kernel)
+    _n, _labels, stats, _centroids = cv2.connectedComponentsWithStats(green, 8)
+    best: tuple[int, int, int] | None = None
+    for x, y, bw, bh, area in stats[1:]:
+        if not (0.09 * w <= bw <= 0.42 * w):
+            continue
+        if not (0.012 * h <= bh <= 0.065 * h):
+            continue
+        if not (1.8 <= bw / max(bh, 1) <= 7.5):
+            continue
+        if area < 0.5 * bw * bh:
+            continue  # hollow/irregular
+        if best is None or area > best[2]:
+            best = (int(x + bw // 2), int(y + bh // 2), int(area))
+    return None if best is None else (best[0], best[1])
+
+
+@dataclass
+class ClaimReport:
+    claims: int = 0
+    reveals: int = 0
+    opened: bool = False
+    returned_home: bool = False
+    skipped: list[str] = field(default_factory=list)
+
+
+def claim_rewards(
+    client, screens, layout: Layout, *,
+    max_claims: int = 12, settle_s: float = 0.9, dry_run: bool = False,
+    log: Callable[..., None] | None = None,
+) -> ClaimReport:
+    """Claim every ready Collection Level / King's Journey tier from HOME."""
+    say = log or (lambda *_a, **_k: None)
+    rep = ClaimReport()
+
+    def latest_frame(wait_s: float = 0.5) -> np.ndarray | None:
+        f = client.slot.peek()
+        last_seq = f.seq if f is not None else 0
+        nf = client.slot.wait_newer(last_seq, timeout=wait_s)
+        f = nf or client.slot.peek()
+        return f.img if f is not None else None
+
+    def tap(x: int, y: int, label: str, pause_s: float | None = None) -> np.ndarray | None:
+        say("claim: tap %s (%d,%d)", label, x, y)
+        if not dry_run:
+            client.touch(MotionAction.DOWN, x, y)
+            time.sleep(0.04)
+            client.touch(MotionAction.UP, x, y)
+            time.sleep(settle_s if pause_s is None else pause_s)
+        return latest_frame(wait_s=0.4)
+
+    img = latest_frame()
+    if img is None:
+        return rep
+    name, _ = screens.classify(img)
+    if name in ("IN_BATTLE", "LOADING", "MATCHMAKING"):
+        say("claim: screen is %s; skipping so a live match is never disturbed", name)
+        rep.skipped.append(f"screen:{name}")
+        return rep
+    if not has_claim_banner(img):
+        say("claim: no Claim banner at the top-left; nothing to collect")
+        rep.skipped.append("no_claim_banner")
+        return rep
+
+    bar = layout.buttons.get("king_journey", DEFAULT_CLAIM_BAR)
+    bx, by = bar.center_px(img.shape)
+    img = tap(bx, by, "claim_bar", pause_s=1.0)
+    if img is not None and is_collection_level_panel(img):
+        rep.opened = True
+
+    for step in range(max_claims):
+        if img is None or not is_collection_level_panel(img):
+            break  # not the tier panel (nothing claimable, or a different panel): leave it alone
+        hit = find_green_claim_button(img)
+        if hit is None:
+            cx, cy = DEFAULT_CLAIM_CLOSE.center_px(img.shape)
+            tap(cx, cy, "close_panel", pause_s=0.9)
+            break
+        img = tap(hit[0], hit[1], f"claim:{step}", pause_s=1.1)
+        rep.claims += 1
+        # A claim plays one full-screen reveal per reward; tap each away until the panel is back.
+        for _ in range(4):
+            if img is None or is_collection_level_panel(img):
+                break
+            h2, w2 = img.shape[:2]
+            img = tap(w2 // 2, int(h2 * 0.5), "reveal", pause_s=0.9)
+            rep.reveals += 1
+
+    rep.returned_home = walk_to_home(client, screens, layout, timeout_s=25.0, stable_s=0.8,
+                                     stuck_after=2.0, dry_run=dry_run, log=say)
+    return rep
+
+
 # --- interactive state machine -----------------------------------------------
 
 def run_auto_upgrade(
@@ -314,25 +473,16 @@ def run_auto_upgrade(
     if img is None:
         return rep
 
-    # 2. If King's Journey has a claimable chest badge at top-left, claim it first so
-    #    Tower Princess cards enter our inventory before we scan the Battle Deck.
-    if has_king_journey_badge(img):
-        kx, ky = DEFAULT_KING_JOURNEY.center_px(img.shape)
-        say("upgrade: King's Journey badge detected; claiming level-up rewards")
-        img = tap(kx, ky, "king_journey", pause_s=1.2)
-        for step in range(8):
-            if img is None:
-                break
-            name, _ = screens.classify(img)
-            if name == "HOME":
-                break
-            img = tap(img.shape[1] // 2, int(img.shape[0] * 0.65), f"king_chest:{step}", pause_s=0.7)
-        rep.king_journey_claimed = True
-        walk_to_home(client, screens, layout, timeout_s=20.0, stable_s=0.8,
-                     stuck_after=2.0, dry_run=dry_run, log=say)
-        img = latest_frame()
-        if img is None:
-            return rep
+    # 2. Claim Collection Level / King's Journey tiers, so card upgrades are actually affordable
+    #    before the deck scan looks for ready slots.
+    claim = claim_rewards(client, screens, layout, dry_run=dry_run, log=say)
+    rep.claimed = claim.claims
+    rep.king_journey_claimed = claim.claims > 0
+    if claim.claims or claim.skipped:
+        say("upgrade: claimed %d reward tier(s), %d reveal(s)", claim.claims, claim.reveals)
+    img = latest_frame()
+    if img is None:
+        return rep
 
     # 3. Open the Collection / Battle Deck tab.
     coll_roi = layout.buttons.get("collection_tab", DEFAULT_COLLECTION_TAB)

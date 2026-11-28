@@ -445,12 +445,14 @@ class BotRunner:
                 max_upgrades=self.cfg.auto_upgrade_max,
                 log=lambda fmt, *args: log.info("auto-upgrade: " + fmt, *args),
             )
+            if rep.claimed:
+                log.info("auto-upgrade: claimed %d reward tier(s)", rep.claimed)
             if rep.upgraded:
                 log.info("auto-upgrade completed %d upgrades: %s", len(rep.upgraded), rep.upgraded)
                 self._sync_policy_levels()
             else:
-                log.info("auto-upgrade: no affordable upgrades ready (deck=%s, home=%s)",
-                         rep.reached_deck, rep.returned_home)
+                log.info("auto-upgrade: no affordable upgrades ready (deck=%s, home=%s, claimed=%d)",
+                         rep.reached_deck, rep.returned_home, rep.claimed)
         except Exception:
             log.exception("auto-upgrade pass failed; continuing farming")
         finally:
