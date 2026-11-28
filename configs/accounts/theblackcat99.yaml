@@ -6,8 +6,8 @@
 # 2026-11-27 22:04 pass: Tower Princess (King Level 2 → 3), arrows 1 → 5, fireball 3 → 4,
 # knight 2 → 4, musketeer 3 → 5.
 account: theblackcat99
-king_level: 3
-updated: '2026-11-27'
+king_level: 4
+updated: '2026-11-28'
 cards:
   knight: 4
   archers: 3
