@@ -244,8 +244,29 @@ class StudioApp:
                     "foreground": True, "live": True}
         raise ActionError(f"unknown action {kind!r}")
 
+    PHONE_KINDS = {"preview", "play", "upgrade", "recover", "experiment"}
+
+    def phone_holder(self) -> dict | None:
+        """Another process using the phone (the autopilot service, a terminal run), or None."""
+        from ..core.transport.device_lock import holder
+
+        try:
+            serial = self.phone.serial()
+            info = holder(serial) if serial else None
+        except (PhoneError, OSError):
+            return None
+        mine = {j.proc.pid for j in self.jobs.jobs.values() if j.active and j.proc is not None}
+        return None if not info or info.get("pid") in mine or info.get("pid") == os.getpid() else info
+
     def run(self, kind: str, params: dict[str, Any] | None = None, *, on_done=None) -> Job:
         spec = self.build(kind, dict(params or {}))
+        if kind in self.PHONE_KINDS:
+            other = self.phone_holder()
+            if other:
+                from ..core.transport.device_lock import describe
+
+                raise ActionError(f"the phone is in use by {describe(other)}. Stop that first "
+                                  "(for the autopilot service: systemctl --user stop droid-autopilot).")
         try:
             return self.jobs.start(kind, spec["title"], spec["args"], foreground=spec.get("foreground", False),
                                    live=spec.get("live", False), ui_flag=spec.get("ui_flag", True),

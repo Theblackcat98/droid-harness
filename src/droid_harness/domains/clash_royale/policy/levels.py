@@ -54,6 +54,9 @@ class Levels:
 
     king_level: int | None = None
     cards: dict[str, int] = field(default_factory=dict)
+    # Crown-tower damage measured in game at your current levels (account file). Data like the
+    # levels themselves, so level-aware strategies use it instead of a stale strategy value.
+    tower_damage: dict[str, int] = field(default_factory=dict)
 
     def mine(self, card: str, fallback_king: int | None = None) -> float:
         lvl = self.cards.get(card) or self.king_level or fallback_king

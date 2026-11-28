@@ -57,6 +57,37 @@ class Ledger:
         nums = [int(m.group(1)) for e in self.all() if (m := re.match(r"EXP-(\d+)", e.experiment_id))]
         return f"EXP-{(max(nums) + 1) if nums else 1:04d}"
 
+    def reserve_id(self, **fields) -> str:
+        """Allocate the next ID and write a ``running`` placeholder for it, under a file lock.
+
+        ``next_id`` alone only sees experiments that already recorded a match, so two started
+        close together (the autopilot and a manual one) got the same ID (issue #18). The real
+        record replaces the placeholder after the first match (last write wins)."""
+        lock_path = self.path.with_name(self.path.name + ".lock")
+        with open(lock_path, "a") as lk:
+            try:
+                import fcntl
+
+                fcntl.flock(lk, fcntl.LOCK_EX)
+            except ImportError:  # pragma: no cover - Windows
+                pass
+            exp_id = self.next_id()
+            base = {"title": "", "hypothesis": "", "proposer": "human", "champion_id": "", "candidate_id": "",
+                    "test": "pairs", "p0": 0.5, "p1": 0.58, "game_version": "", "balance_epoch": ""}
+            known = set(Experiment.__dataclass_fields__)
+            self.upsert(Experiment(experiment_id=exp_id, **{**base, **{k: v for k, v in fields.items() if k in known}},
+                                   status="running", notes="reserved; no match recorded yet"))
+        return exp_id
+
+    def void_reservation(self, exp_id: str, reason: str) -> bool:
+        """Mark a reserved experiment that never recorded a match as void (with why)."""
+        latest = next((e for e in self.all() if e.experiment_id == exp_id), None)
+        if latest is None or latest.matches or latest.status != "running":
+            return False
+        latest.status, latest.notes = "void", reason[:300]
+        self.upsert(latest)
+        return True
+
     def similar_failures(self, hypothesis: str, game_version: str, threshold: float = 0.5) -> list[Experiment]:
         """Rejected experiments whose hypothesis overlaps this one (token Jaccard), same game version."""
         toks = _tokens(hypothesis)

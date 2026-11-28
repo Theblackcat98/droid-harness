@@ -27,7 +27,7 @@ WorkingDirectory=/home/nick/Documents/Projects/active/droid-harness
 Environment=PYTHONUNBUFFERED=1
 # The phone must be on adb before the loop starts; fail fast (and retry) if it isn't.
 ExecStartPre=/usr/bin/env adb wait-for-device
-ExecStartPre=/home/nick/Documents/Projects/active/droid-harness/.venv/bin/droid-harness doctor --device phone-a --mode training_camp
+ExecStartPre=/home/nick/Documents/Projects/active/droid-harness/.venv/bin/droid-harness doctor --device phone-a --strategy champion --mode training_camp
 ExecStart=/home/nick/Documents/Projects/active/droid-harness/.venv/bin/droid-harness autopilot \
     --device phone-a \
     --testbed training_camp --test dense \

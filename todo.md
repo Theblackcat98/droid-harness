@@ -309,6 +309,26 @@ Detector foundations (`models/classes.txt`, `models/katacr_alias.json`, `models/
 
 # Run log (newest first)
 
+## 2026-11-28 — Repo-sweep fixes (#7–#20)
+
+One policy change (#15) moved every strategy ID: v9 `62933852a085` → `daea90862e53`, v8 `8d7922131c24` → `95c5a587f1b1`, v4 `094ff06bb8e6` → `fa95f7aad097`. The old IDs are in `legacy_ids.yaml`. v4, v6, v7, v8 and v9, with and without the account's levels, make the same decisions as before on all 113,086 logged states from 61 matches. No logged state had an opponent tower in the window where the measured arrows damage (44) and v9's file (33) disagree.
+
+- #7 Recorder: a failed write is counted (`recorder_write_errors` in `summary.json`) and the writer carries on. A full or read-only disk sets `fatal_error`, which ends the run. `flush`/`close` never wait past their timeouts.
+- #8 `--prune-win-video` runs after the recorder has written and closed the match (`end_match(after=…)`), not before the summary was on disk.
+- #9 Account mismatches are `doctor` warnings, not problems (`--strict` fails on them). The systemd unit checks the champion.
+- #10 Match end vs abort from two threads: claimed under a lock, so one summary.
+- #11 An unread game version is unknown, not a version change. The first match that reads it fills in an experiment that started without one.
+- #12 King Level needs both Princess Towers to agree, and two matches in a row before the account file goes up.
+- #13 Upgrading a card with a `null` level leaves it `null` (warning), and measured tower damage is carried up one level.
+- #14 The account file keeps its comments and layout when saved, including `key:  # note` lines. It falls back to a plain dump if the layout isn't understood, so the data stays right.
+- #15 Level-aware strategies take tower damage from the account's measurement first. `doctor` stops flagging those keys for them.
+- #16 `play`/`watch`/`doctor`/`tune-*` default to `champion`; `autopilot` with no `CHAMPION` and no `--champion` stops with a message.
+- #17 Reconnect retries with backoff up to `--reconnect-deadline` (300 s), then `RunAborted`. The CLI turns that and a busy phone into exit 2 with one line.
+- #18 One process per phone: a machine-wide `flock` per serial, re-entrant in a process, released by the kernel on exit. `stop()` only removes a port forward it created. The Studio shows the holder on the phone chip and refuses phone jobs. Ledger IDs are reserved under a file lock; one that never gets a match is voided with the reason.
+- #19 The warehouse row records the mode the experiment ran in and the candidate's W/L/D (as in the ledger).
+- #20 Experiments stop at a pair boundary once `max_games` real games are in. Total attempts are capped at twice that, so endless aborts still end.
+- Tests: `tests/test_sweep_fixes.py` (30), one or more per issue. Full suite 308 passed, 2 skipped; `ruff` clean.
+
 ## 2026-11-28 — Studio app: no-flag start, buttons, guided Speed 1 → 2, screenshots, tap lock
 
 UI only: nothing under `policy/`, perception or the runtime changed, so no strategy ID moved.
