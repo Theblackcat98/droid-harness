@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -461,10 +463,23 @@ def cmd_inspect(a) -> None:
         server.stop()
 
 
+def arm_ctrl_c() -> None:
+    """Make Ctrl+C work again in a process that inherited it as "ignored".
+
+    A non-interactive shell starts background commands with SIGINT ignored (POSIX), and an
+    ignored signal survives ``exec``: a Studio started with ``droid-harness &`` or ``nohup``
+    could not be quit from its page (it stops itself with SIGINT), and every job it started
+    ignored the Stop button's Ctrl+C until the job manager killed it with SIGTERM 20 s later.
+    """
+    if signal.getsignal(signal.SIGINT) == signal.SIG_IGN:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
 def cmd_studio(a) -> None:
     """The Studio app: buttons, settings, jobs and the guided refine flow (no flags needed)."""
     from .ui.launch import run_app
 
+    arm_ctrl_c()  # quitting from the page is a Ctrl+C this process sends itself
     run_app(host=getattr(a, "host", None), port=getattr(a, "port", None),
             open_browser=False if getattr(a, "no_open", False) else None,
             native=True if getattr(a, "native", False) else None)
@@ -921,6 +936,10 @@ def _add_runtime_args(s, *, default_mode: str = "training_camp", require_strateg
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    from .ui.jobs import JOB_ENV
+
+    if os.environ.get(JOB_ENV):
+        arm_ctrl_c()  # a Studio job: Stop sends Ctrl+C, which must not be inherited as "ignored"
     if raw_argv and raw_argv[0] == "train-detector":
         from .learn.train_detector import main as train_main
 
@@ -979,6 +998,12 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("play", help="one-command live play with auto-resolved device, digits & async GPU detector")
     _add_runtime_args(s, default_mode="ladder", default_strategy="champion")
     s.add_argument("--matches", type=int, default=10)
+    s.add_argument("--join-battle", dest="join_battle", action="store_true",
+                   help="a battle is already on the phone: play it with the selected strategy. No menu flow, "
+                        "upgrade pass or recovery tap runs before it is recognised; with --matches 1 the run "
+                        "ends on HOME when the battle does")
+    s.add_argument("--join-wait", dest="join_wait_s", type=float, default=None,
+                   help="seconds to wait for the battle to appear before giving up (default 45; nothing is tapped)")
     s.add_argument("--experiment-id", dest="experiment_id")
     s.add_argument("--arm")
     _add_ui_args(s)
@@ -1363,6 +1388,9 @@ def main(argv: list[str] | None = None) -> None:
     except (RunAborted, DeviceBusy) as e:  # a clear reason, not a traceback
         print(f"droid-harness {a.cmd}: {e}", file=sys.stderr)
         raise SystemExit(2) from None
+    except KeyboardInterrupt:  # Ctrl+C, or the Studio's Stop: the run's own cleanup has already run
+        print(f"droid-harness {a.cmd}: stopped (Ctrl+C)", file=sys.stderr)
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

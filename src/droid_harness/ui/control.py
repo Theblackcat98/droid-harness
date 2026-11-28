@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import os
 import secrets
 import socket
@@ -17,10 +18,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
+
 from .jobs import Job, JobError, JobManager
 from .phone import PhoneControl, PhoneError
 from .refine import RefineFlow
 from .settings import Settings
+
+log = logging.getLogger(__name__)
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -42,6 +48,7 @@ class StudioApp:
         self.recent_shots: list[dict[str, Any]] = []
         self._strat_cache: tuple[float, list[dict]] | None = None
         self._data_cache: tuple[float, list[dict]] | None = None
+        self._screens_cache: tuple[str, Any] = ("", None)
         self._lock = threading.Lock()
         self.on_quit = None  # set by tests; by default quitting interrupts the main thread
 
@@ -176,6 +183,12 @@ class StudioApp:
         fps = ["--ui-fps", f"{float(st['ui_fps']):g}"]
         strat = lambda key="strategy": self.resolve_strategy(str(p.get(key) or st["champion"]))  # noqa: E731
         data = str(p.get("data") or st["data_dir"])
+        if kind == "start":
+            # One Start button. A battle on the phone is played with the selected strategy, with
+            # no mode to choose; on any other screen Start is a preview, as before.
+            if self.phone_in_battle():
+                return {**self.build("play", {**p, "join": True}), "kind": "play"}
+            return {**self.build("preview", p), "kind": "preview"}
         if kind == "preview":
             args = ["watch", *self._common(), "--strategy", strat(), "--data", "data/watch", *fps, *self._cards()]
             if not st["preview_detector"]:
@@ -188,14 +201,22 @@ class StudioApp:
         if kind == "play":
             n = int(p.get("matches") or st["play_matches"])
             mode = str(p.get("mode") or st["play_mode"])
+            # A battle already on the phone is played as it is (``join``: True forces it, False
+            # skips the check, unset asks the phone). The job then ends on HOME when it is over.
+            join = True if p.get("join") else (False if p.get("join") is False else self.phone_in_battle())
+            if join:
+                n = 1
             args = ["play", *self._common(), "--strategy", strat(), "--mode", mode, "--matches", str(n),
                     "--data", data, *fps, *self._cards()]
+            if join:
+                args.append("--join-battle")
             if st["prune_win_video"]:
                 args.append("--prune-win-video")
-            if st["auto_upgrade"]:
-                args.append("--auto-upgrade")
-            return {"title": f"Play {n} {'match' if n == 1 else 'matches'} ({mode.replace('_', ' ')})",
-                    "args": args, "foreground": True, "live": True}
+            if st["auto_upgrade"] and not join:
+                args.append("--auto-upgrade")  # never navigate menus around a battle in progress
+            title = (f"Play the battle on the phone with {Path(strat()).stem}" if join else
+                     f"Play {n} {'match' if n == 1 else 'matches'} ({mode.replace('_', ' ')})")
+            return {"title": title, "args": args, "foreground": True, "live": True}
         if kind == "upgrade":
             args = ["upgrade", *self._common()] + (["--dry-run"] if p.get("dry_run") else [])
             return {"title": "Check upgrades" if p.get("dry_run") else "Upgrade cards (gold only)", "args": args,
@@ -244,7 +265,7 @@ class StudioApp:
                     "foreground": True, "live": True}
         raise ActionError(f"unknown action {kind!r}")
 
-    PHONE_KINDS = {"preview", "play", "upgrade", "recover", "experiment"}
+    PHONE_KINDS = {"start", "preview", "play", "upgrade", "recover", "experiment"}
 
     def phone_holder(self) -> dict | None:
         """Another process using the phone (the autopilot service, a terminal run), or None."""
@@ -260,6 +281,7 @@ class StudioApp:
 
     def run(self, kind: str, params: dict[str, Any] | None = None, *, on_done=None) -> Job:
         spec = self.build(kind, dict(params or {}))
+        kind = spec.get("kind", kind)  # Start resolves to play (a battle is on) or preview
         if kind in self.PHONE_KINDS:
             other = self.phone_holder()
             if other:
@@ -273,6 +295,43 @@ class StudioApp:
                                    params=dict(params or {}), on_done=on_done)
         except JobError as e:
             raise ActionError(str(e)) from e
+
+    # --- what is on the phone --------------------------------------------------------------
+    def _screen_classifier(self):
+        """The device's screen classifier, as the bot builds it (built once per device; None when
+        the calibration is missing, in which case Start can't tell and plays the normal flow)."""
+        device = str(self.settings["device"])
+        if self._screens_cache[0] != device:
+            sc = None
+            try:
+                from ..app import screen_classifier
+
+                sc = screen_classifier(device, root=self.root)
+            except Exception as e:  # noqa: BLE001 - the job itself reports what calibration is missing
+                log.warning("can't classify the phone's screen for Start (%s): %s", device, e)
+            self._screens_cache = (device, sc)
+        return self._screens_cache[1]
+
+    def phone_in_battle(self) -> bool:
+        """True when the phone shows a battle right now. Read from the running live view when
+        there is one, else one adb screenshot is classified (the elixir bar recognises a battle
+        in any arena). Nothing is tapped; an unreachable phone reads as "no battle"."""
+        sc = self._screen_classifier()
+        if sc is None:
+            return False
+        if self.jobs.live_job() is not None:
+            live = self._live_screen()
+            if live:
+                return live.upper() == sc.battle_label
+        try:
+            png = self.phone.screencap()
+        except (PhoneError, OSError) as e:
+            log.warning("can't read the phone's screen for Start: %s", e)
+            return False
+        img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return False
+        return sc.classify(img)[0] == sc.battle_label
 
     # --- screenshots ----------------------------------------------------------------------
     def _live_get(self, path: str, timeout: float = 5.0) -> tuple[int, bytes]:

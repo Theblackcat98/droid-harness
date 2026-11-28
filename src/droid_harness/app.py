@@ -85,6 +85,23 @@ class RunConfig:
     auto_upgrade_every: int = 4  # matches between mid-batch upgrade passes (0 = start of batch only)
     auto_upgrade_max: int = 10  # max upgrades per pass
     reconnect_deadline_s: float = 300.0  # keep retrying a dropped phone this long before giving up (#17)
+    # `--join-battle`: the battle is already on the phone (the player queued it). Play that battle
+    # with the selected strategy: no menu flow, upgrade pass, recovery tap or app restart until a
+    # battle has been recognised. With ``--matches 1`` the run ends on HOME when the battle does.
+    join_battle: bool = False
+    join_wait_s: float = 45.0  # no battle on the phone by then: give up (nothing was tapped)
+
+
+def screen_classifier(device: str = "phone-a", root: Path = Path(".")) -> ScreenClassifier:
+    """The device's screen classifier, as the bot builds it, for anything that needs to name the
+    screen on the phone right now (the Studio's Start, before a job exists)."""
+    bundle = resolve_device_bundle(device, root=root, with_detector=False)
+    layout_p = Path(bundle["layout"])
+    layout = Layout.load(layout_p)
+    regions = [Roi(*r) for r in (yaml.safe_load(layout_p.read_text()).get("screen_regions")
+                                 or [[0, 0, 1, 0.5], [0, 0.5, 1, 1]])]
+    return load_screens(Path(bundle["screens"]), regions, battle_roi=layout.elixir_bar,
+                        battle_hsv=(layout.elixir_hsv_lo, layout.elixir_hsv_hi))
 
 
 def resolve_strategy_path(strategy: str | Path, root: Path = Path(".")) -> Path:
@@ -286,6 +303,52 @@ class RunAborted(RuntimeError):
     """The run can't continue (recording failed, the phone stayed unreachable, the phone is busy).
 
     The CLI prints the message and exits with status 2 instead of a traceback."""
+
+
+class JoinWait:
+    """``--join-battle``: what the run loop does about the battle the player queued.
+
+    Until a battle is recognised, nothing may touch the menus: the battle may still be loading
+    and a flow tap there can cancel it. So the session's ``joining`` flag stays set (no menu
+    flow, recovery tap or BACK) whenever no battle is running. A chest or menu screen that
+    flashes as IN_BATTLE is aborted by the session as "no battle HUD"; that is not the battle,
+    and waiting resumes until the deadline.
+    """
+
+    def __init__(self, wait_s: float, strategy: str) -> None:
+        self._t0 = time.monotonic()
+        self.deadline = self._t0 + wait_s
+        self.strategy = strategy
+        self.over = False
+        self._logged = False
+
+    def tick(self, session: CRSession, summaries: list[dict]) -> str:
+        """``"waiting"``, ``"playing"`` or ``"over"`` (the joined battle ended; the flag is cleared)."""
+        if self.over:
+            session.joining = False
+            return "over"
+        if session.match is not None:
+            if not self._logged:
+                self._logged = True
+                session.recovery.reset()
+                log.info("join-battle: playing the battle on the phone with %s", self.strategy)
+            return "playing"
+        if session.screen in BATTLE_SCREENS:
+            return "waiting"  # the brain thread is starting the match this instant
+        if summaries and (summaries[-1]["status"] == "completed" or session.had_battle_hud):
+            self.over = True
+            session.joining = False
+            return "over"
+        if time.monotonic() >= self.deadline:
+            raise RunAborted(f"no battle appeared on the phone within {self.wait_s:.0f} s of Start, so nothing "
+                             f"was played or tapped. Start the battle, then Start.")
+        session.joining = True
+        self._logged = False
+        return "waiting"
+
+    @property
+    def wait_s(self) -> float:
+        return max(0.0, self.deadline - self._t0)
 
 
 class BotRunner:
@@ -504,7 +567,8 @@ class BotRunner:
             "strategy": {"id": self.strategy_id, "name": self.params.spec.strategy,
                          "act_threshold": self.params.act_threshold, "deck": list(self.params.deck)},
             "runner": {"completed": self.completed, "target": self.cfg.matches, "mode": self.cfg.mode,
-                       "device": self.profile.name, "data": str(self.cfg.data), "results": tally},
+                       "device": self.profile.name, "data": str(self.cfg.data), "results": tally,
+                       "joining": bool(self.cfg.join_battle), "waiting_for_battle": bool(self.session.joining)},
             "experiment": self.ui_experiment() if self.ui_experiment is not None else None,
         }
 
@@ -541,7 +605,9 @@ class BotRunner:
         self._on_summary_hook = on_summary
         if self.game_version is None:
             self.game_version = self.client_version()
-        run_start_upgrade = bool(self.cfg.auto_upgrade and self.cfg.experiment_id is None and not self.cfg.observe_only)
+        join_run = self.cfg.join_battle and not self.cfg.observe_only
+        run_start_upgrade = (bool(self.cfg.auto_upgrade) and self.cfg.experiment_id is None
+                             and not self.cfg.observe_only and not join_run)
         if run_start_upgrade:
             self.session.suspend_menu = True
         # Held for the whole run, so another process can't take the phone between reconnects
@@ -556,13 +622,22 @@ class BotRunner:
         stuck_since = None
         last_screen = self.session.screen
         watchdog = AppWatchdog(self.client.adb, PACKAGE)
+        # --join-battle: the battle the player queued is played as it is. Nothing may touch the
+        # menus before it is recognised (it may still be loading; a flow tap can cancel it).
+        join = JoinWait(self.cfg.join_wait_s, self.params.spec.strategy) if join_run else None
         try:
+            if join is not None:
+                self.session.joining = True
+                log.info("join-battle: waiting for the battle on the phone (no taps until it is recognised)")
             if run_start_upgrade:
                 self._run_auto_upgrade()
             while self.completed < self.cfg.matches and not (stop_when and stop_when()):
                 if self.recorder.fatal_error:  # disk full, read-only, no permission (issue #7)
                     raise RunAborted(f"recording failed: {self.recorder.fatal_error}. Free disk space or fix "
                                      f"the permissions on {self.cfg.data}, then run again.")
+                if join is not None and join.tick(self.session, self._match_summaries) == "over" \
+                        and self.cfg.matches <= 1:
+                    break  # a one-shot join leaves the phone on HOME: nothing else is queued
                 if self._upgrade_requested and self.session.match is None:
                     self._run_auto_upgrade()
                     self.session.screen_since = time.monotonic()
@@ -593,11 +668,14 @@ class BotRunner:
                     f = self.findings.get(timeout=0.5)
                 except queue.Empty:
                     continue
+                if self.session.joining and f.kind == "stuck_screen":
+                    self.session.screen_since = time.monotonic()  # the battle hasn't started: nothing is stuck
+                    continue
                 log.warning("liveness: %s (%s)", f.kind, f.detail)
                 if f.action in ("reconnect", "restart_server", "adb_reconnect"):
                     self.session.abort_match(f.kind)
                     self._reconnect(f.kind, adb_reconnect=f.action == "adb_reconnect")
-                elif f.action == "recover_ui" and self.cfg.observe_only:
+                elif f.action == "recover_ui" and (self.cfg.observe_only or self.session.joining):
                     self.session.screen_since = time.monotonic()  # the player is in charge of menus
                 elif f.action == "recover_ui":
                     # Arm the deterministic HOME walk: calibrated taps, then buttons

@@ -61,6 +61,7 @@ class MatchMeta:
     strategy_name: str | None = None
     start_pts_us: int | None = None  # device timestamp of the first battle frame (match t = 0)
     started_unix: float = field(default_factory=time.time)
+    joined: bool = False  # the battle was already on the phone when the run started (--join-battle)
 
 
 class CRSession:
@@ -102,6 +103,9 @@ class CRSession:
         self.recovery = recovery or HomeRecovery(menus.buttons)
         self.send_key = send_key
         self.suspend_menu = False  # batch-end settle drives the UI directly
+        # ``--join-battle``: the next battle is one the player queued, so no menu flow, recovery
+        # tap or BACK may run before it is recognised. Cleared when the battle starts.
+        self.joining = False
         self.screen = "UNKNOWN"
         self.screen_since = time.monotonic()
         self.match: MatchMeta | None = None
@@ -245,7 +249,11 @@ class CRSession:
             return
         prev, self.screen, self.screen_since = self.screen, name, time.monotonic()
         if name in BATTLE_SCREENS and prev not in BATTLE_SCREENS:
+            joining, self.joining = self.joining, False
             self._start_match(frame)
+            with self._match_lock:
+                if self.match is not None:
+                    self.match.joined = joining
         elif name in RESULT_SCREENS and self.match is not None:
             self._end_match(RESULT_SCREENS[name], status="completed")
         elif prev in BATTLE_SCREENS and name not in BATTLE_SCREENS and name not in RESULT_SCREENS and self.match is not None:
@@ -253,6 +261,12 @@ class CRSession:
 
     def screen_age_s(self) -> tuple[str, float]:
         return self.screen, time.monotonic() - self.screen_since
+
+    @property
+    def had_battle_hud(self) -> bool:
+        """The current (or last) match showed a clock, hand or elixir bar: it was a real battle,
+        not a chest or menu screen that flashed as IN_BATTLE."""
+        return self._ever_had_battle_hud
 
     def _start_match(self, frame: Frame) -> None:
         meta = self.meta_factory()
@@ -338,7 +352,9 @@ class CRSession:
             if decision.chosen is not None and hasattr(self.perception, "record_my_action"):
                 self.perception.record_my_action(decision.chosen.card, decision.chosen.tile, obs.state.t_ms)
             return decision
-        if self.suspend_menu:
+        if self.suspend_menu or self.joining:
+            # Joining a battle the player queued: not one tap (flow, recovery or BACK) until the
+            # battle is recognised, whatever the screen looks like meanwhile.
             return MenuDecision(obs.screen)
         now = time.monotonic()
         action = self.recovery.next_action(self.screen, obs.frame.img, now)

@@ -351,13 +351,13 @@ table.data input[type=radio] { accent-color: var(--elixir); }
 <main>
   <div class="stagecol">
     <div class="controls" id="controls" hidden>
-      <button class="btn primary" id="previewBtn" title="Stream the phone and show what the bot sees. The bot doesn't tap.">Start preview</button>
-      <span class="sentence">
-        <button class="btn" id="playBtn">Play</button>
+      <button class="btn primary" id="previewBtn" title="In a battle on the phone? Plays it with the selected strategy, nothing else to choose. On any other screen this shows a preview: the bot watches and never taps.">Start</button>
+      <span class="sentence" id="playSentence">
+        <button class="btn" id="playBtn" title="In a battle on the phone, Play joins that battle with the selected strategy.">Play</button>
         <input class="inp" type="number" id="playN" min="1" max="500" aria-label="Number of matches">
-        <span>matches in</span>
+        <span id="playNWord">matches in</span>
         <select class="inp" id="playMode" aria-label="Mode"></select>
-        <span>with</span>
+        <span id="playModeWord">with</span>
         <select class="inp" id="playStrat" aria-label="Strategy"></select>
       </span>
       <details class="menu" id="moreMenu">
@@ -1288,8 +1288,8 @@ function renderIdleEmpty(p) {
     act.innerHTML = "";
   } else {
     title.textContent = "Nothing is streaming";
-    p.textContent = "Start a preview to see the phone and what the bot reads from it. In a preview the bot only watches; it never taps.";
-    act.innerHTML = `<button class="btn primary" data-run="preview">Start preview</button><button class="btn" data-run="demo">Demo without a phone</button>`;
+    p.textContent = "In a battle on the phone? Press Start: the bot plays it with the selected strategy. On any other screen Start shows a preview, where the bot only watches and never taps.";
+    act.innerHTML = `<button class="btn primary" data-run="start">Start</button><button class="btn" data-run="demo">Demo without a phone</button>`;
   }
 }
 
@@ -1312,11 +1312,16 @@ function renderAppStatus() {
   $("#jobPillStop").textContent = shown && shown.status === "stopping" ? "Stop now" : "Stop";
   // control bar
   const pv = job && job.kind === "preview";
-  $("#previewBtn").textContent = pv ? "Stop preview" : "Start preview";
-  $("#previewBtn").classList.toggle("primary", !job || pv);
+  // A battle on the live view: Play means "play this battle" (no count, no mode).
+  const inBattle = !!pv && !!S.live.snap && S.live.snap.screen === "IN_BATTLE";
+  $("#previewBtn").textContent = pv ? "Stop preview" : "Start";
+  $("#previewBtn").classList.toggle("primary", (!job || pv) && !inBattle);
   $("#previewBtn").disabled = !!job && !pv;
+  $("#playBtn").textContent = inBattle ? "Play this battle" : "Play";
+  $("#playBtn").classList.toggle("primary", inBattle);
+  for (const id of ["playN", "playNWord", "playMode"]) $("#" + id).hidden = inBattle;
   $("#playBtn").disabled = !!job && !pv;
-  $("#playBtn").title = job && !pv ? `${job.title} is running` : pv ? "Stops the preview, then plays" : "";
+  $("#playBtn").title = job && !pv ? `${job.title} is running` : inBattle ? "Stops the preview, then plays the battle on the phone with the selected strategy" : pv ? "Stops the preview, then plays. In a battle on the phone, that battle is played" : "In a battle on the phone, that battle is played with the selected strategy";
   document.querySelectorAll("#moreMenu [data-run]").forEach((b) => { b.disabled = !!job && b.dataset.run !== "doctor"; });
   $("#stopBtn").hidden = !job || pv;
   $("#stopBtn").textContent = job ? (job.status === "stopping" ? "Stop now" : (STOP_LABEL[job.kind] || "Stop")) : "Stop";
@@ -1728,7 +1733,7 @@ function wireApp() {
   document.querySelectorAll("[data-app]").forEach((b) => { b.hidden = false; });
   $("#replayTab").textContent = "Matches";
   $("#appStatus").hidden = false; $("#controls").hidden = false; $("#phoneTools").hidden = false;
-  $("#previewBtn").onclick = () => { const j = fg(); if (j && j.kind === "preview") stopJob(j.id, true); else runAction("preview"); };
+  $("#previewBtn").onclick = () => { const j = fg(); if (j && j.kind === "preview") stopJob(j.id, true); else runAction("start"); };
   $("#playBtn").onclick = async () => {
     const params = { matches: Number($("#playN").value) || A.state.settings.play_matches, mode: $("#playMode").value, strategy: $("#playStrat").value };
     const j = fg();

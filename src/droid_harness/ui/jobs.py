@@ -28,6 +28,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 CLI = [sys.executable, "-m", "droid_harness.cli"]
+JOB_ENV = "DROID_HARNESS_JOB"
 
 
 class JobError(RuntimeError):
@@ -131,7 +132,8 @@ class JobManager:
                  history: int = 40) -> None:
         self.root = Path(root)
         self.logs_dir = logs_dir or self.root / ".studio/jobs"
-        self.env = env or (lambda: dict(os.environ, PYTHONUNBUFFERED="1"))
+        # JOB marks the child as started here: the CLI re-arms Ctrl+C in it (see ``arm_ctrl_c``).
+        self.env = env or (lambda: dict(os.environ, PYTHONUNBUFFERED="1", **{JOB_ENV: "1"}))
         self.base_cmd = list(base_cmd or CLI)
         self.history = history
         self.jobs: dict[str, Job] = {}
