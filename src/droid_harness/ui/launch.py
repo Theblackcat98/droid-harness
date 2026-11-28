@@ -65,6 +65,85 @@ def start_replay_studio(roots: list[Path], *, host: str = "127.0.0.1", port: int
     return StudioServer(studio, host, port).start()
 
 
+def start_app_studio(root: Path, *, host: str | None = None, port: int | None = None) -> StudioServer:
+    """The full app: buttons, settings, jobs and the guided flow, over every match under data/."""
+    import errno
+
+    from .control import StudioApp
+
+    app = StudioApp(root)
+    st = app.settings
+    host = host or str(st["host"])
+    port = int(port or st["port"])
+    vm = None
+    value = root / "models/value.json"
+    if value.exists():
+        from ..learn.value_model import ValueModel
+
+        try:
+            vm = ValueModel.load(value)
+        except ValueError as e:
+            log.warning("ignoring %s: %s", value, e)
+    cards = root / "configs/domains/clash_royale/cards.json"
+    (root / "data").mkdir(exist_ok=True)
+    library = MatchLibrary([root / "data"], strategies=StrategyIndex(root / "configs/strategies"),
+                           costs=CostBook.load(cards if cards.exists() else None), value_model=vm)
+    studio = Studio(title="droid-harness Studio", library=library, ledger=root / "ledger/experiments.jsonl", app=app)
+    for p in range(port, port + 20):
+        try:
+            return StudioServer(studio, host, p).start()
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE:
+                raise
+    raise OSError(f"ports {port}-{port + 19} are all in use")
+
+
+def existing_studio(host: str, port: int) -> str | None:
+    """URL of an app already serving on ``port``, so a second launch just reopens it."""
+    import http.client
+    import json
+
+    probe = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    try:
+        c = http.client.HTTPConnection(probe, port, timeout=1.5)
+        c.request("GET", "/api/info", headers={"Host": f"127.0.0.1:{port}"})
+        r = c.getresponse()
+        info = json.loads(r.read() or b"{}") if r.status == 200 else {}
+        c.close()
+    except (OSError, ValueError):
+        return None
+    return f"http://localhost:{port}/" if info.get("app") else None
+
+
+def run_app(*, host: str | None = None, port: int | None = None, open_browser: bool | None = None,
+            native: bool | None = None) -> None:
+    """``droid-harness`` with no arguments: find the checkout, serve the app, open it."""
+    import os
+
+    from .settings import Settings, find_repo_root
+
+    root = find_repo_root().resolve()
+    os.chdir(root)  # every config path is relative to the checkout, for jobs too
+    st = Settings.load(root / ".studio/settings.json")
+    host = host or str(st["host"])
+    port = int(port or st["port"])
+    open_browser = bool(st["open_browser"]) if open_browser is None else open_browser
+    native = bool(st["native_window"]) if native is None else native
+    url = existing_studio(host, port)
+    if url:
+        print(f"The Studio is already running: {url}", flush=True)
+        if open_browser or native:
+            webbrowser.open(url)
+        return
+    server = start_app_studio(root, host=host, port=port)
+    print(f"droid-harness Studio for {root}", flush=True)
+    try:
+        run_with_window(wait_forever, server.url, native=native, open_browser=open_browser and not native,
+                        title=server.studio.title)
+    finally:
+        server.stop()
+
+
 def run_with_window(work: Callable[[], None], url: str, *, native: bool = False, open_browser: bool = False,
                     title: str = "droid-harness Studio", on_close: Callable[[], None] | None = None) -> None:
     """Run ``work`` (the bot loop, or a wait) while the Studio is shown.

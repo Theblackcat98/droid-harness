@@ -22,6 +22,8 @@ Tags: **[you]** needs your hands, phone or account · **[code]** pure code work 
 
 ## Priority queue
 
+- **[you] Try the Studio app.** Run `droid-harness` (no arguments), check Settings (serial, folders), start a preview, take a screenshot, and run one Refine round's Speed 1 steps on `data/matches`. Optional: `sh tools/install-desktop-entry.sh` for an app-menu entry. README §4.
+
 0. **[code] Claim the post-match reward chain.** The harness has no screen type for the Collection
    Level / King's Journey tiers (top-left `Claim` badge → green `Claim` buttons → full-screen
    "Gems x50" reveal → back to HOME), so nothing is collected: no new cards, and the upgrader
@@ -306,6 +308,18 @@ Detector foundations (`models/classes.txt`, `models/katacr_alias.json`, `models/
 ---
 
 # Run log (newest first)
+
+## 2026-11-28 — Studio app: no-flag start, buttons, guided Speed 1 → 2, screenshots, tap lock
+
+UI only: nothing under `policy/`, perception or the runtime changed, so no strategy ID moved.
+
+- `droid-harness` with no arguments (or `droid-harness studio`) finds the checkout, serves the Studio on :8765 and opens the browser; a second launch reopens the running one. Settings in `.studio/settings.json`, edited on a Settings page generated from one schema (`ui/settings.py`).
+- Buttons run the real CLI commands as child processes (`ui/jobs.py`): preview (`watch`), play, upgrade, check upgrades, recover, doctor, demo (`sim`), and the Speed 1/2 commands. One phone job at a time; live jobs serve their own Studio on a private port, which the app proxies (SSE included). Activity shows each job's output and result; logs in `.studio/jobs/`.
+- Refine (`ui/refine.py`): champion and data → `tune-targeted --scan` → `tune-targeted --pattern --out` → `shadow` + `replay-diff` → `experiment` → promote (`CHAMPION`) or next round; saved in `.studio/refine.json`. Driven in headless Chrome on the committed EXP-0001 matches: scan 2.9 s, search 6.8 s (removed 19 of 38 `over_defend_bleed` hits, 0.10 % collateral, 16 trials), checks 5.3 s; the phone test failed here only for lack of a phone and card DB, and the page showed why.
+- Screenshot: lossless PNG of the live frame (new `/api/live/frame.png`), `adb screencap` when nothing streams, or the replay frame; optional copy with overlays; saved to `data/screenshots/` (configurable).
+- Tap lock: starts locked; unlocked, clicks/drags/long presses on the preview go to the phone through `adb shell input`, mapped to the real resolution (`wm size`, profile `crop`); Back/Home keys; Esc locks.
+- Security: Host-header check (DNS rebinding) and a per-start token on every POST. Quit button; `tools/install-desktop-entry.sh` for an app-menu entry.
+- Tests: `tests/test_studio_app.py` (18). Full suite 278 passed, 2 skipped; `ruff` clean.
 
 ## 2026-11-27 (night) — Ladder v9: two perception bugs, cheap-probe defense, live 40-match window
 
