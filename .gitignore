@@ -40,3 +40,4 @@ configs/domains/clash_royale/arena/phone-*.yaml
 # autopilot: reports are published to the autopilot/reports branch via this worktree
 .autopilot-publish/
 reports/
+.studio/

@@ -141,7 +141,7 @@ class StrategyIndex:
         from ..domains.clash_royale.policy.strategy import load_strategy
 
         out: dict[str, tuple[str, Any, str]] = {}
-        for p in sorted(self.directory.glob("*.yaml")):
+        for p in sorted([*self.directory.glob("*.yaml"), *self.directory.glob("auto/*.yaml")]):
             try:
                 spec, params, sid = load_strategy(p)
             except Exception:

@@ -2,7 +2,7 @@
 
 A deterministic, low-latency Android automation harness, with Clash Royale as the reference game. It runs **without any LLM in the loop**: scrcpy H.264 stream → computer-vision perception → rule-based utility policy → timed scrcpy touches.
 
-Every strategy parameter, threshold, counter table and rule lives in versioned YAML/CSV files under [`configs/strategies/`](configs/strategies/). The analytics flywheel (`analyze`, `replay-diff`, `experiment`, `sprt`, `ledger`) measures, tunes and promotes strategies statistically with local Python tools only. The Studio (`--ui`, `watch`, `inspect`) shows what the bot sees and why it chose each play, live or after the fact.
+Every strategy parameter, threshold, counter table and rule lives in versioned YAML/CSV files under [`configs/strategies/`](configs/strategies/). The analytics flywheel (`analyze`, `replay-diff`, `experiment`, `sprt`, `ledger`) measures, tunes and promotes strategies statistically with local Python tools only. The Studio shows what the bot sees and why it chose each play, live or after the fact; run `droid-harness` with no arguments and it opens as an app with buttons for everything below.
 
 > **Account scope.** Supercell's terms treat bots as cheating and can ban accounts. Use a throwaway account. The plan was Training Camp, Practice and two-phone friendlies only; **operator override 2026-11-26:** ladder is approved on `theblackcat99` (throwaway, nothing to lose). The general Android core carries none of this risk.
 
@@ -40,10 +40,10 @@ Measured on `phone-a` (OnePlus N10, `741be240`), account `theblackcat99`. The la
 | Opponent tracking | Card, cost and cycle tracker locks 8-card opponent decks (10/10 matches in recent batches) |
 | HUD | Tower-HP digits with a per-tower label search, locked offsets and misread correction; countdown clock; both sides' King Level inferred from Princess Tower HP. `tower_hp_diff` is only written when all six towers were read |
 | Results | `ladder-vision-v4` 9W–1L near 0 trophies; at ~476 trophies EXP-0001 (v4 vs v6, 16 matches) went 2–6 vs 2–5, inconclusive. Opponents there were King Level 4–5 against your 2 |
-| Strategies | Champion `ladder-vision-v4` (`61f2df2e1ec1`); candidates v6 (`434fb3d8d263`) and level-aware v7 (`f42458bd6f37`). The 2026-11-27 policy release changed every ID; old IDs resolve through [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml) |
+| Strategies | Champion `ladder-vision-v9` (`62933852a085`, per [`CHAMPION`](configs/strategies/CHAMPION)); v4 is `094ff06bb8e6`, v8 `8d7922131c24`. Policy changes move every ID; old IDs resolve through [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml) |
 | Automation | `autopilot` runs farm → diagnose → propose → test → promote → report unattended ([§5](#autopilot-unattended-loop)); a weekly coding-agent job turns its reports into one structural-rule pull request |
-| Studio | Live view (`play --ui`, `watch`), replay inspector (`inspect`) with a win-chance line, no-phone demo (`sim --ui`) |
-| Tests | `pytest` 244 passed, 1 skipped without torch; `ruff check src tests tools` clean |
+| Studio | `droid-harness` alone opens the app: live preview, Play and phone tools, screenshots, a tap lock for manual input, guided Speed 1 → Speed 2 rounds, settings and a log of every job ([§4](#4-studio-live-view-and-replay-inspector)). Also `play --ui`, `watch`, `inspect`, `sim --ui` |
+| Tests | `pytest` 278 passed, 2 skipped without torch; `ruff check src tests tools` clean |
 
 ---
 
@@ -62,6 +62,9 @@ droid-harness analyze --data data/sim --cards tests/fixtures/cards_min.json
 
 # SPRT sample-size table for win-rate tests
 droid-harness sprt
+
+# The Studio app (try "Demo without a phone" under More)
+droid-harness
 ```
 
 Optional extras: `[detector]` (ONNX Runtime), `[tuning]` (Optuna), `[gui]` (pywebview for a desktop Studio window), `[coach]` (offline LLM coach, rarely needed). PyTorch-ROCm for `TorchDetector` and training is installed separately on the GPU host (see [§10](#10-detector-retrain-or-add-cards)).
@@ -148,7 +151,44 @@ A battle whose clock, hand and elixir all stop changing for **30 s** is also tre
 
 ## 4. Studio: live view and replay inspector
 
-One browser page, served by the harness itself (standard library only, no build step). It shows the phone with what perception found drawn on top, a top-down tactical map in arena tiles, and the numbers the policy decided from.
+One browser page, served by the harness itself (standard library only, no build step). It shows the phone with what perception found drawn on top, a top-down tactical map in arena tiles, and the numbers the policy decided from. Run it as an app with buttons and settings, or next to a single command with `--ui`.
+
+### The app: `droid-harness` with no arguments
+
+```bash
+droid-harness                        # or: droid-harness studio [--port 8765] [--no-open] [--native]
+sh tools/install-desktop-entry.sh    # optional: "droid-harness Studio" in your desktop's app menu
+```
+
+It finds the checkout (the current folder, or the one the package was installed from), serves the Studio on http://localhost:8765 and opens your browser. Launching it again while it runs just reopens the page. Every button runs the same `droid-harness` command you'd type, as a child process, so the app adds no second path into the bot; nothing in `policy/` changed and no strategy ID moved.
+
+| Section | What it does |
+| --- | --- |
+| **Live** | **Start preview** streams the phone with what perception reads (`watch`: the bot never taps). **Play** *N* matches in a mode with a strategy (`play`). **More**: upgrade cards (gold only), check upgrades without confirming, recover to the home screen, check setup (`doctor --live`), and a demo without a phone (`sim`). One job uses the phone at a time; Play stops a running preview first. |
+| **Matches** | The replay inspector over every match under `data/`. |
+| **Refine** | One guided round of Speed 1 then Speed 2 (below). |
+| **Settings** | Device preset, adb serial (with **Find phones** from `adb devices`), adb location, folders, Play defaults, Speed 1 limits, the Speed 2 testbed and test, the Studio's address. Saved in `.studio/settings.json` (gitignored). |
+
+The header shows the phone (green when `adb` reaches it), the running job with its elapsed time and a Stop button, and **Activity**: each job's command line, live output and parsed result, also kept in `.studio/jobs/*.log`. Stop sends Ctrl+C (the match in progress is cut short, as in a terminal) and escalates if the job lingers. **Quit the Studio** (bottom of Settings) stops every job and the app.
+
+**Screenshot** (above the phone) saves the frame on screen as a lossless PNG in the screenshot folder (`data/screenshots/` by default), named by time and screen, e.g. `20261128-002149-383-in-battle.png`. With a live view running it's the stream frame at stream resolution (what the bot sees; useful for calibration and templates). With nothing streaming it's `adb screencap` at the phone's full resolution. In Matches it's the recording's frame at the playhead. With **Also save a copy with overlays** on, a second `…-overlay.png` keeps what the view shows (boxes, candidates, touches).
+
+**Taps locked / Taps unlocked** is a safety switch for your own input. It starts locked every time the app starts; a click on the phone then only reminds you. Unlocked, the phone view gets a gold frame: a click taps the phone there, a drag swipes, a long press holds, and **Back** and **Home** send those keys. Input goes through `adb shell input`, mapped from the preview to the phone's real resolution (`wm size` and the profile's `crop`), so it works with or without a job running. If the bot is playing, your taps land in its game too. **Esc** locks again.
+
+**Refine: one guided round of Speed 1 → Speed 2**
+
+1. **Choose a champion and data**: a folder under `data/` that holds recorded matches; 20 or more is a good start, and a button plays more into it.
+2. **Find what goes wrong**: `tune-targeted --scan` counts the champion's hits per failure pattern ([§5](#the-three-speeds-in-detail)); the most frequent is preselected.
+3. **Search for a fix**: `tune-targeted --pattern … --out configs/strategies/<champion>-<pattern>-<time>.yaml`, with the trial count and limits from Settings. It shows how many hits the fix removes, how much else it changes, and the parameters it set.
+4. **Check it offline**: `shadow` and `replay-diff` on the same matches, with the change the search claimed as the budget.
+5. **Test on the phone**: `experiment`, champion against candidate, on the testbed from Settings (Training Camp by default) with the dense or pairs test, plus the live view and the running score. It stops a running preview first.
+6. **Decide**: an accepted candidate can be promoted (`CHAMPION` moves to it); otherwise the champion stays. **Start the next round** keeps a one-line summary of this round and starts again from the current champion.
+
+Progress is saved in `.studio/refine.json`, so a restart resumes where you were (a step that was running shows as interrupted). On the committed EXP-0001 matches, steps 2–4 took 3 s, 7 s and 5 s.
+
+**Security.** The app listens on 127.0.0.1 unless you change it in Settings. It only answers requests that name this machine in their `Host` header (no DNS rebinding), and every action needs the page's per-start token (no other website can post to it). Anyone who can open the page can drive the phone, so keep it on localhost or an SSH tunnel.
+
+### Next to a single command
 
 ```bash
 droid-harness play --strategy v6 --ui            # play and watch: http://localhost:8765
@@ -176,7 +216,7 @@ ssh -L 8765:localhost:8765 nick@192.168.1.199    # then open http://localhost:87
 
 **Replay data.** `inspect` reads `decisions.jsonl` (logged every 5th frame and on every play), `summary.json` and `meta.json`. If `stream.h264` survived retention, it's decoded once in the background at 10 fps. Detector boxes aren't logged, so recorded video shows tracked units projected from their logged tiles. Strategy IDs from older policy code resolve to a name through [`legacy_ids.yaml`](configs/strategies/legacy_ids.yaml); one that still doesn't resolve shows `× weight` derived from `total ÷ score`.
 
-Code: [`src/droid_harness/ui/`](src/droid_harness/ui/) (`telemetry.py` tap and publisher, `snapshot.py` shared schema, `library.py` recorded matches, `server.py` routes, `static/studio.html` the page).
+Code: [`src/droid_harness/ui/`](src/droid_harness/ui/) (`telemetry.py` tap and publisher, `snapshot.py` shared schema, `library.py` recorded matches, `server.py` routes, `static/studio.html` the page; for the app, `settings.py`, `jobs.py` child processes, `phone.py` adb input, `control.py` actions and screenshots, `refine.py` the guided round, `launch.py` startup).
 
 ---
 
@@ -1064,6 +1104,7 @@ Build notes since: the elixir cap *collapses* the opponent interval (a full bar 
 - **Disk:** raw video is ~60 MB/min (2–4 GB per 10 matches). Use `--prune-win-video` and `droid-harness retain`; keep `meta.json`, `summary.json`, `decisions.jsonl` (~1.5 MB/match).
 - **AMD GPU:** ONNX Runtime removed its ROCm EP upstream. Pass `--detector models/yolo26n-cr.pt` for PyTorch-ROCm; `.onnx` runs on MIGraphX if built, else CPU (~27 ms p50).
 - **Unattended runs:** use the systemd user unit in [`tools/systemd/`](tools/systemd/droid-autopilot.service) (or `tmux`); keep the phone plugged in with sleep disabled; test `turn_display_off: true` and thermals before a long run; bump `--balance-epoch` after a game update. `touch data/autopilot/STOP` ends the autopilot after its current cycle.
+- **Studio app:** a red phone dot means `adb -s <serial> shell true` failed: check the cable or adb over Wi-Fi and the serial in Settings (**Find phones**). A job that fails says why in Activity, with its full output. Settings, the guided round and job logs live in `.studio/`; delete it to start fresh. A port already in use moves the app to the next free one (8766, …).
 - **Autopilot didn't notify or publish:** both are best-effort and never stop a cycle; the outcome is in the local `reports/<stamp>/report.json` (`notified`, `published` with git's error) and in the service log. Publishing needs a push-capable remote on the bot machine (`git push` must work non-interactively).
 - **Studio:** binds to localhost; use an SSH tunnel rather than `--ui-host 0.0.0.0` on untrusted networks. A live page that says "Waiting for the first frame" on a menu is normal: static screens send no frames.
 

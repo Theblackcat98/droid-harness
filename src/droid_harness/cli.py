@@ -434,6 +434,15 @@ def cmd_inspect(a) -> None:
         server.stop()
 
 
+def cmd_studio(a) -> None:
+    """The Studio app: buttons, settings, jobs and the guided refine flow (no flags needed)."""
+    from .ui.launch import run_app
+
+    run_app(host=getattr(a, "host", None), port=getattr(a, "port", None),
+            open_browser=False if getattr(a, "no_open", False) else None,
+            native=True if getattr(a, "native", False) else None)
+
+
 def cmd_sim(a) -> None:
     from .app import run_sim
 
@@ -882,8 +891,17 @@ def main(argv: list[str] | None = None) -> None:
         train_main(raw_argv[1:])
         return
 
-    ap = argparse.ArgumentParser(prog="droid-harness")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap = argparse.ArgumentParser(prog="droid-harness",
+                                 description="With no command, opens the Studio app (same as `droid-harness studio`).")
+    sub = ap.add_subparsers(dest="cmd")
+
+    s = sub.add_parser("studio", help="the Studio app: live view, buttons, settings and guided Speed 1 and 2 "
+                                      "(also what `droid-harness` alone opens)")
+    s.add_argument("--host", default=None, help="listen address (default: the app's setting, 127.0.0.1)")
+    s.add_argument("--port", type=int, default=None, help="port (default: the app's setting, 8765)")
+    s.add_argument("--no-open", dest="no_open", action="store_true", help="don't open a browser")
+    s.add_argument("--native", action="store_true", help="open in a desktop window (needs the [gui] extra)")
+    s.set_defaults(fn=cmd_studio)
 
     s = sub.add_parser("doctor", help="pre-flight check of calibration, templates, digits, GPU detector & ADB")
     s.add_argument("--device", default="phone-a")
@@ -1290,6 +1308,9 @@ def main(argv: list[str] | None = None) -> None:
     s.set_defaults(fn=cmd_advise)
 
     a = ap.parse_args(raw_argv)
+    if a.cmd is None:
+        cmd_studio(a)
+        return
     a.fn(a)
 
 
